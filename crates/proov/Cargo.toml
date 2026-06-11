@@ -3,7 +3,7 @@ name = "proov"
 version.workspace = true
 edition.workspace = true
 publish = false
-license = "AGPL-3.0-only"
+license = "MIT"
 description = "AI Execution Inventory — detect, analyze, and report AI execution artifacts."
 
 [[bin]]

@@ -305,7 +305,7 @@ proov/
 │   ├── dependabot.yml            # Automated dependency updates
 │   └── CODEOWNERS                # Required reviewers for security-sensitive files
 ├── CODE_OF_CONDUCT.md            # Community expectations and reporting path
-├── LICENSE                       # AGPL-3.0-only license text
+├── LICENSE                       # MIT license text
 ├── agents.md                     # Project guidelines for AI coding agents
 ├── deny.toml                     # Supply chain policy (licenses, advisories)
 ├── rust-toolchain.toml           # Pinned Rust compiler version
@@ -356,7 +356,7 @@ mode = "lite"                   # limit visible findings to the top three artifa
 
 ## License
 
-Copyright (C) 2026 Agentic Highway.
+Copyright (c) 2026 Agentic Highway.
 
-`proov` is licensed under **AGPL-3.0-only**. See [LICENSE](LICENSE) and
+`proov` is licensed under the **MIT License**. See [LICENSE](LICENSE) and
 [COPYRIGHT](COPYRIGHT).
