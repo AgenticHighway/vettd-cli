@@ -16,7 +16,7 @@
 #     + colocated cache (https://docs.blacksmith.sh).
 #   • Blacksmith macOS runners are Apple Silicon (ARM64). Darwin AMD64 is
 #     cross-compiled on the same macOS image via the explicit target install
-#     below, preserving the existing proov-darwin-amd64.tar.gz artifact.
+#     below, preserving the existing vettd-darwin-amd64.tar.gz artifact.
 #   • Swatinem/rust-cache works on all runners — Blacksmith transparently
 #     intercepts cache calls on its runners for 4× faster downloads.
 #     (useblacksmith/rust-cache is archived and no longer maintained.)
@@ -38,10 +38,10 @@ permissions:
 
 env:
     CARGO_TERM_COLOR: always
-    BINARY_NAME: proov
+    BINARY_NAME: vettd
     UPDATE_HOST: https://vettd.agentichighway.ai
-    UPDATE_SIGNING_KEY_ID: alias/proov-release-signing
-    PROOV_UPDATE_PUBLIC_KEY_DER_B64: ${{ vars.PROOV_UPDATE_PUBLIC_KEY_DER_B64 }}
+    UPDATE_SIGNING_KEY_ID: alias/vettd-release-signing
+    VETTD_UPDATE_PUBLIC_KEY_DER_B64: ${{ vars.VETTD_UPDATE_PUBLIC_KEY_DER_B64 }}
 
 jobs:
     # ── Build ────────────────────────────────────────────────────────
@@ -53,20 +53,20 @@ jobs:
                 include:
                     - target: aarch64-apple-darwin
                       os: blacksmith-6vcpu-macos-15
-                      artifact: proov-darwin-arm64.tar.gz
+                      artifact: vettd-darwin-arm64.tar.gz
                     - target: x86_64-apple-darwin
                       os: blacksmith-6vcpu-macos-15
-                      artifact: proov-darwin-amd64.tar.gz
+                      artifact: vettd-darwin-amd64.tar.gz
                     - target: aarch64-unknown-linux-gnu
                       os: blacksmith-4vcpu-ubuntu-2204
-                      artifact: proov-linux-arm64.tar.gz
+                      artifact: vettd-linux-arm64.tar.gz
                       cross: true # needs cross-linker
                     - target: x86_64-unknown-linux-gnu
                       os: blacksmith-4vcpu-ubuntu-2204
-                      artifact: proov-linux-amd64.tar.gz
+                      artifact: vettd-linux-amd64.tar.gz
                     - target: x86_64-pc-windows-msvc
                       os: blacksmith-4vcpu-windows-2025
-                      artifact: proov-windows-amd64.exe
+                      artifact: vettd-windows-amd64.exe
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -75,8 +75,8 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  if [ -z "${PROOV_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
-                    echo "::error::Missing repo variable PROOV_UPDATE_PUBLIC_KEY_DER_B64. Official releases must embed the KMS public verification key."
+                  if [ -z "${VETTD_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
+                    echo "::error::Missing repo variable VETTD_UPDATE_PUBLIC_KEY_DER_B64. Official releases must embed the KMS public verification key."
                     exit 1
                   fi
 
@@ -107,13 +107,13 @@ jobs:
                   echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
             - name: Build release binary
-              run: cargo build --locked --release --target ${{ matrix.target }} -p proov
+              run: cargo build --locked --release --target ${{ matrix.target }} -p vettd-cli
 
             - name: Package binary (Unix)
               if: runner.os != 'Windows'
               run: |
-                  cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} proov
-                  tar -czf ${{ matrix.artifact }} proov
+                  cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} vettd
+                  tar -czf ${{ matrix.artifact }} vettd
 
             - name: Package binary (Windows)
               if: runner.os == 'Windows'
@@ -143,7 +143,7 @@ jobs:
             - name: Collect binaries
               run: |
                   mkdir -p release
-                  for dir in artifacts/proov-*; do
+                  for dir in artifacts/vettd-*; do
                     name=$(basename "$dir")
                     cp "$dir/$name" "release/$name"
                   done
@@ -154,11 +154,11 @@ jobs:
             #   sha256sum --check checksums.txt   (Linux)
             #   shasum -a 256 --check checksums.txt  (macOS)
             # A KMS-signed counterpart (checksums.txt.sig) is added by the
-            # upload-s3 job, which shares the same trust chain as `proov update`.
+            # upload-s3 job, which shares the same trust chain as `vettd update`.
             - name: Generate SHA-256 checksums
               run: |
                   cd release
-                  sha256sum proov-* | sort > checksums.txt
+                  sha256sum vettd-* | sort > checksums.txt
                   echo "checksums.txt:"
                   cat checksums.txt
 
@@ -190,7 +190,7 @@ jobs:
             - name: Collect binaries
               run: |
                   mkdir -p release
-                  for dir in artifacts/proov-*; do
+                  for dir in artifacts/vettd-*; do
                     name=$(basename "$dir")
                     cp "$dir/$name" "release/$name"
                   done
@@ -207,8 +207,8 @@ jobs:
             - name: Validate signing configuration
               run: |
                   set -euo pipefail
-                  if [ -z "${PROOV_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
-                    echo "::error::Missing repo variable PROOV_UPDATE_PUBLIC_KEY_DER_B64."
+                  if [ -z "${VETTD_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
+                    echo "::error::Missing repo variable VETTD_UPDATE_PUBLIC_KEY_DER_B64."
                     exit 1
                   fi
                   if [ -z "${UPDATE_SIGNING_KEY_ID:-}" ]; then
@@ -221,8 +221,8 @@ jobs:
                     --query 'PublicKey' \
                     --output text)
 
-                  if [ "${KMS_PUBLIC_KEY_DER_B64}" != "${PROOV_UPDATE_PUBLIC_KEY_DER_B64}" ]; then
-                    echo "::error::PROOV_UPDATE_PUBLIC_KEY_DER_B64 does not match the current KMS public key for ${UPDATE_SIGNING_KEY_ID}."
+                  if [ "${KMS_PUBLIC_KEY_DER_B64}" != "${VETTD_UPDATE_PUBLIC_KEY_DER_B64}" ]; then
+                    echo "::error::VETTD_UPDATE_PUBLIC_KEY_DER_B64 does not match the current KMS public key for ${UPDATE_SIGNING_KEY_ID}."
                     exit 1
                   fi
 
@@ -233,18 +233,18 @@ jobs:
             - name: Upload binaries to S3
               run: |
                   TAG="${{ steps.tag.outputs.TAG }}"
-                  for file in release/proov-*; do
+                  for file in release/vettd-*; do
                     name=$(basename "$file")
-                    echo "Uploading $name → s3://ah-scanner-releases/${TAG}/${name}"
-                    aws s3 cp "$file" "s3://ah-scanner-releases/${TAG}/${name}"
+                    echo "Uploading $name → s3://vettd-releases/${TAG}/${name}"
+                    aws s3 cp "$file" "s3://vettd-releases/${TAG}/${name}"
                   done
 
             # Per-artifact SHA-256 checksums are embedded in latest.json so
-            # `proov update` can verify binary integrity after download.
+            # `vettd update` can verify binary integrity after download.
             - name: Generate SHA-256 checksums
               id: checksums
               run: |
-                  for file in release/proov-*; do
+                  for file in release/vettd-*; do
                     name=$(basename "$file")
                     hash=$(sha256sum "$file" | awk '{print $1}')
                     echo "SHA256 $name = $hash"
@@ -254,7 +254,7 @@ jobs:
                   # Write a standard checksums file for signing and S3 upload.
                   # This matches the file generated in the `release` job so
                   # `checksums.txt` and `checksums.txt.sig` cover identical content.
-                  (cd release && sha256sum proov-* | sort) > release/checksums.txt
+                  (cd release && sha256sum vettd-* | sort) > release/checksums.txt
 
             - name: Write signed latest.json manifest
               run: |
@@ -262,11 +262,11 @@ jobs:
                   TAG="${{ steps.tag.outputs.TAG }}"
                   RELEASE_BASE="${UPDATE_HOST}/api/scanner/artifacts/${TAG}"
                   DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-                  DARWIN_ARM64_SIZE=$(wc -c < release/proov-darwin-arm64.tar.gz | tr -d ' ')
-                  DARWIN_AMD64_SIZE=$(wc -c < release/proov-darwin-amd64.tar.gz | tr -d ' ')
-                  LINUX_ARM64_SIZE=$(wc -c < release/proov-linux-arm64.tar.gz | tr -d ' ')
-                  LINUX_AMD64_SIZE=$(wc -c < release/proov-linux-amd64.tar.gz | tr -d ' ')
-                  WINDOWS_AMD64_SIZE=$(wc -c < release/proov-windows-amd64.exe | tr -d ' ')
+                  DARWIN_ARM64_SIZE=$(wc -c < release/vettd-darwin-arm64.tar.gz | tr -d ' ')
+                  DARWIN_AMD64_SIZE=$(wc -c < release/vettd-darwin-amd64.tar.gz | tr -d ' ')
+                  LINUX_ARM64_SIZE=$(wc -c < release/vettd-linux-arm64.tar.gz | tr -d ' ')
+                  LINUX_AMD64_SIZE=$(wc -c < release/vettd-linux-amd64.tar.gz | tr -d ' ')
+                  WINDOWS_AMD64_SIZE=$(wc -c < release/vettd-windows-amd64.exe | tr -d ' ')
 
                   cat > /tmp/latest.json <<EOF
                   {
@@ -275,28 +275,28 @@ jobs:
                     "date": "${DATE}",
                     "artifacts": {
                       "darwin-arm64": {
-                        "url": "${RELEASE_BASE}/proov-darwin-arm64.tar.gz",
-                        "sha256": "${{ steps.checksums.outputs.proov_darwin_arm64_tar_gz }}",
+                        "url": "${RELEASE_BASE}/vettd-darwin-arm64.tar.gz",
+                        "sha256": "${{ steps.checksums.outputs.vettd_darwin_arm64_tar_gz }}",
                         "size": ${DARWIN_ARM64_SIZE}
                       },
                       "darwin-amd64": {
-                        "url": "${RELEASE_BASE}/proov-darwin-amd64.tar.gz",
-                        "sha256": "${{ steps.checksums.outputs.proov_darwin_amd64_tar_gz }}",
+                        "url": "${RELEASE_BASE}/vettd-darwin-amd64.tar.gz",
+                        "sha256": "${{ steps.checksums.outputs.vettd_darwin_amd64_tar_gz }}",
                         "size": ${DARWIN_AMD64_SIZE}
                       },
                       "linux-arm64": {
-                        "url": "${RELEASE_BASE}/proov-linux-arm64.tar.gz",
-                        "sha256": "${{ steps.checksums.outputs.proov_linux_arm64_tar_gz }}",
+                        "url": "${RELEASE_BASE}/vettd-linux-arm64.tar.gz",
+                        "sha256": "${{ steps.checksums.outputs.vettd_linux_arm64_tar_gz }}",
                         "size": ${LINUX_ARM64_SIZE}
                       },
                       "linux-amd64": {
-                        "url": "${RELEASE_BASE}/proov-linux-amd64.tar.gz",
-                        "sha256": "${{ steps.checksums.outputs.proov_linux_amd64_tar_gz }}",
+                        "url": "${RELEASE_BASE}/vettd-linux-amd64.tar.gz",
+                        "sha256": "${{ steps.checksums.outputs.vettd_linux_amd64_tar_gz }}",
                         "size": ${LINUX_AMD64_SIZE}
                       },
                       "windows-amd64": {
-                        "url": "${RELEASE_BASE}/proov-windows-amd64.exe",
-                        "sha256": "${{ steps.checksums.outputs.proov_windows_amd64_exe }}",
+                        "url": "${RELEASE_BASE}/vettd-windows-amd64.exe",
+                        "sha256": "${{ steps.checksums.outputs.vettd_windows_amd64_exe }}",
                         "size": ${WINDOWS_AMD64_SIZE}
                       }
                     }
@@ -319,18 +319,18 @@ jobs:
                   }
                   EOF
 
-                  aws s3 cp /tmp/latest.json s3://ah-scanner-releases/latest.json \
+                  aws s3 cp /tmp/latest.json s3://vettd-releases/latest.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.signature.json s3://ah-scanner-releases/latest.signature.json \
+                  aws s3 cp /tmp/latest.signature.json s3://vettd-releases/latest.signature.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.json s3://ah-scanner-releases/manifests/${TAG}/latest.json \
+                  aws s3 cp /tmp/latest.json s3://vettd-releases/manifests/${TAG}/latest.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.signature.json s3://ah-scanner-releases/manifests/${TAG}/latest.signature.json \
+                  aws s3 cp /tmp/latest.signature.json s3://vettd-releases/manifests/${TAG}/latest.signature.json \
                       --content-type application/json
 
             # Sign the plain-text checksums file with the same KMS key used for
             # the update manifest. Users can verify manual downloads against the
-            # same public key that `proov update` trusts.
+            # same public key that `vettd update` trusts.
             # See docs/release-verification.md for the full verification procedure.
             - name: Sign checksums
               run: |
@@ -355,10 +355,10 @@ jobs:
               run: |
                   TAG="${{ steps.tag.outputs.TAG }}"
                   aws s3 cp release/checksums.txt \
-                      "s3://ah-scanner-releases/${TAG}/checksums.txt" \
+                      "s3://vettd-releases/${TAG}/checksums.txt" \
                       --content-type text/plain
                   aws s3 cp release/checksums.txt.sig \
-                      "s3://ah-scanner-releases/${TAG}/checksums.txt.sig" \
+                      "s3://vettd-releases/${TAG}/checksums.txt.sig" \
                       --content-type application/json
 
             # Attach the signed checksums to the GitHub Release so users who
@@ -403,7 +403,7 @@ jobs:
               if: env.HOMEBREW_TAP_TOKEN != ''
               run: |
                   mkdir -p release
-                  for dir in artifacts/proov-*; do
+                  for dir in artifacts/vettd-*; do
                     name=$(basename "$dir")
                     cp "$dir/$name" "release/$name"
                   done
@@ -424,28 +424,28 @@ jobs:
                   token: ${{ env.HOMEBREW_TAP_TOKEN }}
                   path: homebrew-tap
 
-            - name: Update Formula/proov.rb
+            - name: Update Formula/vettd.rb
               if: env.HOMEBREW_TAP_TOKEN != ''
               working-directory: homebrew-tap
               env:
                   VERSION: ${{ steps.release_meta.outputs.VERSION }}
               run: |
                   set -euo pipefail
-                  export DARWIN_ARM64_SHA=$(sha256sum ../release/proov-darwin-arm64.tar.gz | awk '{print $1}')
-                  export DARWIN_AMD64_SHA=$(sha256sum ../release/proov-darwin-amd64.tar.gz | awk '{print $1}')
-                  export LINUX_ARM64_SHA=$(sha256sum ../release/proov-linux-arm64.tar.gz | awk '{print $1}')
-                  export LINUX_AMD64_SHA=$(sha256sum ../release/proov-linux-amd64.tar.gz | awk '{print $1}')
+                  export DARWIN_ARM64_SHA=$(sha256sum ../release/vettd-darwin-arm64.tar.gz | awk '{print $1}')
+                  export DARWIN_AMD64_SHA=$(sha256sum ../release/vettd-darwin-amd64.tar.gz | awk '{print $1}')
+                  export LINUX_ARM64_SHA=$(sha256sum ../release/vettd-linux-arm64.tar.gz | awk '{print $1}')
+                  export LINUX_AMD64_SHA=$(sha256sum ../release/vettd-linux-amd64.tar.gz | awk '{print $1}')
 
                   ruby <<'RUBY'
-                  path = "Formula/proov.rb"
+                  path = "Formula/vettd.rb"
                   text = File.read(path)
 
                   replacements = {
                     /version "\d+\.\d+\.\d+"/ => %(version "#{ENV.fetch("VERSION")}"),
-                    /(proov-darwin-arm64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("DARWIN_ARM64_SHA")}\"",
-                    /(proov-darwin-amd64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("DARWIN_AMD64_SHA")}\"",
-                    /(proov-linux-arm64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("LINUX_ARM64_SHA")}\"",
-                    /(proov-linux-amd64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("LINUX_AMD64_SHA")}\""
+                    /(vettd-darwin-arm64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("DARWIN_ARM64_SHA")}\"",
+                    /(vettd-darwin-amd64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("DARWIN_AMD64_SHA")}\"",
+                    /(vettd-linux-arm64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("LINUX_ARM64_SHA")}\"",
+                    /(vettd-linux-amd64\.tar\.gz"\n\s+sha256 ")([0-9a-f]+)"/ => "\\1#{ENV.fetch("LINUX_AMD64_SHA")}\""
                   }
 
                   replacements.each do |pattern, replacement|
@@ -457,7 +457,7 @@ jobs:
                   File.write(path, text)
                   RUBY
 
-                  git --no-pager diff -- Formula/proov.rb
+                  git --no-pager diff -- Formula/vettd.rb
 
             - name: Commit and push formula
               if: env.HOMEBREW_TAP_TOKEN != ''
@@ -466,13 +466,13 @@ jobs:
                   VERSION: ${{ steps.release_meta.outputs.VERSION }}
               run: |
                   set -euo pipefail
-                  if git diff --quiet -- Formula/proov.rb; then
+                  if git diff --quiet -- Formula/vettd.rb; then
                     echo "Formula already up to date."
                     exit 0
                   fi
 
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                  git add Formula/proov.rb
-                  git commit -m "proov ${VERSION}"
+                  git add Formula/vettd.rb
+                  git commit -m "vettd ${VERSION}"
                   git push origin HEAD:main

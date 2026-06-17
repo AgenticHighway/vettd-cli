@@ -1,4 +1,4 @@
-//! Interactive wizard for proov.
+//! Interactive wizard for vettd.
 //!
 //! When invoked with no subcommand in a TTY, the wizard collects the scan
 //! mode (and optional path) interactively, then returns a `Commands` variant
@@ -236,7 +236,7 @@ fn print_banner() {
     eprintln!();
     eprintln!("  {DIM}┌──────────────────────────────────────────┐{RESET}");
     eprintln!(
-        "  {DIM}│{RESET}  {BOLD}{CYAN}proov{RESET}  —  AI Execution Inventory        {DIM}│{RESET}"
+        "  {DIM}│{RESET}  {BOLD}{CYAN}vettd{RESET}  —  AI Execution Inventory        {DIM}│{RESET}"
     );
     eprintln!("  {DIM}└──────────────────────────────────────────┘{RESET}");
     eprintln!();

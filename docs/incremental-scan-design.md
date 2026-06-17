@@ -15,7 +15,7 @@ Status:
 
 ## Why this exists
 
-`proov` already improved broad discovery and detector fan-out, but the default
+`vettd` already improved broad discovery and detector fan-out, but the default
 local path still pays discovery and detector cost on every run. That is fine
 for correctness, but it leaves obvious reuse on the table for the common case:
 
@@ -28,7 +28,7 @@ efficiency.
 
 ## Design goals
 
-- keep `proov` local-first and operator-friendly
+- keep `vettd` local-first and operator-friendly
 - avoid weakening correctness in exchange for faster headline timings
 - make `quick` and default `scan` the primary incremental beneficiaries
 - preserve explicit-target semantics for `file`, `folder`, and `repo`
@@ -47,7 +47,7 @@ efficiency.
 
 ## Current state
 
-Today `proov` has:
+Today `vettd` has:
 
 - per-run file primitives such as `content_hash`, `file_size_bytes`, and
   `last_modified`
@@ -128,7 +128,7 @@ Defines whether cached artifacts are even comparable to the current run.
 Inputs:
 
 - cache schema version
-- `proov` binary version
+- `vettd` binary version
 - scan mode (`quick`, `scan`, `folder`, `repo`)
 - deep flag where relevant
 - resolved scan roots
@@ -208,7 +208,7 @@ When any of those checks fail, the file is rescanned and the cache is replaced.
 
 Recommended storage:
 
-- `~/.ahscan/scan-cache/scan-v1.sqlite3`
+- `~/.vettd/scan-cache/scan-v1.sqlite3`
 
 SQLite is the right default for the expected entry count because it supports:
 
@@ -272,7 +272,7 @@ These should remain brute-force by default.
 
 ## OS-native change tracking evaluation
 
-The core design constraint is that `proov` is currently a short-lived CLI, not
+The core design constraint is that `vettd` is currently a short-lived CLI, not
 an always-on daemon. That matters because some watcher APIs only report changes
 while a process is actively running.
 
@@ -329,7 +329,7 @@ Why:
 Recommendation:
 
 - defer
-- do not choose as the first Linux backend for `proov`
+- do not choose as the first Linux backend for `vettd`
 
 ### Windows: ReadDirectoryChangesW
 
@@ -348,7 +348,7 @@ Tradeoffs:
 
 Recommendation:
 
-- useful only if `proov` later accepts a background helper
+- useful only if `vettd` later accepts a background helper
 
 ### Windows: USN Journal
 
@@ -363,7 +363,7 @@ Why:
 Tradeoffs:
 
 - more complex than root-scoped watchers
-- volume-level semantics require additional filtering back down to `proov`'s
+- volume-level semantics require additional filtering back down to `vettd`'s
   bounded roots
 
 Recommendation:
@@ -400,7 +400,7 @@ Extend the same cache to `folder` and `repo` for repeated local scans.
 
 ### Phase 4: Linux and Windows live backends if desired
 
-Only if `proov` accepts a longer-lived helper or a more platform-specific
+Only if `vettd` accepts a longer-lived helper or a more platform-specific
 incremental layer.
 
 - Linux: `inotify` helper if a daemon model is approved
@@ -420,7 +420,7 @@ incremental layer.
 
 The first implementation issue after this design should be narrowly scoped:
 
-- introduce `~/.ahscan/scan-cache/scan-v1.sqlite3`
+- introduce `~/.vettd/scan-cache/scan-v1.sqlite3`
 - persist scan profiles, file states, and serialized artifact bundles
 - enable unchanged-file reuse for `quick` and `scan` using stat keys first
 - do not add watcher backends in the first implementation PR

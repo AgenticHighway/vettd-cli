@@ -1,17 +1,17 @@
 # Output Spec
 
-This document is the plain-English reference for what proov is trying to produce.
+This document is the plain-English reference for what vettd is trying to produce.
 
 It answers two related questions:
 
 1. What does the scanner detect directly from files on disk?
 2. What do the contract outputs mean once those raw findings are transformed into `prompts`, `skills`, `mcpServers`, `agents`, and `agenticApps`?
 
-Use this file as the readable spec for product and review discussions. Use `docs/detectors.md` for low-level detector behavior and `crates/proov/src/contract/` for the exact implementation.
+Use this file as the readable spec for product and review discussions. Use `docs/detectors.md` for low-level detector behavior and `crates/vettd-cli/src/contract/` for the exact implementation.
 
 ## Two layers
 
-proov has two distinct layers.
+vettd has two distinct layers.
 
 ### Layer 1: Raw artifact detection
 
@@ -287,12 +287,12 @@ Current non-goals include:
 
 If this document and the implementation ever diverge, check these files:
 
-- `crates/proov/src/contract/mod.rs`
-- `crates/proov/src/contract/prompts.rs`
-- `crates/proov/src/contract/skills.rs`
-- `crates/proov/src/contract/mcp.rs`
-- `crates/proov/src/contract/agents.rs`
-- `crates/proov/src/contract/apps.rs`
+- `crates/vettd-cli/src/contract/mod.rs`
+- `crates/vettd-cli/src/contract/prompts.rs`
+- `crates/vettd-cli/src/contract/skills.rs`
+- `crates/vettd-cli/src/contract/mcp.rs`
+- `crates/vettd-cli/src/contract/agents.rs`
+- `crates/vettd-cli/src/contract/apps.rs`
 - `docs/detectors.md`
 
 This file should be updated whenever the inclusion rules or the meaning of a contract section changes.

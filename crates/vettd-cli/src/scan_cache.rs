@@ -610,7 +610,7 @@ fn build_file_state_snapshot(candidate: &Candidate) -> Option<FileStateSnapshot>
 fn default_db_path() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| {
-            home.join(".ahscan")
+            home.join(".vettd")
                 .join("scan-cache")
                 .join("scan-v1.sqlite3")
         })

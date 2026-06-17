@@ -1,6 +1,6 @@
 //! Declarative rule engine for custom detectors.
 //!
-//! Loads `.toml` rule files from `~/.ahscan/rules/` and applies them
+//! Loads `.toml` rule files from `~/.vettd/rules/` and applies them
 //! during scanning. Each rule file defines filename patterns, keywords,
 //! and signal mappings — no code required.
 
@@ -141,7 +141,7 @@ fn default_boost_threshold() -> usize {
 ///
 /// These cover the standard AI artifact types (cursor_rules, agents_md,
 /// prompt_config). They are always active and cannot be overridden by user
-/// rules in `~/.ahscan/rules/`.
+/// rules in `~/.vettd/rules/`.
 pub fn load_builtin_rules() -> Vec<DetectionRule> {
     let mut rules = Vec::new();
     for (name, content) in BUILTIN_RULE_SOURCES {
@@ -153,9 +153,9 @@ pub fn load_builtin_rules() -> Vec<DetectionRule> {
     rules
 }
 
-/// Default rules directory: `~/.ahscan/rules/`
+/// Default rules directory: `~/.vettd/rules/`
 pub fn default_rules_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".ahscan").join("rules"))
+    dirs::home_dir().map(|h| h.join(".vettd").join("rules"))
 }
 
 pub fn rules_fingerprint() -> String {

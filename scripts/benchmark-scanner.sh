@@ -6,14 +6,14 @@ cd "$REPO_ROOT"
 
 exec </dev/null
 
-BIN="${PROOV_BENCH_BIN:-$REPO_ROOT/target/release/proov}"
-TARGET_PATH="${PROOV_BENCH_TARGET:-$REPO_ROOT}"
-FILE_TARGET="${PROOV_BENCH_FILE:-$REPO_ROOT/agents.md}"
-SKIP_BUILD="${PROOV_BENCH_SKIP_BUILD:-0}"
-TIME_BIN="${PROOV_BENCH_TIME_BIN:-/usr/bin/time}"
+BIN="${VETTD_BENCH_BIN:-$REPO_ROOT/target/release/vettd}"
+TARGET_PATH="${VETTD_BENCH_TARGET:-$REPO_ROOT}"
+FILE_TARGET="${VETTD_BENCH_FILE:-$REPO_ROOT/agents.md}"
+SKIP_BUILD="${VETTD_BENCH_SKIP_BUILD:-0}"
+TIME_BIN="${VETTD_BENCH_TIME_BIN:-/usr/bin/time}"
 
 if [[ "$SKIP_BUILD" != "1" ]]; then
-    cargo build --release -p proov >/dev/null
+    cargo build --release -p vettd-cli >/dev/null
 fi
 
 if [[ ! -x "$BIN" ]]; then
@@ -65,7 +65,7 @@ echo "Benchmark binary: $BIN"
 echo "Benchmark target: $TARGET_PATH"
 echo "Benchmark file: $FILE_TARGET"
 echo "Timing mode: ${TIME_ARGS[*]}"
-echo "Tip: set PROOV_TIMINGS=1 on an individual scan command to print stage timings to stderr."
+echo "Tip: set VETTD_TIMINGS=1 on an individual scan command to print stage timings to stderr."
 
 bench "file --json" "$BIN" file "$FILE_TARGET" --json
 bench "folder --json" "$BIN" folder "$TARGET_PATH" --json

@@ -3,8 +3,8 @@
 //!
 //! Flow (called before every scan):
 //! 1. `GET /api/contract?version=true` → compare with compiled version
-//! 2. If mismatch → tell user to `proov update`, exit(1)
-//! 3. If stale cache → `GET /api/contract` → write to `~/.ahscan/contract/`
+//! 2. If mismatch → tell user to `vettd update`, exit(1)
+//! 3. If stale cache → `GET /api/contract` → write to `~/.vettd/contract/`
 //! 4. If server unreachable → warn and continue scanning
 
 use std::fs;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// The contract version this build of proov was compiled to produce.
+/// The contract version this build of vettd was compiled to produce.
 pub const COMPILED_CONTRACT_VERSION: &str = "2.1.0";
 
 /// Timeout (seconds) for contract endpoint requests.
@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 10;
 
 fn contract_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
-        .map(|h| h.join(".ahscan").join("contract"))
+        .map(|h| h.join(".vettd").join("contract"))
         .ok_or_else(|| "Unable to determine home directory for contract cache".to_string())
 }
 

@@ -102,7 +102,7 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
 
     println!();
     println!("{line}");
-    println!("  {BOLD}proov{RESET} · AI Execution Inventory");
+    println!("  {BOLD}vettd{RESET} · AI Execution Inventory");
     println!("  Scanned: {CYAN}{}{RESET}", report.scanned_path);
     println!("{line}");
 
@@ -179,11 +179,11 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     println!();
     println!("  {BOLD}SAVE & SHARE{RESET}");
     println!("  {DIM}{}{RESET}", "─".repeat(w - 2));
-    println!("  {DIM}proov {cmd_name} --json{RESET}          {DIM}→{RESET} JSON to stdout");
+    println!("  {DIM}vettd {cmd_name} --json{RESET}          {DIM}→{RESET} JSON to stdout");
     println!(
-        "  {DIM}proov {cmd_name} --out{RESET}           {DIM}→{RESET} write proov-report.json"
+        "  {DIM}vettd {cmd_name} --out{RESET}           {DIM}→{RESET} write vettd-report.json"
     );
-    println!("  {DIM}proov {cmd_name} --submit{RESET}        {DIM}→{RESET} send to Vettd");
+    println!("  {DIM}vettd {cmd_name} --submit{RESET}        {DIM}→{RESET} send to Vettd");
     println!();
 }
 
@@ -263,7 +263,7 @@ pub fn print_human(report: &ScanReport, _cmd_name: &str) {
 
     println!();
     println!("{line}");
-    println!("  {BOLD}proov{RESET} · AI Execution Inventory  {DIM}(full detail){RESET}");
+    println!("  {BOLD}vettd{RESET} · AI Execution Inventory  {DIM}(full detail){RESET}");
     println!("  Run ID:  {DIM}{}{RESET}", report.run_id);
     println!("  Scanned: {CYAN}{}{RESET}", report.scanned_path);
     println!("  Time:    {DIM}{}{RESET}", report.timestamp);
@@ -434,7 +434,7 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
 
     println!();
     println!("{line}");
-    println!("  {BOLD}proov{RESET} · Summary");
+    println!("  {BOLD}vettd{RESET} · Summary");
     println!("{line}");
 
     if report.artifacts.is_empty() {

@@ -163,7 +163,7 @@ pub fn build_ingest_payload(
     let emitted_at = client_emitted_at.unwrap_or(&report.timestamp).to_string();
 
     let client_details = json!({
-        "client_details_scanner_name": "proov",
+        "client_details_scanner_name": "vettd",
         "client_details_scanner_version": env!("CARGO_PKG_VERSION"),
         "client_details_platform_os": std::env::consts::OS,
         "client_details_platform_arch": std::env::consts::ARCH,

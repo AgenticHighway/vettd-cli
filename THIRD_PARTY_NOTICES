@@ -1,12 +1,12 @@
-# proov third-party notices
+# vettd third-party notices
 
 This repository is licensed under the GNU Affero General Public License v3.0
 only. See LICENSE for the governing license of this project.
 
 This file records third-party attribution notices for material incorporated into
-or adapted for proov.
+or adapted for vettd.
 
-Adapted material currently incorporated into proov:
+Adapted material currently incorporated into vettd:
 
 - secrets detection patterns adapted from Cisco DefenseClaw
 - SSRF and cognitive tampering patterns adapted from Cisco DefenseClaw
@@ -50,7 +50,7 @@ Imported pattern families:
 
 Remaining planned import scope:
 
-- none for proov's current mission; PII, generic vulnerability/codeguard,
+- none for vettd's current mission; PII, generic vulnerability/codeguard,
   malware or reverse-shell signatures, and broader standalone exfiltration or
   DNS-tunneling families are explicitly out of scope per
   `docs/defenseclaw-scope-decision.md`

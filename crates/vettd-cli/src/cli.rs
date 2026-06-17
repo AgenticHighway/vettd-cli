@@ -16,7 +16,7 @@ use crate::submit::{save_auth_config, AuthConfig, DEFAULT_PRODUCTION_ENDPOINT};
 
 #[derive(Parser)]
 #[command(
-    name = "proov",
+    name = "vettd",
     about = "AI Execution Inventory — detect, analyze, and report AI execution artifacts.",
     version = env!("CARGO_PKG_VERSION"),
 )]
@@ -62,7 +62,7 @@ pub enum Commands {
     },
     /// Configure API credentials for scan submission
     Auth {
-        /// API key (e.g. ah_xxxx). If omitted, proov prompts securely.
+        /// API key (e.g. ah_xxxx). If omitted, vettd prompts securely.
         #[arg(long)]
         key: Option<String>,
         /// Ingest endpoint URL (defaults to production)
@@ -94,7 +94,7 @@ pub enum Commands {
 pub enum RuleAction {
     /// List installed rules
     List,
-    /// Install a rule file into ~/.ahscan/rules/
+    /// Install a rule file into ~/.vettd/rules/
     Add {
         /// Path to the .toml rule file
         path: PathBuf,
@@ -182,7 +182,7 @@ impl Default for AccessConfig {
 }
 
 fn load_access_config() -> AccessConfig {
-    let path = Path::new(".ahscan.toml");
+    let path = Path::new(".vettd.toml");
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return AccessConfig::default(),
@@ -382,7 +382,7 @@ pub fn run() {
                             "Update available: {} → {}",
                             result.current_version, result.latest_version
                         );
-                        eprintln!("Run `proov update` to install.");
+                        eprintln!("Run `vettd update` to install.");
                     } else {
                         eprintln!(
                             "You are running the latest version ({}).",
@@ -537,10 +537,10 @@ pub fn run() {
         let write_dest = if let Some(maybe_path) = &out.out {
             Some(match maybe_path {
                 Some(p) => p.clone(),
-                None => PathBuf::from("proov-contract.json"),
+                None => PathBuf::from("vettd-contract.json"),
             })
         } else if wants_submit {
-            Some(PathBuf::from("proov-contract.json"))
+            Some(PathBuf::from("vettd-contract.json"))
         } else {
             None
         };
@@ -630,7 +630,7 @@ fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64) {
 }
 
 fn save_report_interactively(report: &ScanReport, scan_duration_ms: u64) {
-    let path = crate::wizard::ask("Report path", "proov-report.json");
+    let path = crate::wizard::ask("Report path", "vettd-report.json");
     let maybe_path = Some(PathBuf::from(path));
     crate::output::write_json_report(report, scan_duration_ms, &maybe_path);
 }
@@ -711,7 +711,7 @@ fn prompt_submit(report: &ScanReport, scan_duration_ms: u64) {
         }
         Err(e) => {
             eprintln!("  {e}");
-            eprintln!("  You can retry later with: \x1b[1mproov scan --submit\x1b[0m");
+            eprintln!("  You can retry later with: \x1b[1mvettd scan --submit\x1b[0m");
         }
     }
 }
@@ -823,25 +823,25 @@ mod tests {
 
     #[test]
     fn parse_cli_scan() {
-        let cli = Cli::parse_from(["proov", "scan"]);
+        let cli = Cli::parse_from(["vettd", "scan"]);
         assert!(matches!(cli.command, Some(Commands::Scan { .. })));
     }
 
     #[test]
     fn parse_cli_quick() {
-        let cli = Cli::parse_from(["proov", "quick"]);
+        let cli = Cli::parse_from(["vettd", "quick"]);
         assert!(matches!(cli.command, Some(Commands::Quick { .. })));
     }
 
     #[test]
     fn parse_cli_full() {
-        let cli = Cli::parse_from(["proov", "full"]);
+        let cli = Cli::parse_from(["vettd", "full"]);
         assert!(matches!(cli.command, Some(Commands::Full { .. })));
     }
 
     #[test]
     fn parse_cli_file() {
-        let cli = Cli::parse_from(["proov", "file", "/tmp/test.md"]);
+        let cli = Cli::parse_from(["vettd", "file", "/tmp/test.md"]);
         match cli.command {
             Some(Commands::File { path, .. }) => {
                 assert_eq!(path, PathBuf::from("/tmp/test.md"));
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn parse_cli_folder() {
-        let cli = Cli::parse_from(["proov", "folder", "/tmp"]);
+        let cli = Cli::parse_from(["vettd", "folder", "/tmp"]);
         match cli.command {
             Some(Commands::Folder { path, .. }) => {
                 assert_eq!(path, PathBuf::from("/tmp"));
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn parse_cli_repo() {
-        let cli = Cli::parse_from(["proov", "repo", "."]);
+        let cli = Cli::parse_from(["vettd", "repo", "."]);
         match cli.command {
             Some(Commands::Repo { path, .. }) => {
                 assert_eq!(path, PathBuf::from("."));
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn parse_cli_auth() {
-        let cli = Cli::parse_from(["proov", "auth", "--key", "ah_test123"]);
+        let cli = Cli::parse_from(["vettd", "auth", "--key", "ah_test123"]);
         match cli.command {
             Some(Commands::Auth {
                 key,
@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn parse_cli_auth_with_endpoint() {
         let cli = Cli::parse_from([
-            "proov",
+            "vettd",
             "auth",
             "--key",
             "ah_test",
@@ -916,7 +916,7 @@ mod tests {
     #[test]
     fn parse_cli_auth_with_allow_public_endpoint() {
         let cli = Cli::parse_from([
-            "proov",
+            "vettd",
             "auth",
             "--key",
             "ah_test",
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn parse_cli_auth_without_key() {
-        let cli = Cli::parse_from(["proov", "auth"]);
+        let cli = Cli::parse_from(["vettd", "auth"]);
         match cli.command {
             Some(Commands::Auth {
                 key,
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn parse_cli_allow_public_endpoint_in_scan() {
-        let cli = Cli::parse_from(["proov", "scan", "--submit", "--allow-public-endpoint"]);
+        let cli = Cli::parse_from(["vettd", "scan", "--submit", "--allow-public-endpoint"]);
         match cli.command {
             Some(Commands::Scan { output, .. }) => {
                 assert!(output.allow_public_endpoint);
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn parse_cli_allow_public_endpoint_defaults_false() {
-        let cli = Cli::parse_from(["proov", "scan"]);
+        let cli = Cli::parse_from(["vettd", "scan"]);
         match cli.command {
             Some(Commands::Scan { output, .. }) => {
                 assert!(!output.allow_public_endpoint);
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn parse_cli_update_check() {
-        let cli = Cli::parse_from(["proov", "update", "--check"]);
+        let cli = Cli::parse_from(["vettd", "update", "--check"]);
         match cli.command {
             Some(Commands::Update { check, force }) => {
                 assert!(check);
@@ -991,7 +991,7 @@ mod tests {
 
     #[test]
     fn parse_cli_rules_list() {
-        let cli = Cli::parse_from(["proov", "rules", "list"]);
+        let cli = Cli::parse_from(["vettd", "rules", "list"]);
         match cli.command {
             Some(Commands::Rules {
                 action: RuleAction::List,
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn parse_cli_output_args_json() {
-        let cli = Cli::parse_from(["proov", "scan", "--json"]);
+        let cli = Cli::parse_from(["vettd", "scan", "--json"]);
         match cli.command {
             Some(Commands::Scan { output, .. }) => {
                 assert!(output.json);
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn parse_cli_output_args_summary() {
-        let cli = Cli::parse_from(["proov", "scan", "--summary"]);
+        let cli = Cli::parse_from(["vettd", "scan", "--summary"]);
         match cli.command {
             Some(Commands::Scan { output, .. }) => {
                 assert!(output.summary);
@@ -1026,7 +1026,7 @@ mod tests {
 
     #[test]
     fn parse_cli_output_args_min_severity() {
-        let cli = Cli::parse_from(["proov", "scan", "--min-severity", "high"]);
+        let cli = Cli::parse_from(["vettd", "scan", "--min-severity", "high"]);
         match cli.command {
             Some(Commands::Scan { output, .. }) => {
                 assert_eq!(output.min_severity, "high");
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn parse_cli_no_command() {
-        let cli = Cli::parse_from(["proov"]);
+        let cli = Cli::parse_from(["vettd"]);
         assert!(cli.command.is_none());
     }
 

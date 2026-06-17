@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# test-scanner.sh — Exercise every non-interactive proov subcommand.
+# test-scanner.sh — Exercise every non-interactive vettd subcommand.
 #
 # Runs via `cargo run` so no separate binary build step is needed.
 # Designed for macOS dev machines. No API key required — all tests
@@ -34,7 +34,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
     done < "$REPO_ROOT/.env"
 fi
 
-RUN="cargo run -p proov --"
+RUN="cargo run -p vettd-cli --"
 OUT_DIR="test-runs"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 PASS=0
@@ -129,17 +129,17 @@ expect_json_file() {
 
 echo ""
 bold "┌──────────────────────────────────────────┐"
-bold "│  proov test suite — $TIMESTAMP  │"
+bold "│  vettd test suite — $TIMESTAMP  │"
 bold "└──────────────────────────────────────────┘"
 
 # ── 0. Build ─────────────────────────────────────────────────────────
 
 section "Build"
-echo "  Building proov..."
-if cargo build -p proov 2>&1 | tail -1; then
-    pass "cargo build -p proov"
+echo "  Building vettd..."
+if cargo build -p vettd-cli 2>&1 | tail -1; then
+    pass "cargo build -p vettd-cli"
 else
-    fail "cargo build -p proov"
+    fail "cargo build -p vettd-cli"
     echo ""
     red "Build failed — cannot continue."
     exit 1
@@ -148,22 +148,22 @@ fi
 # ── 1. Help / version ───────────────────────────────────────────────
 
 section "Help & version"
-expect_ok    "proov --help"         $RUN --help
-expect_ok    "proov --version"      $RUN --version
-expect_ok    "proov scan --help"    $RUN scan --help
-expect_ok    "proov quick --help"   $RUN quick --help
-expect_ok    "proov full --help"    $RUN full --help
-expect_ok    "proov file --help"    $RUN file --help
-expect_ok    "proov folder --help"  $RUN folder --help
-expect_ok    "proov repo --help"    $RUN repo --help
-expect_ok    "proov rules --help"   $RUN rules --help
-expect_ok    "proov auth --help"    $RUN auth --help
-expect_ok    "proov setup --help"   $RUN setup --help
-expect_ok    "proov update --help"  $RUN update --help
+expect_ok    "vettd --help"         $RUN --help
+expect_ok    "vettd --version"      $RUN --version
+expect_ok    "vettd scan --help"    $RUN scan --help
+expect_ok    "vettd quick --help"   $RUN quick --help
+expect_ok    "vettd full --help"    $RUN full --help
+expect_ok    "vettd file --help"    $RUN file --help
+expect_ok    "vettd folder --help"  $RUN folder --help
+expect_ok    "vettd repo --help"    $RUN repo --help
+expect_ok    "vettd rules --help"   $RUN rules --help
+expect_ok    "vettd auth --help"    $RUN auth --help
+expect_ok    "vettd setup --help"   $RUN setup --help
+expect_ok    "vettd update --help"  $RUN update --help
 
 # Version flag output contains version number
 VERSION_OUT=$($RUN --version 2>&1) || true
-if echo "$VERSION_OUT" | grep -qE '^proov [0-9]+\.[0-9]+\.[0-9]+$'; then
+if echo "$VERSION_OUT" | grep -qE '^vettd [0-9]+\.[0-9]+\.[0-9]+$'; then
     pass "--version prints semver"
 else
     fail "--version output unexpected: $VERSION_OUT"
@@ -281,7 +281,7 @@ done
 
 section "Fixture corpus"
 
-FIXTURE_ROOT="$REPO_ROOT/crates/proov/tests/fixtures/docker"
+FIXTURE_ROOT="$REPO_ROOT/crates/vettd-cli/tests/fixtures/docker"
 PLAIN_FIXTURE="$FIXTURE_ROOT/plain-image-definition"
 DIRECT_FIXTURE="$FIXTURE_ROOT/direct-agentic-compose"
 COLOCATED_FIXTURE="$FIXTURE_ROOT/colocated-agent-project"
@@ -471,7 +471,7 @@ fi
 # ── 12. Error cases ─────────────────────────────────────────────────
 
 section "Error cases"
-expect_fail  "file scan (nonexistent file)"  $RUN file /tmp/ahscan-no-such-file-12345.txt
+expect_fail  "file scan (nonexistent file)"  $RUN file /tmp/vettd-no-such-file-12345.txt
 expect_fail  "submit without API key"        $RUN quick --submit
 
 # ── 13. Full scan (smoke test — quick bail) ──────────────────────────
@@ -488,9 +488,9 @@ section "Auth configuration"
 # Back up existing config if present
 # On macOS, dirs::config_dir() returns ~/Library/Application Support
 if [[ "$(uname)" == "Darwin" ]]; then
-    AUTH_CONFIG_DIR="${HOME}/Library/Application Support/ahscan"
+    AUTH_CONFIG_DIR="${HOME}/Library/Application Support/vettd"
 else
-    AUTH_CONFIG_DIR="${HOME}/.config/ahscan"
+    AUTH_CONFIG_DIR="${HOME}/.config/vettd"
 fi
 AUTH_CONFIG="${AUTH_CONFIG_DIR}/config.json"
 AUTH_BACKUP=""
@@ -531,7 +531,7 @@ fi
 section "Self-update system"
 
 # update --help should work
-expect_ok "proov update --help" $RUN update --help
+expect_ok "vettd update --help" $RUN update --help
 
 # update --check should fail gracefully if the network is unavailable or the
 # current build doesn't include an embedded official verification key.

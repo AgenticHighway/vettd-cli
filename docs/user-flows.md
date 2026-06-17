@@ -7,7 +7,7 @@ CLI journeys users actually experience.
 
 ```mermaid
 flowchart TD
-    Start["User runs `proov`"] --> Choice{"Entry path"}
+    Start["User runs `vettd`"] --> Choice{"Entry path"}
     Choice -->|"No subcommand"| Wizard["wizard.rs\ninteractive scan mode picker"]
     Choice -->|"scan / quick / full /\nfile / folder / repo"| Scan["Run scan pipeline"]
     Choice -->|"setup / auth"| Setup["Save API key + default endpoint"]
@@ -30,12 +30,12 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant User
-    participant CLI as proov
+    participant CLI as vettd
     participant Scan as scan pipeline
     participant Out as local output
     participant Prompt as post-scan menu
 
-    User->>CLI: proov quick / file / repo ...
+    User->>CLI: vettd quick / file / repo ...
     CLI->>Scan: discover -> detect -> score -> verify
     Scan-->>CLI: ScanReport
     CLI->>Out: render overview / summary / full / JSON
@@ -58,17 +58,17 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant CLI as proov
+    participant CLI as vettd
     participant Auth as saved config / flags
     participant Sync as contract sync
     participant Backend as compatible backend
 
     opt configure credentials ahead of time
-        User->>CLI: proov auth / proov setup
+        User->>CLI: vettd auth / vettd setup
         CLI->>Auth: save API key + endpoint
     end
 
-    User->>CLI: proov repo . --submit [--api-key]
+    User->>CLI: vettd repo . --submit [--api-key]
     CLI->>CLI: build contract payload
     CLI->>Auth: resolve auth from flags or config
     Auth-->>CLI: endpoint + API key
@@ -88,11 +88,11 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant CLI as proov
+    participant CLI as vettd
     participant Meta as hosted metadata API
     participant Host as artifact host
 
-    User->>CLI: proov update / proov update --check
+    User->>CLI: vettd update / vettd update --check
     CLI->>Meta: fetch manifest + signature
     Meta-->>CLI: signed update metadata
     CLI->>CLI: verify signature + compare version

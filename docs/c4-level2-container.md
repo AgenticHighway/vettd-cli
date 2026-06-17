@@ -1,10 +1,10 @@
 # C4 Level 2 — Container Diagram
 
-Shows the major runtime containers and data stores within the **proov** system boundary.
+Shows the major runtime containers and data stores within the **vettd** system boundary.
 
 ```mermaid
 flowchart TD
-    subgraph ProovCLI["proov CLI Binary (Rust)"]
+    subgraph VettdCLI["vettd CLI Binary (Rust)"]
         CLI["CLI Layer\n(clap parsing, command dispatch,\nwizard, auth, setup, update)"]
         ScanEngine["Scan Engine\n(discovery, detection,\nrisk scoring, verification)"]
         OutputLayer["Local Output Layer\nterminal rendering, JSON/file writes,\npost-scan next-step prompt"]
@@ -14,14 +14,14 @@ flowchart TD
     end
 
     subgraph LocalStorage["Local Filesystem"]
-        AuthConfig["~/.config/ahscan/config.json\n(API key + endpoint)"]
-        ScannerUUID["~/.ahscan/scanner_uuid\n(persistent identity)"]
-        RulesDir["~/.ahscan/rules/*.toml\n(custom detection rules)"]
-        ContractCache["~/.ahscan/contract/\n(cached schema + version)"]
-        ScanCache["~/.ahscan/scan-cache/\n(SQLite scan profiles, file states,\ndetector artifacts for repeated scans,\nfuture root cursors)"]
-        UpdateFiles["~/.ahscan/downloads/\n~/.ahscan/proov.backup"]
-        AccessFile[".ahscan.toml\n(access mode + endpoint overrides)"]
-        ReportFiles["proov-report.json /\nproov-contract.json /\ncustom output path"]
+        AuthConfig["~/.config/vettd/config.json\n(API key + endpoint)"]
+        ScannerUUID["~/.vettd/scanner_uuid\n(persistent identity)"]
+        RulesDir["~/.vettd/rules/*.toml\n(custom detection rules)"]
+        ContractCache["~/.vettd/contract/\n(cached schema + version)"]
+        ScanCache["~/.vettd/scan-cache/\n(SQLite scan profiles, file states,\ndetector artifacts for repeated scans,\nfuture root cursors)"]
+        UpdateFiles["~/.vettd/downloads/\n~/.vettd/vettd.backup"]
+        AccessFile[".vettd.toml\n(access mode + endpoint overrides)"]
+        ReportFiles["vettd-report.json /\nvettd-contract.json /\ncustom output path"]
     end
 
     subgraph ExternalSystems["External Systems"]

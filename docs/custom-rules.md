@@ -1,6 +1,6 @@
 # Writing Custom Detection Rules
 
-This guide explains how to extend proov with custom detection rules. Rules are declarative TOML files — no code, no build pipeline required.
+This guide explains how to extend vettd with custom detection rules. Rules are declarative TOML files — no code, no build pipeline required.
 
 ## Why write a custom rule?
 
@@ -16,22 +16,22 @@ Custom rules let you detect artifacts specific to your environment:
 1. **Create the rules directory:**
 
     ```bash
-    mkdir -p ~/.ahscan/rules
+    mkdir -p ~/.vettd/rules
     ```
 
 2. **Drop in a `.toml` rule file:**
 
     ```bash
-    cp examples/rules/terraform-ai.toml ~/.ahscan/rules/
+    cp examples/rules/terraform-ai.toml ~/.vettd/rules/
     ```
 
 3. **Run a scan** — custom rules are loaded automatically:
 
     ```bash
-    proov quick
+    vettd quick
     ```
 
-    You'll see `Loaded 1 custom rule(s) from ~/.ahscan/rules` in the output.
+    You'll see `Loaded 1 custom rule(s) from ~/.vettd/rules` in the output.
 
 ## Rule file format
 
@@ -106,7 +106,7 @@ Filename matching is **case-insensitive**. Glob patterns (using `*`) are support
 
 #### `[deep_keywords]` (optional)
 
-Same format as `[keywords]`, but only applied in deep scan mode (`proov repo`, `proov full`).
+Same format as `[keywords]`, but only applied in deep scan mode (`vettd repo`, `vettd full`).
 
 #### `[patterns]` (optional)
 
@@ -121,13 +121,13 @@ Regex patterns are validated when rules are loaded. Invalid patterns are rejecte
 
 #### `[deep_patterns]` (optional)
 
-Same format as `[patterns]`, but only applied in deep scan mode (`proov repo`, `proov full`).
+Same format as `[patterns]`, but only applied in deep scan mode (`vettd repo`, `vettd full`).
 
 ## How it works
 
 When the scanner runs:
 
-1. Rule files are loaded from `~/.ahscan/rules/` at startup
+1. Rule files are loaded from `~/.vettd/rules/` at startup
 2. Each candidate file is checked against all rules
 3. If a filename matches, the rule fires with the base confidence
 4. If content reading is allowed for that file type, keywords are scanned
@@ -159,7 +159,7 @@ These signals feed into the risk engine and verifier. Use the same signal patter
 - **Use glob patterns** for broad matching (`"*.ai.yaml"`) and exact names for precision.
 - **Set confidence conservatively.** Let keyword boosts raise it.
 - **Check the examples** in `examples/rules/` for working patterns.
-- **Test with `proov file <path>`** to verify a rule fires on a specific file.
+- **Test with `vettd file <path>`** to verify a rule fires on a specific file.
 
 ## Security model and limits
 
@@ -206,7 +206,7 @@ Current guardrails include:
 ### Practical trust guidance
 
 - Only install rules you wrote yourself or reviewed carefully.
-- Prefer running `proov rules validate <file.toml>` before `proov rules add <file.toml>`.
+- Prefer running `vettd rules validate <file.toml>` before `vettd rules add <file.toml>`.
 - Keep rule names, artifact types, and signal prefixes boring and predictable.
 - If you distribute rules internally, review them the same way you would review CI config or policy code.
 
@@ -223,7 +223,7 @@ See the `examples/rules/` directory:
 - `terraform-ai.toml` — Detect Terraform files with AI provider references
 - `internal-tool.toml` — Template for internal/proprietary tool configs
 
-For reference, the built-in rules that ship with proov are in the `rules/` directory:
+For reference, the built-in rules that ship with vettd are in the `rules/` directory:
 
 - `cursor-rules.toml` — `.cursorrules`, `agents.md`, `AGENTS.md`
 - `agents-md.toml` — Agent instruction files

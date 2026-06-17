@@ -1,6 +1,6 @@
 # C4 Level 3 — Component Diagram
 
-Shows the internal Rust modules within the **proov** crate and their relationships.
+Shows the internal Rust modules within the **vettd** crate and their relationships.
 
 ## Scan Engine Components
 

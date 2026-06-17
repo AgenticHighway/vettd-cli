@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/proov",
+    "crates/vettd-cli",
 ]
 exclude = []
 

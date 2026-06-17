@@ -1,6 +1,6 @@
 //! Custom rules detector — applies declarative TOML rule files.
 //!
-//! Loads rules from `~/.ahscan/rules/` and evaluates them against
+//! Loads rules from `~/.vettd/rules/` and evaluates them against
 //! scan candidates during built-in detection.
 
 use crate::discovery::Candidate;
@@ -32,7 +32,7 @@ impl CustomRulesDetector {
         // Always start with the built-in rules (compiled from rules/ in the repo)
         let mut rules = load_builtin_rules();
 
-        // Supplement with user-installed rules from ~/.ahscan/rules/
+        // Supplement with user-installed rules from ~/.vettd/rules/
         if let Some(dir) = default_rules_dir() {
             if dir.is_dir() {
                 let user_rules = load_rules_from_dir(&dir);

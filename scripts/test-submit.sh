@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# test-submit.sh — Build proov and submit a test scan to the server.
+# test-submit.sh — Build vettd and submit a test scan to the server.
 #
 # Usage:
 #   ./scripts/test-submit.sh [API_KEY] [SCAN_TARGET] [ENDPOINT]
@@ -40,7 +40,7 @@ OUT_FILE="${OUT_DIR}/${TIMESTAMP}-test.json"
 mkdir -p "$OUT_DIR"
 
 echo "═══════════════════════════════════════════════════════"
-echo "  proov test-submit"
+echo "  vettd test-submit"
 echo "═══════════════════════════════════════════════════════"
 echo "  Target:   $SCAN_TARGET"
 echo "  Endpoint: $ENDPOINT"
@@ -49,12 +49,12 @@ echo "  Time:     $TIMESTAMP"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 
-echo "→ Building proov..."
-cargo build -p proov 2>&1 | tail -1
+echo "→ Building vettd..."
+cargo build -p vettd-cli 2>&1 | tail -1
 echo ""
 
 echo "→ Running scan + submit..."
-cargo run -p proov -- repo "$SCAN_TARGET" \
+cargo run -p vettd-cli -- repo "$SCAN_TARGET" \
     --contract \
     --out "$OUT_FILE" \
     --submit "$ENDPOINT" \

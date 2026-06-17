@@ -1142,35 +1142,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proov"
-version = "0.7.0"
-dependencies = [
- "base64",
- "chrono",
- "clap",
- "core-foundation",
- "crossterm",
- "dirs",
- "dispatch2",
- "flate2",
- "fsevent-sys",
- "glob",
- "hostname",
- "p256",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "toml",
- "ureq",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1821,6 +1792,35 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vettd-cli"
+version = "0.7.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "clap",
+ "core-foundation",
+ "crossterm",
+ "dirs",
+ "dispatch2",
+ "flate2",
+ "fsevent-sys",
+ "glob",
+ "hostname",
+ "p256",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "toml",
+ "ureq",
+ "uuid",
+ "walkdir",
+]
 
 [[package]]
 name = "walkdir"

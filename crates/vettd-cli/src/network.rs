@@ -91,7 +91,7 @@ pub fn ensure_endpoint_allowed(endpoint: &str, allow_public: bool) -> Result<(),
 /// display — strips the scheme and any trailing path.
 ///
 /// ```
-/// # use proov::network::endpoint_display_host;
+/// # use vettd::network::endpoint_display_host;
 /// assert_eq!(endpoint_display_host("https://vettd.example.com/api/scans"), "vettd.example.com");
 /// assert_eq!(endpoint_display_host("http://localhost:3000/ingest"), "localhost:3000");
 /// ```

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 pub const DEFAULT_PRODUCTION_ENDPOINT: &str = "https://vettd.agentichighway.ai/api/scans/ingest";
 
 // ---------------------------------------------------------------------------
-// Global auth config (~/.config/ahscan/config.json)
+// Global auth config (~/.config/vettd/config.json)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -34,9 +34,9 @@ impl fmt::Debug for AuthConfig {
     }
 }
 
-/// Return the path to `~/.config/ahscan/config.json`.
+/// Return the path to `~/.config/vettd/config.json`.
 pub fn auth_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("ahscan").join("config.json"))
+    dirs::config_dir().map(|d| d.join("vettd").join("config.json"))
 }
 
 /// Load the global auth config. Returns `None` if the file doesn't exist.
@@ -46,7 +46,7 @@ pub fn load_auth_config() -> Option<AuthConfig> {
     serde_json::from_str(&content).ok()
 }
 
-/// Save the global auth config to `~/.config/ahscan/config.json`.
+/// Save the global auth config to `~/.config/vettd/config.json`.
 pub fn save_auth_config(config: &AuthConfig) -> Result<(), String> {
     let path =
         auth_config_path().ok_or_else(|| "Could not determine config directory".to_string())?;
@@ -164,7 +164,7 @@ pub fn submit_contract_payload(payload_json: &str, auth: &AuthConfig) -> Result<
                     }
                     401 => {
                         return Err(
-                            "Authentication failed (401). Run `ahscan auth --key <your-key>` to configure credentials."
+                            "Authentication failed (401). Run `vettd auth --key <your-key>` to configure credentials."
                                 .into(),
                         );
                     }

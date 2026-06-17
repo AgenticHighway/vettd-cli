@@ -1,4 +1,4 @@
-# Contributing to proov
+# Contributing to vettd
 
 Please review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before
 participating in project discussions or reviews.
@@ -16,30 +16,30 @@ participating in project discussions or reviews.
 ### Clone and build
 
 ```bash
-git clone https://github.com/AgenticHighway/proov.git
-cd proov
+git clone https://github.com/AgenticHighway/vettd-cli.git
+cd vettd
 cargo build
 ```
 
-This builds the `proov` binary in debug mode at `target/debug/proov`.
+This builds the `vettd` binary in debug mode at `target/debug/vettd`.
 
 ### Run the scanner
 
 ```bash
 # Interactive wizard
-cargo run -p proov
+cargo run -p vettd-cli
 
 # Quick scan (AI config areas only)
-cargo run -p proov -- quick
+cargo run -p vettd-cli -- quick
 
 # Scan a specific file
-cargo run -p proov -- file agents.md
+cargo run -p vettd-cli -- file agents.md
 
 # Scan current directory
-cargo run -p proov -- folder .
+cargo run -p vettd-cli -- folder .
 
 # Full system scan
-cargo run -p proov -- full
+cargo run -p vettd-cli -- full
 ```
 
 ### Run tests
@@ -49,7 +49,7 @@ cargo run -p proov -- full
 cargo test
 
 # Tests for the main crate
-cargo test -p proov
+cargo test -p vettd-cli
 
 # Run with output shown
 cargo test -- --nocapture
@@ -87,9 +87,9 @@ All of these run automatically in CI on every PR.
 
 The workspace has one crate:
 
-| Crate   | Path            | Purpose                                 |
-| ------- | --------------- | --------------------------------------- |
-| `proov` | `crates/proov/` | The CLI binary — all the scanning logic |
+| Crate       | Path                | Purpose                                            |
+| ----------- | ------------------- | -------------------------------------------------- |
+| `vettd-cli` | `crates/vettd-cli/` | The CLI binary (command: `vettd`) — scanning logic |
 
 For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
@@ -212,7 +212,7 @@ If you see CVSS parsing errors, your local `cargo-deny` may be too old. Install 
 
 CI runs on Linux (Blacksmith Ubuntu 22.04). If you’re developing on macOS, path-related tests should use platform-agnostic assertions. Check the CI logs at the GitHub Actions tab for details.
 
-### `proov update` fails during development
+### `vettd update` fails during development
 
 The self-updater checks S3 for releases. During development, you’re running a debug build that won’t match any published version. This is expected — use `cargo run` instead.
 
@@ -224,13 +224,13 @@ When the CI workflow is modified on `main`, existing Dependabot PR branches stil
 
 ```bash
 # For all failing PRs:
-gh pr update-branch <PR_NUMBER> --repo AgenticHighway/proov --rebase
+gh pr update-branch <PR_NUMBER> --repo AgenticHighway/vettd-cli --rebase
 
 # If rebase fails due to Cargo.lock conflicts:
 gh pr checkout <PR_NUMBER>
 git checkout origin/main -- Cargo.lock
 cargo check        # regenerates lockfile with the PR's dependency change
-git add Cargo.lock crates/proov/Cargo.toml
+git add Cargo.lock crates/vettd-cli/Cargo.toml
 git rebase --continue
 git push --force-with-lease
 ```
@@ -286,6 +286,6 @@ AH_TEST_API_KEY=your-api-key ./scripts/test-scanner.sh
 ## Getting help
 
 - Read the architecture docs: [docs/architecture.md](docs/architecture.md)
-- Check existing detectors in `crates/proov/src/detectors/` for patterns to follow
+- Check existing detectors in `crates/vettd-cli/src/detectors/` for patterns to follow
 - Look at `examples/rules/` for custom rule examples
-- Run `proov --help` for CLI usage
+- Run `vettd --help` for CLI usage
