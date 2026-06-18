@@ -25,6 +25,7 @@ in this repository.
 - Prefer extending existing modules over adding parallel abstractions.
 - Isolate side effects in the existing I/O-oriented modules.
 - Add or update tests when behavior changes.
+- Commit messages must be **under 100 characters** (subject line). Use the PR description for detail.
 
 ## Required behavior for agents
 
