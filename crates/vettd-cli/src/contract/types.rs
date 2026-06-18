@@ -92,6 +92,8 @@ pub struct Skill {
     pub permissions: Vec<SkillPermission>,
     pub dependencies: SkillDependencies,
     pub consumers: Vec<SkillConsumer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_scanner_results: Option<Vec<ExternalScannerResult>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +116,31 @@ pub struct SkillConsumer {
     #[serde(rename = "type")]
     pub consumer_type: String,
     pub invocations: u64,
+}
+
+// v2.2.0 addition — optional external scanner results attached to a skill
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalScannerResult {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_report: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Vec<ExternalScannerFinding>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalScannerFinding {
+    pub rule_id: String,
+    pub category: String,
+    pub severity: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

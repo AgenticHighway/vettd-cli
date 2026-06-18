@@ -16,7 +16,6 @@ mod models;
 mod network;
 mod network_evidence;
 mod output;
-mod payload;
 mod progress;
 mod risk_engine;
 mod rule_engine;

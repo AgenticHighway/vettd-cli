@@ -130,7 +130,7 @@ to local output or optional submission:
            │
            ▼
     ┌─────────────┐
-    │  verifier    │   Determines pass / conditional_pass / fail
+    │  verifier    │   Determines info / low / medium / high / critical
     │    .rs       │   Based on score thresholds + dangerous signals
     └──────┬───────┘
            │
@@ -157,8 +157,7 @@ These modules never touch the filesystem, network, or terminal. They are safe to
 | Module            | Purpose                                                                                        |
 | ----------------- | ---------------------------------------------------------------------------------------------- |
 | `risk_engine.rs`  | Score artifacts 0-100 based on signals                                                         |
-| `verifier.rs`     | Assign pass/conditional_pass/fail                                                              |
-| `payload.rs`      | Build the ingest JSON payload                                                                  |
+| `verifier.rs`     | Assign info/low/medium/high/critical severity                                                  |
 | `capabilities.rs` | Map signals → high-level capability names                                                      |
 | `lite_mode.rs`    | Filter results for free-tier users                                                             |
 | `contract/`       | Transform ScanReport → AH contract format (types, prompts, skills, agents, mcp, apps, helpers) |
@@ -232,7 +231,7 @@ ArtifactReport       After detection + scoring:
   - metadata           paths, origins, tool names
   - risk_score         0 – 100
   - risk_reasons       top contributing factors
-  - verification_status  "pass" | "conditional_pass" | "fail"
+  - verification_status  "info" | "low" | "medium" | "high" | "critical"
   - artifact_hash      content-based identity (path-independent)
   - artifact_id        hash + scope = unique ID
   - artifact_scope     "host" | "project" | "container"
@@ -275,11 +274,11 @@ The risk engine in `risk_engine.rs` works like this:
 
 In `verifier.rs`, the verification status is determined in priority order:
 
-1. If `credential_exposure_signal` is present → **fail** (always)
-2. Score ≥ 50 → **fail**, ≥ 20 → **conditional_pass**, < 20 → **pass**
-3. If `dangerous_keyword:*` is present and not governed by declared permissions → **fail**
-4. If `dangerous_keyword:*` is present but governed → escalate to at least **conditional_pass**
-5. If `dangerous_combo:*` (e.g., shell+network+fs) → escalate to at least **conditional_pass**
+1. If `credential_exposure_signal` is present → **critical** (always)
+2. Score ≥ 90 → **critical**, ≥ 70 → **high**, ≥ 40 → **medium**, ≥ 10 → **low**, < 10 → **info**
+3. If `dangerous_keyword:*` is present and not governed by declared permissions → floor at **high**
+4. If `dangerous_keyword:*` is present but governed → floor at **medium**
+5. If `dangerous_combo:*` (e.g., shell+network+fs) → floor at **medium**
 
 ## Artifact identity
 

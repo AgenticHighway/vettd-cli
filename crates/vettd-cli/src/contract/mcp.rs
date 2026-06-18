@@ -52,7 +52,7 @@ fn mcp_entry_to_server(
     let network = network_evidence::classify_from_evidence(&transport, &network_ev);
 
     let auth = infer_auth(val);
-    let verified = artifact.verification_status == "pass";
+    let verified = artifact.verification_status == "info";
     let full_command = build_command_string(val);
     let tools = extract_mcp_tools(val, name);
 

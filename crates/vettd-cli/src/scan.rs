@@ -625,7 +625,9 @@ fn tag_analysis_origin(artifact: &mut ArtifactReport) {
                 || s.starts_with("cognitive_tampering:")
         });
 
-    let origin = if has_local_signal || artifact.verification_status == "fail" {
+    let origin = if has_local_signal
+        || matches!(artifact.verification_status.as_str(), "critical" | "high")
+    {
         "local"
     } else {
         "server_candidate"
@@ -801,7 +803,7 @@ mod tests {
     #[test]
     fn failed_verification_tags_local_origin() {
         let mut a = artifact_at("cursor_rules", "/project/.cursorrules");
-        a.verification_status = "fail".into();
+        a.verification_status = "critical".into();
         tag_analysis_origin(&mut a);
         assert_eq!(a.metadata["analysis_origin"], "local");
     }

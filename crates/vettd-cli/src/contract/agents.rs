@@ -214,9 +214,9 @@ fn build_trust_breakdown(a: &ArtifactReport) -> Vec<TrustFactor> {
         }
     }
 
-    if a.verification_status == "pass" {
+    if matches!(a.verification_status.as_str(), "info" | "low") {
         factors.push(TrustFactor {
-            label: "Verification passed".to_string(),
+            label: "Verification clean".to_string(),
             delta: 15,
         });
     }
@@ -345,13 +345,13 @@ mod tests {
     }
 
     #[test]
-    fn trust_breakdown_pass_bonus() {
+    fn trust_breakdown_info_status_bonus() {
         let mut a = ArtifactReport::new("agents_md", 0.8);
-        a.verification_status = "pass".to_string();
+        a.verification_status = "info".to_string();
         let factors = build_trust_breakdown(&a);
         assert!(factors
             .iter()
-            .any(|f| f.delta == 15 && f.label == "Verification passed"));
+            .any(|f| f.delta == 15 && f.label == "Verification clean"));
     }
 
     #[test]
