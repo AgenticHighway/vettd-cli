@@ -47,7 +47,7 @@ pub(crate) fn write_json_report(
 ) {
     let dest = match maybe_path {
         Some(p) => p.clone(),
-        None => PathBuf::from("proov-report.json"),
+        None => PathBuf::from("vettd-report.json"),
     };
     let payload = build_contract_payload(report, scan_duration_ms);
     match serde_json::to_string_pretty(&payload) {
@@ -70,7 +70,7 @@ pub(crate) fn write_json_report(
 ///
 /// When the endpoint comes from the saved config file or the built-in default
 /// (no explicit URL flag), it is assumed the user already opted in when they
-/// ran `proov auth` or `proov setup`, so public hosts are allowed without
+/// ran `vettd auth` or `vettd setup`, so public hosts are allowed without
 /// requiring the flag again.
 pub fn resolve_submit_auth(
     submit_flag: &Option<Option<String>>,
@@ -105,7 +105,7 @@ pub fn resolve_submit_auth(
         None => match saved.as_ref().map(|c| c.api_key.clone()) {
             Some(k) => k,
             None => return Err(
-                "No API key provided. Pass --api-key for automation or run `proov auth` / `proov setup` to save credentials.".to_string(),
+                "No API key provided. Pass --api-key for automation or run `vettd auth` / `vettd setup` to save credentials.".to_string(),
             ),
         },
     };
@@ -121,7 +121,7 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
             }
             if !result.compiled_matches {
                 return Err(format!(
-                    "Contract mismatch: server expects v{}, this build produces v{}.\nRun `proov update` to get a compatible version.",
+                    "Contract mismatch: server expects v{}, this build produces v{}.\nRun `vettd update` to get a compatible version.",
                     result.remote_version,
                     contract_sync::COMPILED_CONTRACT_VERSION
                 ));

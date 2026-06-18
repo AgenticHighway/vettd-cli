@@ -1,7 +1,7 @@
 # Cisco Source Analysis Plan
 
 This document describes the next architecture tranche for absorbing additional
-Cisco DefenseClaw heuristics into proov after Sprint 1.
+Cisco DefenseClaw heuristics into vettd after Sprint 1.
 
 Sprint 1 is already merged and covered:
 
@@ -11,14 +11,14 @@ Sprint 1 is already merged and covered:
 - SSRF and cognitive tampering prompt/content imports
 - declarative regex support for custom TOML rules
 
-The remaining DefenseClaw material does not fit proov's current model as a
+The remaining DefenseClaw material does not fit vettd's current model as a
 direct port. DefenseClaw is largely finding-first and line-oriented, while
-proov is artifact-first and contract-oriented. The architecture below keeps
-proov aligned with its existing pipeline.
+vettd is artifact-first and contract-oriented. The architecture below keeps
+vettd aligned with its existing pipeline.
 
 ## Design constraints
 
-- proov should stay artifact-first, not become a per-line SAST engine
+- vettd should stay artifact-first, not become a per-line SAST engine
 - new source scanning should emit stable aggregated artifacts and signals
 - initial scope should stay bounded to `workdir` and `file` mode, or another
   explicitly limited surface
@@ -31,7 +31,7 @@ proov aligned with its existing pipeline.
 ### New detector
 
 Add a new native detector, tentatively `source_risks`, beside the existing
-detectors in `crates/proov/src/detectors/`.
+detectors in `crates/vettd-cli/src/detectors/`.
 
 This detector should:
 
@@ -55,7 +55,7 @@ struct SourceFinding {
 }
 ```
 
-Externally, proov should continue to expose `ArtifactReport` values rather than
+Externally, vettd should continue to expose `ArtifactReport` values rather than
 per-line findings. The first proposed external artifact is:
 
 - `source_risk_surface`
@@ -84,7 +84,7 @@ Suggested signal families:
 
 ## Module layout
 
-The cleanest fit for proov is a small set of focused modules:
+The cleanest fit for vettd is a small set of focused modules:
 
 ### `source_patterns.rs`
 
@@ -134,22 +134,22 @@ Recommended initial boundaries:
 - optionally bias toward files colocated with already-detected AI artifacts if
   scan cost needs tighter control
 
-That gives proov a usable source-analysis layer without turning `home` or
+That gives vettd a usable source-analysis layer without turning `home` or
 `host` mode into a generic code scanner.
 
 ## Execution order
 
 The work was split into mergeable GitHub issues:
 
-1. [#41](https://github.com/AgenticHighway/proov/issues/41) Add a bounded source-risk detector with an aggregated artifact model
-2. [#42](https://github.com/AgenticHighway/proov/issues/42) Add JSON config scanning for secrets and suspicious destination URLs
-3. [#44](https://github.com/AgenticHighway/proov/issues/44) Add contextual source heuristics for dynamic imports, process execution, and network-context SSRF targets
-4. [#45](https://github.com/AgenticHighway/proov/issues/45) Add sensitive-path and cognitive-file targeting heuristics to source analysis
-5. [#43](https://github.com/AgenticHighway/proov/issues/43) Decide scope for deferred DefenseClaw families: PII, vuln, malware, and broader exfiltration rules
+1. [#41](https://github.com/AgenticHighway/vettd-cli/issues/41) Add a bounded source-risk detector with an aggregated artifact model
+2. [#42](https://github.com/AgenticHighway/vettd-cli/issues/42) Add JSON config scanning for secrets and suspicious destination URLs
+3. [#44](https://github.com/AgenticHighway/vettd-cli/issues/44) Add contextual source heuristics for dynamic imports, process execution, and network-context SSRF targets
+4. [#45](https://github.com/AgenticHighway/vettd-cli/issues/45) Add sensitive-path and cognitive-file targeting heuristics to source analysis
+5. [#43](https://github.com/AgenticHighway/vettd-cli/issues/43) Decide scope for deferred DefenseClaw families: PII, vuln, malware, and broader exfiltration rules
 
 Parent tracker:
 
-- [#40](https://github.com/AgenticHighway/proov/issues/40) Phase 2: absorb remaining DefenseClaw source and config heuristics into proov
+- [#40](https://github.com/AgenticHighway/vettd-cli/issues/40) Phase 2: absorb remaining DefenseClaw source and config heuristics into vettd
 
 ## Proposed PR sequence
 
@@ -178,5 +178,5 @@ The first slice should not try to do all of the following at once:
 - unrestricted per-line code indexing across the filesystem
 - contract changes that force consumers to understand raw line findings
 
-Those can be approved later if they fit proov's product direction, but they
+Those can be approved later if they fit vettd's product direction, but they
 should not be smuggled into the initial source-analysis detector work.

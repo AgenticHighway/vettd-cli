@@ -26,7 +26,7 @@ rust-toolchain.toml @willsarg
 
 # Security-sensitive scanner code
 
-crates/proov/src/submit.rs @willsarg
-crates/proov/src/network.rs @willsarg
-crates/proov/src/updater.rs @willsarg
-crates/proov/src/identity.rs @willsarg
+crates/vettd-cli/src/submit.rs @willsarg
+crates/vettd-cli/src/network.rs @willsarg
+crates/vettd-cli/src/updater.rs @willsarg
+crates/vettd-cli/src/identity.rs @willsarg

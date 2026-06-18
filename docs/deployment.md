@@ -1,17 +1,17 @@
 # Deployment & Release Guide
 
-This document covers how to cut a release of proov, what happens behind the scenes, common problems, and how to fix them.
+This document covers how to cut a release of vettd, what happens behind the scenes, common problems, and how to fix them.
 
 ## Prerequisites
 
 Before releasing, make sure:
 
 - [ ] You have push access to `main` and can create tags
-- [ ] You have access to the [GitHub Actions](https://github.com/AgenticHighway/proov/actions) dashboard to monitor builds
+- [ ] You have access to the [GitHub Actions](https://github.com/AgenticHighway/vettd-cli/actions) dashboard to monitor builds
 - [ ] All CI checks on `main` are green
 - [ ] You've tested the changes locally with `cargo test` and `cargo clippy --all-targets -- -D warnings`
-- [ ] GitHub repo variable `PROOV_UPDATE_PUBLIC_KEY_DER_B64` is set to the official KMS public key (base64-encoded DER/SPKI blob)
-- [ ] The `SCANNER_RELEASE_ROLE_ARN` OIDC role can call `kms:Sign` on the Proov release signing key
+- [ ] GitHub repo variable `VETTD_UPDATE_PUBLIC_KEY_DER_B64` is set to the official KMS public key (base64-encoded DER/SPKI blob)
+- [ ] The `SCANNER_RELEASE_ROLE_ARN` OIDC role can call `kms:Sign` on the Vettd release signing key
 - [ ] GitHub repo secret `HOMEBREW_TAP_TOKEN` is set if releases should auto-refresh `AgenticHighway/homebrew-tap`
 
 ## Release process
@@ -42,11 +42,11 @@ The version lives in **one place** — the workspace `Cargo.toml`:
 vim Cargo.toml
 ```
 
-**Important:** The crate `Cargo.toml` at `crates/proov/Cargo.toml` uses `version.workspace = true`, so it inherits automatically. Do **not** set the version in the crate's `Cargo.toml`.
+**Important:** The crate `Cargo.toml` at `crates/vettd-cli/Cargo.toml` uses `version.workspace = true`, so it inherits automatically. Do **not** set the version in the crate's `Cargo.toml`.
 
 ### 3. Check if COMPILED_CONTRACT_VERSION needs updating
 
-If the scan output format changed (new fields, removed fields, schema version bump), update the constant in `crates/proov/src/contract_sync.rs`:
+If the scan output format changed (new fields, removed fields, schema version bump), update the constant in `crates/vettd-cli/src/contract_sync.rs`:
 
 ```rust
 pub const COMPILED_CONTRACT_VERSION: &str = "2.1.0";
@@ -74,7 +74,7 @@ git push origin main --tags
 
 ### 6. Monitor the release
 
-Go to [GitHub Actions](https://github.com/AgenticHighway/proov/actions) and watch the Release workflow. It always runs three jobs, plus a fourth when `HOMEBREW_TAP_TOKEN` is configured:
+Go to [GitHub Actions](https://github.com/AgenticHighway/vettd-cli/actions) and watch the Release workflow. It always runs three jobs, plus a fourth when `HOMEBREW_TAP_TOKEN` is configured:
 
 1. **build** — Cross-compiles for 5 targets (runs in parallel):
     - `aarch64-apple-darwin` (macOS ARM64) — GitHub-hosted runner
@@ -85,9 +85,9 @@ Go to [GitHub Actions](https://github.com/AgenticHighway/proov/actions) and watc
 
 2. **release** — Downloads all 5 artifacts and creates a GitHub Release with auto-generated release notes
 
-3. **upload-s3** — Uploads binaries to `s3://ah-scanner-releases/vX.Y.Z/`, generates SHA-256 checksums, writes `latest.json`, asks AWS KMS to sign it, and uploads both `latest.json` and `latest.signature.json`
+3. **upload-s3** — Uploads binaries to `s3://vettd-releases/vX.Y.Z/`, generates SHA-256 checksums, writes `latest.json`, asks AWS KMS to sign it, and uploads both `latest.json` and `latest.signature.json`
 
-4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/proov.rb` update to `AgenticHighway/homebrew-tap`
+4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/vettd.rb` update to `AgenticHighway/homebrew-tap`
 
 ### 7. Verify the release
 
@@ -95,17 +95,17 @@ After the workflow completes:
 
 ```bash
 # Check the GitHub Release page exists with all 5 binaries
-open https://github.com/AgenticHighway/proov/releases/tag/vX.Y.Z
+open https://github.com/AgenticHighway/vettd-cli/releases/tag/vX.Y.Z
 
 # Check the Homebrew tap formula was refreshed
-open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/proov.rb
+open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/vettd.rb
 
 # Check the public hosted manifest and detached signature
 curl -s https://vettd.agentichighway.ai/api/scanner/latest | python3 -m json.tool
 curl -s https://vettd.agentichighway.ai/api/scanner/latest/signature
 
 # Verify the self-updater works (from an older installed binary)
-proov update --check
+vettd update --check
 ```
 
 ## What the release workflow does
@@ -142,7 +142,7 @@ Tag push (v*)
 - All Actions are pinned to full commit SHAs (not mutable tags)
 - AWS credentials use OIDC federation — no long-lived keys in secrets
 - Official release builds embed the public update verification key at compile time
-- `latest.json` is signed by AWS KMS and verified by official Proov binaries before hashes are trusted
+- `latest.json` is signed by AWS KMS and verified by official Vettd binaries before hashes are trusted
 - SHA-256 checksums remain embedded in `latest.json` for per-artifact integrity verification after the manifest signature passes
 
 ## Pre-release checklist
@@ -155,7 +155,7 @@ Tag push (v*)
 □ cargo audit                                no known vulnerabilities
 □ Version bumped in workspace Cargo.toml
 □ COMPILED_CONTRACT_VERSION correct (if schema changed)
-□ PROOV_UPDATE_PUBLIC_KEY_DER_B64 repo variable configured
+□ VETTD_UPDATE_PUBLIC_KEY_DER_B64 repo variable configured
 □ Release OIDC role allowed to call kms:Sign
 □ All changes committed, working tree clean
 □ CI green on main
@@ -269,9 +269,9 @@ git push origin --tags
 
 **Resolution:** Check that artifact names in the matrix match what the `Write latest.json` step expects. The variable names are derived by replacing non-alphanumeric characters with underscores.
 
-### Users report `proov update` doesn't find the new version
+### Users report `vettd update` doesn't find the new version
 
-**Symptom:** The release is on GitHub but `proov update --check` says "already up to date."
+**Symptom:** The release is on GitHub but `vettd update --check` says "already up to date."
 
 **Causes:**
 
@@ -287,8 +287,8 @@ curl -s https://vettd.agentichighway.ai/api/scanner/latest
 # If it shows the old version, re-run the upload-s3 job
 
 # To bypass the client cache:
-rm -f ~/.ahscan/update_check_cache
-proov update --check
+rm -f ~/.vettd/update_check_cache
+vettd update --check
 ```
 
 ### Need to re-release the same version
@@ -329,13 +329,13 @@ git commit -m "chore: release vX.Y.Z"
 
 If a release is broken and users are affected:
 
-1. **Immediate:** Re-upload the previous version's manifest and detached signature envelope so `proov update` trusts the previous release again:
+1. **Immediate:** Re-upload the previous version's manifest and detached signature envelope so `vettd update` trusts the previous release again:
 
     ```bash
-    aws s3 cp s3://ah-scanner-releases/manifests/vPREVIOUS/latest.json s3://ah-scanner-releases/latest.json
-    aws s3 cp s3://ah-scanner-releases/manifests/vPREVIOUS/latest.signature.json s3://ah-scanner-releases/latest.signature.json
+    aws s3 cp s3://vettd-releases/manifests/vPREVIOUS/latest.json s3://vettd-releases/latest.json
+    aws s3 cp s3://vettd-releases/manifests/vPREVIOUS/latest.signature.json s3://vettd-releases/latest.signature.json
     ```
 
 2. **Thorough:** Follow the "re-release" steps above to publish a fixed version.
 
-Users who haven't run `proov update` yet won't be affected — the binary is self-contained.
+Users who haven't run `vettd update` yet won't be affected — the binary is self-contained.

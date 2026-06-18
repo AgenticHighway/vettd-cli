@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how proov is built, how data flows through it, and how
+This document explains how vettd is built, how data flows through it, and how
 the modules connect. Read this before diving into the source code.
 
 For public-facing CLI journeys, see [user-flows.md](user-flows.md).
@@ -13,13 +13,13 @@ For the planned incremental scan cache and change-tracking roadmap, see
 
 ## System context
 
-proov is a local-first scanner that can operate standalone or connect to a
+vettd is a local-first scanner that can operate standalone or connect to a
 compatible backend when you explicitly opt into submission:
 
 ```
 ┌──────────────────┐         HTTP POST          ┌──────────────────────┐
-│   proov          │ ──────────────────────────► │ Compatible Backend   │
-│   (this repo)    │    /api/scans/ingest        │ (e.g. Vettd)         │
+│   vettd          │ ──────────────────────────► │ Compatible Backend   │
+│   (this repo)    │    /api/scans/ingest        │ (e.g. vettd remote)  │
 │                  │                              │                      │
 │  Rust CLI binary │                              │  Stores results      │
 │  Runs on target  │                              │  Renders review UI   │
@@ -32,9 +32,9 @@ The scanner runs locally on a developer's machine, discovers AI-related configur
 ## Workspace layout
 
 ```
-proov/
+vettd/
 ├── crates/
-│   ├── proov/                # The main CLI binary
+│   ├── vettd/                # The main CLI binary
 │   │   └── src/
 │   │       ├── main.rs       # Entry point, module declarations
 │   │       ├── cli.rs        # Command-line parsing + dispatch
@@ -92,12 +92,12 @@ to local output or optional submission:
 
 ```
  ┌─────────────┐
- │  User runs   │  proov quick / scan / file <path> / ...
+ │  User runs   │  vettd quick / scan / file <path> / ...
  │  CLI command  │
  └──────┬───────┘
         │
         ▼
- ┌─────────────┐   Parses arguments, loads .ahscan.toml for access tier
+ ┌─────────────┐   Parses arguments, loads .vettd.toml for access tier
  │   cli.rs     │   (lite vs licensed), dispatches to scan, wizard,
  └──────┬───────┘   setup/auth/rules/update, and post-scan actions
         │
@@ -172,11 +172,11 @@ These modules interact with the outside world:
 | `discovery.rs`        | Reads filesystem (directory walking)                                                                                   |
 | `detectors/*`         | Read file contents                                                                                                     |
 | `submit.rs`           | HTTP POST, read/write config files                                                                                     |
-| `identity.rs`         | Read/write UUID files in ~/.ahscan/                                                                                    |
+| `identity.rs`         | Read/write UUID files in ~/.vettd/                                                                                    |
 | `network_evidence.rs` | Runs macOS firewall commands                                                                                           |
 | `updater.rs`          | HTTP GET to hosted signed release metadata + artifact download                                                         |
-| `contract_sync.rs`    | HTTP GET contract version from server, local cache in ~/.ahscan/contract/                                              |
-| `scan_cache.rs`       | Local SQLite-backed cache in `~/.ahscan/scan-cache/` for repeated `quick`, `scan`, `folder`, and `repo` detector reuse |
+| `contract_sync.rs`    | HTTP GET contract version from server, local cache in ~/.vettd/contract/                                              |
+| `scan_cache.rs`       | Local SQLite-backed cache in `~/.vettd/scan-cache/` for repeated `quick`, `scan`, `folder`, and `repo` detector reuse |
 | `setup.rs`            | Interactive prompts + config file writes                                                                               |
 | `wizard.rs`           | Interactive terminal UI                                                                                                |
 | `progress.rs`         | Writes to stderr                                                                                                       |
@@ -193,8 +193,8 @@ candidates before falling back to live detector execution.
 | `cli.rs`           | Entry point: argument parsing, dispatch, access gating, and post-scan decision flow                                                  |
 | `scan.rs`          | Pipeline: discovery → detection → scoring → verification                                                                             |
 | `contract/`        | Transform `ScanReport` → scanner data contract v2.1.0 format (split into type-specific builders: prompts, skills, agents, mcp, apps) |
-| `contract_sync.rs` | Sync contract schema version from server, cache locally in `~/.ahscan/contract/`, warn on version mismatch                           |
-| `rule_engine.rs`   | Load TOML rules from `~/.ahscan/rules/`, match against candidates                                                                    |
+| `contract_sync.rs` | Sync contract schema version from server, cache locally in `~/.vettd/contract/`, warn on version mismatch                           |
+| `rule_engine.rs`   | Load TOML rules from `~/.vettd/rules/`, match against candidates                                                                    |
 | `rules.rs`         | CLI subcommand for rule management (list, add, remove, validate)                                                                     |
 
 ## File primitives
@@ -301,28 +301,28 @@ This is calculated in `models.rs` via `content_digest()` → `compute_hash()` �
 | JSON export       |     ❌      |    ✅    |
 | Server submission |     ❌      |    ✅    |
 
-Access is controlled via `.ahscan.toml` in the working directory.
+Access is controlled via `.vettd.toml` in the working directory.
 
 At runtime, `cli.rs` loads this file before output is rendered. In `lite`
-mode, proov keeps local scanning and scoring but limits the visible artifact
+mode, vettd keeps local scanning and scoring but limits the visible artifact
 set before formatting or JSON emission.
 
 ## Configuration files
 
 | File                             | Purpose                     | Created by                         |
 | -------------------------------- | --------------------------- | ---------------------------------- |
-| `~/.config/ahscan/config.json`   | API key + endpoint          | `proov setup` or `proov auth`      |
-| `.ahscan.toml`                   | Access mode + license key   | User creates manually              |
-| `~/.ahscan/scanner_uuid`         | Persistent scanner identity | Auto-generated on first submit     |
-| `~/.ahscan/scanner_account_uuid` | Persistent account identity | Auto-generated on first submit     |
-| `~/.ahscan/rules/*.toml`         | Custom detection rules      | User creates (see custom-rules.md) |
+| `~/.config/vettd/config.json`   | API key + endpoint          | `vettd setup` or `vettd auth`      |
+| `.vettd.toml`                   | Access mode + license key   | User creates manually              |
+| `~/.vettd/scanner_uuid`         | Persistent scanner identity | Auto-generated on first submit     |
+| `~/.vettd/scanner_account_uuid` | Persistent account identity | Auto-generated on first submit     |
+| `~/.vettd/rules/*.toml`         | Custom detection rules      | User creates (see custom-rules.md) |
 
 ## Custom rule system
 
-The scanner can be extended with declarative TOML rule files placed in `~/.ahscan/rules/`.
+The scanner can be extended with declarative TOML rule files placed in `~/.vettd/rules/`.
 
 ```
-~/.ahscan/rules/
+~/.vettd/rules/
 ├── terraform-ai.toml             # Match .tf files with AI keywords
 └── internal-tool.toml            # Match proprietary config files
 ```

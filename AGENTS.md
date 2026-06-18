@@ -5,15 +5,15 @@ in this repository.
 
 ## Project overview
 
-- `proov` is a Rust CLI scanner for AI execution artifacts.
+- `vettd` is a Rust CLI scanner for AI execution artifacts.
 - The scanner runs locally and can optionally submit results to compatible
   ingest APIs.
 - Custom detection rules are declarative TOML files loaded from
-  `~/.ahscan/rules/`.
+  `~/.vettd/rules/`.
 
 ## Repo shape
 
-- `crates/proov/src/` — main application code
+- `crates/vettd-cli/src/` — main application code
 - `docs/` — public architecture and usage docs
 - `examples/rules/` — example custom detection rules
 - `scripts/` — smoke and manual test helpers
@@ -25,6 +25,7 @@ in this repository.
 - Prefer extending existing modules over adding parallel abstractions.
 - Isolate side effects in the existing I/O-oriented modules.
 - Add or update tests when behavior changes.
+- Commit messages must be **under 100 characters** (subject line). Use the PR description for detail.
 
 ## Required behavior for agents
 

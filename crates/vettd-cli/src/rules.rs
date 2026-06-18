@@ -1,8 +1,8 @@
-//! `proov rules` subcommand — manage custom TOML detection rule files.
+//! `vettd rules` subcommand — manage custom TOML detection rule files.
 //!
 //! Commands:
 //!   list      — show installed rules
-//!   add       — copy a rule file into ~/.ahscan/rules/
+//!   add       — copy a rule file into ~/.vettd/rules/
 //!   remove    — delete a rule by name
 //!   validate  — parse and report errors in a rule file without installing it
 
@@ -32,7 +32,7 @@ pub fn cmd_list() {
 
     if entries.is_empty() {
         eprintln!("No rules installed in {}.", dir.display());
-        eprintln!("Use `proov rules add <file.toml>` to install one.");
+        eprintln!("Use `vettd rules add <file.toml>` to install one.");
         return;
     }
 

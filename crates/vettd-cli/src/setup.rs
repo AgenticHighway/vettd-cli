@@ -2,7 +2,7 @@
 //!
 //! Checks for existing configuration and, if none is found, walks the user
 //! through API-key entry and endpoint selection.  Can also be invoked
-//! explicitly via `proov setup`.
+//! explicitly via `vettd setup`.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 
@@ -179,7 +179,7 @@ pub fn run_setup(force: bool) -> bool {
         eprintln!();
         eprintln!("  {GREEN}✓{RESET} {BOLD}Local-only mode{RESET}");
         eprintln!("  {DIM}Results will be saved to a JSON file.{RESET}");
-        eprintln!("  {DIM}Run `proov setup` later to configure an API key.{RESET}");
+        eprintln!("  {DIM}Run `vettd setup` later to configure an API key.{RESET}");
         eprintln!();
         return false;
     }
@@ -231,7 +231,7 @@ pub fn run_setup(force: bool) -> bool {
 fn print_welcome() {
     eprintln!();
     eprintln!("  {DIM}┌──────────────────────────────────────────┐{RESET}");
-    eprintln!("  {DIM}│{RESET}  {BOLD}{CYAN}proov{RESET}  —  First-Time Setup               {DIM}│{RESET}");
+    eprintln!("  {DIM}│{RESET}  {BOLD}{CYAN}vettd{RESET}  —  First-Time Setup               {DIM}│{RESET}");
     eprintln!("  {DIM}└──────────────────────────────────────────┘{RESET}");
     eprintln!();
 }

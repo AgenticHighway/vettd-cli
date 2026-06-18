@@ -8,18 +8,18 @@ pub fn is_valid_uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok()
 }
 
-/// `~/.ahscan/scanner_uuid`
+/// `~/.vettd/scanner_uuid`
 pub fn default_scanner_uuid_path() -> Result<PathBuf, String> {
-    Ok(ahscan_dir()?.join("scanner_uuid"))
+    Ok(vettd_dir()?.join("scanner_uuid"))
 }
 
-/// `~/.ahscan/scanner_account_uuid`
+/// `~/.vettd/scanner_account_uuid`
 pub fn default_scanner_account_uuid_path() -> Result<PathBuf, String> {
-    Ok(ahscan_dir()?.join("scanner_account_uuid"))
+    Ok(vettd_dir()?.join("scanner_account_uuid"))
 }
 
-fn ahscan_dir() -> Result<PathBuf, String> {
-    dirs::home_dir().map(|h| h.join(".ahscan")).ok_or_else(|| {
+fn vettd_dir() -> Result<PathBuf, String> {
+    dirs::home_dir().map(|h| h.join(".vettd")).ok_or_else(|| {
         "Unable to determine home directory — cannot resolve scanner identity paths".to_string()
     })
 }
@@ -140,7 +140,7 @@ pub fn resolve_persisted_uuid(
 pub fn resolve_scanner_uuid(explicit: Option<&str>) -> Result<String, String> {
     resolve_persisted_uuid(
         explicit,
-        "AH_SCANNER_UUID",
+        "VETTD_SCANNER_UUID",
         &default_scanner_uuid_path()?,
         "scanner_uuid",
     )
@@ -150,7 +150,7 @@ pub fn resolve_scanner_uuid(explicit: Option<&str>) -> Result<String, String> {
 pub fn resolve_scanner_account_uuid(explicit: Option<&str>) -> Result<String, String> {
     resolve_persisted_uuid(
         explicit,
-        "AH_SCANNER_ACCOUNT_UUID",
+        "VETTD_SCANNER_ACCOUNT_UUID",
         &default_scanner_account_uuid_path()?,
         "scanner_account_uuid",
     )
@@ -212,18 +212,18 @@ mod tests {
     }
 
     #[test]
-    fn ahscan_dir_returns_ok_in_normal_env() {
-        // In any environment with a home directory, ahscan_dir() must succeed
+    fn vettd_dir_returns_ok_in_normal_env() {
+        // In any environment with a home directory, vettd_dir() must succeed
         // rather than panicking. This is the key behavioral guarantee of fix #4.
-        let result = ahscan_dir();
-        assert!(result.is_ok(), "ahscan_dir() returned Err: {:?}", result);
+        let result = vettd_dir();
+        assert!(result.is_ok(), "vettd_dir() returned Err: {:?}", result);
         let dir = result.unwrap();
-        assert!(dir.ends_with(".ahscan"));
+        assert!(dir.ends_with(".vettd"));
     }
 
     #[test]
     fn home_dir_error_propagates_to_resolve_scanner_uuid() {
-        // Simulate "no home dir" by checking that an Err from ahscan_dir()
+        // Simulate "no home dir" by checking that an Err from vettd_dir()
         // propagates through resolve_persisted_uuid rather than panicking.
         // We verify this by using the Result-returning API directly.
         //

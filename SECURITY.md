@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in **proov**, please report it
+If you discover a security vulnerability in **vettd**, please report it
 responsibly. **Do not open a public GitHub issue.**
 
 Email: **security@agentichighway.ai**
@@ -26,6 +26,6 @@ mitigation within **7 days** for critical issues.
 
 ## Scope
 
-This policy covers the `proov` CLI scanner binary and its CI/CD
-pipelines. For vulnerabilities in the server/dashboard, please report
+This policy covers the `vettd` CLI scanner binary and its CI/CD
+pipelines. For vulnerabilities in the vettd remote, please report
 to the same email address.

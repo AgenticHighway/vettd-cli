@@ -40,7 +40,7 @@ struct RefreshedRoot {
 
 impl ScanTimings {
     fn from_env() -> Self {
-        let enabled = std::env::var("PROOV_TIMINGS")
+        let enabled = std::env::var("VETTD_TIMINGS")
             .ok()
             .is_some_and(|value| timing_value_enabled(&value));
         Self { enabled }

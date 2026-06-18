@@ -3,7 +3,7 @@
 ## Our standard
 
 This project is for constructive, professional collaboration. We want
-`proov` to be a place where people can ask questions, propose changes,
+`vettd` to be a place where people can ask questions, propose changes,
 report bugs, and disagree on technical choices without being hostile or
 demeaning.
 
@@ -27,7 +27,7 @@ demeaning.
 
 This Code of Conduct applies to project spaces, including issues, pull
 requests, discussions, review comments, and other official community
-channels for `proov`.
+channels for `vettd`.
 
 ## Reporting
 

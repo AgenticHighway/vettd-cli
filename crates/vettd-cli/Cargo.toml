@@ -1,5 +1,5 @@
 [package]
-name = "proov"
+name = "vettd-cli"
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -7,7 +7,7 @@ license = "MIT"
 description = "AI Execution Inventory — detect, analyze, and report AI execution artifacts."
 
 [[bin]]
-name = "proov"
+name = "vettd"
 path = "src/main.rs"
 
 [dependencies]

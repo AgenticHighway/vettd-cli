@@ -21,7 +21,7 @@ sequenceDiagram
     participant Con as contract::build_contract_payload()
     participant File as output::write_json_report()
 
-    User->>CLI: proov file agents.md
+    User->>CLI: vettd file agents.md
     CLI->>Scan: run_scan("file", Some(path), None, false)
     Scan->>Disc: discover_file_surface(path)
     Disc-->>Scan: Vec<Candidate>
@@ -145,7 +145,7 @@ sequenceDiagram
     participant Meta as Hosted Release Metadata API
     participant Host as GitHub Releases / artifact host
 
-    User->>CLI: proov update / proov update --check
+    User->>CLI: vettd update / vettd update --check
     CLI->>Upd: check_for_update()
     Upd->>Meta: GET latest manifest
     Upd->>Meta: GET latest signature
@@ -201,7 +201,7 @@ flowchart LR
 flowchart TD
     Trait["trait Detector\n─────────────\nname() -> &str\ndetect(candidates, deep)\n  -> Vec of ArtifactReport"]
 
-    CRD["CustomRulesDetector\n(loads TOML rules from\n~/.ahscan/rules/)"]
+    CRD["CustomRulesDetector\n(loads TOML rules from\n~/.vettd/rules/)"]
     CD["ContainerDetector\n(Dockerfile, docker-compose,\ncontainer_kind metadata)"]
     MCD["MCPConfigDetector\n(VS Code, Cursor, Claude\nMCP server configs)"]
     BFD["BrowserFootprintDetector\n(Chrome/Edge/Firefox\nextension artifacts)"]

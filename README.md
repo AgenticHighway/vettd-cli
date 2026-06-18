@@ -1,26 +1,26 @@
-# proov
+# vettd
 
-[![Version](https://img.shields.io/github/v/release/AgenticHighway/proov?label=version)](https://github.com/AgenticHighway/proov/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/AgenticHighway/proov/ci.yml?branch=main&label=ci)](https://github.com/AgenticHighway/proov/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/github/actions/workflow/status/AgenticHighway/proov/ci.yml?branch=main&label=tests)](https://github.com/AgenticHighway/proov/actions/workflows/ci.yml)
-[![Security](https://img.shields.io/github/actions/workflow/status/AgenticHighway/proov/ci.yml?branch=main&label=security)](https://github.com/AgenticHighway/proov/actions/workflows/ci.yml)
-[![Fmt + Lint](https://img.shields.io/github/actions/workflow/status/AgenticHighway/proov/ci.yml?branch=main&label=fmt%20%2B%20lint)](https://github.com/AgenticHighway/proov/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/release/AgenticHighway/vettd-cli?label=version)](https://github.com/AgenticHighway/vettd-cli/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/AgenticHighway/vettd-cli/ci.yml?branch=main&label=ci)](https://github.com/AgenticHighway/vettd-cli/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/AgenticHighway/vettd-cli/ci.yml?branch=main&label=tests)](https://github.com/AgenticHighway/vettd-cli/actions/workflows/ci.yml)
+[![Security](https://img.shields.io/github/actions/workflow/status/AgenticHighway/vettd-cli/ci.yml?branch=main&label=security)](https://github.com/AgenticHighway/vettd-cli/actions/workflows/ci.yml)
+[![Fmt + Lint](https://img.shields.io/github/actions/workflow/status/AgenticHighway/vettd-cli/ci.yml?branch=main&label=fmt%20%2B%20lint)](https://github.com/AgenticHighway/vettd-cli/actions/workflows/ci.yml)
 
 **Detect, analyze, and report AI execution artifacts on a host machine.**
 
-proov is a Rust CLI tool that scans your system for AI-related configuration files — things like `.cursorrules`, MCP server configs, prompt files, and container definitions — analyzes them for risk, and produces structured reports.
+vettd is a Rust CLI tool that scans your system for AI-related configuration files — things like `.cursorrules`, MCP server configs, prompt files, and container definitions — analyzes them for risk, and produces structured reports.
 
-## Support Proov
+## Support Vettd
 
-If Proov helps your team, you can support ongoing open source development with a donation via Stripe:
+If Vettd helps your team, you can support ongoing open source development with a donation via Stripe:
 
-[Donate to Proov](https://donate.stripe.com/fZu00cdxZcxAbHH2Ya2ZO00)
+[Donate to Vettd](https://donate.stripe.com/fZu00cdxZcxAbHH2Ya2ZO00)
 
 ## How it works
 
-proov is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows or `proov update`. `proov auth` and `proov setup` only save local configuration.
+vettd is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows or `vettd update`. `vettd auth` and `vettd setup` only save local configuration.
 
-If you want a hosted review, policy, and governance surface, proov can
+If you want a hosted review, policy, and governance surface, vettd can
 submit to compatible ingest APIs. You can configure an endpoint during
 setup or pass one directly at submission time.
 
@@ -40,8 +40,8 @@ setup or pass one directly at submission time.
 
 ```bash
 brew tap AgenticHighway/tap
-brew install proov
-proov quick
+brew install vettd
+vettd quick
 ```
 
 Homebrew is the smoothest install path on macOS while direct-download
@@ -49,23 +49,23 @@ artifacts are not yet signed and notarized.
 
 ### From a release binary
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/AgenticHighway/proov/releases).
+Download the latest binary for your platform from [GitHub Releases](https://github.com/AgenticHighway/vettd-cli/releases).
 
 ```bash
 # macOS (Apple Silicon)
-tar xzf proov-darwin-arm64.tar.gz
-./proov quick
+tar xzf vettd-darwin-arm64.tar.gz
+./vettd quick
 
 # Linux (x86_64)
-tar xzf proov-linux-amd64.tar.gz
-./proov quick
+tar xzf vettd-linux-amd64.tar.gz
+./vettd quick
 ```
 
 #### Verifying downloads
 
 Each GitHub Release includes `checksums.txt` (SHA-256 hashes for all
 release assets) and `checksums.txt.sig` (a KMS ECDSA signature over
-`checksums.txt`, using the same key that `proov update` trusts).
+`checksums.txt`, using the same key that `vettd update` trusts).
 
 ```bash
 # Download the binary and checksums for your platform, then:
@@ -84,35 +84,35 @@ For the full signature-verification procedure (including how to verify
 ### From source
 
 ```bash
-git clone https://github.com/AgenticHighway/proov.git
-cd proov
+git clone https://github.com/AgenticHighway/vettd-cli.git
+cd vettd
 cargo build --release
-./target/release/proov quick
+./target/release/vettd quick
 ```
 
 ## Quick start
 
 ```bash
-proov                      # Interactive wizard — walks you through options
-proov quick                # Tier 1 scan of critical AI config areas (~/.cursor, VS Code, Claude, etc.)
-proov scan                 # Default tiered scan of critical roots + bounded user-space/project roots
-proov full                 # Deep system-wide scan (slow, thorough)
-proov file <path>          # Scan a single file
-proov folder <path>        # Scan a directory
-proov repo <path>          # Deep-scan a git repository
-proov setup                # Interactive connected-mode setup (API key + endpoint)
-proov auth                 # Prompt securely for an API key and save it
-proov auth --key <key>     # Save API credentials directly (useful for automation)
-proov update               # Check for and install updates
-proov rules list           # List installed custom detection rules
-proov rules add <file>     # Install a TOML rule file
-proov rules remove <name>  # Remove an installed rule by name
-proov rules validate <f>   # Validate a rule file without installing
+vettd                      # Interactive wizard — walks you through options
+vettd quick                # Tier 1 scan of critical AI config areas (~/.cursor, VS Code, Claude, etc.)
+vettd scan                 # Default tiered scan of critical roots + bounded user-space/project roots
+vettd full                 # Deep system-wide scan (slow, thorough)
+vettd file <path>          # Scan a single file
+vettd folder <path>        # Scan a directory
+vettd repo <path>          # Deep-scan a git repository
+vettd setup                # Interactive connected-mode setup (API key + endpoint)
+vettd auth                 # Prompt securely for an API key and save it
+vettd auth --key <key>     # Save API credentials directly (useful for automation)
+vettd update               # Check for and install updates
+vettd rules list           # List installed custom detection rules
+vettd rules add <file>     # Install a TOML rule file
+vettd rules remove <name>  # Remove an installed rule by name
+vettd rules validate <f>   # Validate a rule file without installing
 ```
 
 ## Scan surfaces
 
-`proov` now treats scan modes as scan-surface tiers instead of simple breadth presets:
+`vettd` now treats scan modes as scan-surface tiers instead of simple breadth presets:
 
 - `quick`: Tier 1 only — critical OS-aware agent surfaces such as VS Code, Cursor, Claude, Continue, Aider, and similar local tool config roots
 - `scan`: Tier 1 plus bounded user-space/project roots such as `Desktop`, `Documents`, `Downloads`, and common repo folders like `Code`, `Projects`, `Workspace`, `src`, and `GitHub`
@@ -129,15 +129,15 @@ Current critical roots are OS-aware:
 ## Output formats
 
 ```bash
-proov quick              # Overview with risk bars (default)
-proov quick --full       # Detailed per-artifact breakdown
-proov quick --summary    # Compact statistics only
-proov quick --json       # JSON report to stdout
-proov quick --out        # JSON report to ./proov-report.json
-proov quick --out r.json # JSON report to a custom path
-proov quick --contract   # Scanner data contract JSON to stdout
-proov quick --contract --out r.json  # Contract JSON to file
-proov quick --contract --submit --api-key <key>  # Contract to file + submit
+vettd quick              # Overview with risk bars (default)
+vettd quick --full       # Detailed per-artifact breakdown
+vettd quick --summary    # Compact statistics only
+vettd quick --json       # JSON report to stdout
+vettd quick --out        # JSON report to ./vettd-report.json
+vettd quick --out r.json # JSON report to a custom path
+vettd quick --contract   # Scanner data contract JSON to stdout
+vettd quick --contract --out r.json  # Contract JSON to file
+vettd quick --contract --submit --api-key <key>  # Contract to file + submit
 ```
 
 `--json`, `--out`, and `--contract` all emit the scanner data contract
@@ -145,7 +145,7 @@ shape used for compatible ingest APIs and local automation.
 
 ## What it detects
 
-The table below is representative, not exhaustive. proov combines built-in
+The table below is representative, not exhaustive. vettd combines built-in
 detectors, packaged TOML rules, and optional custom rules, so additional file
 names and patterns may be detected beyond these common examples. For deeper
 detector details, see [docs/detectors.md](docs/detectors.md).
@@ -157,7 +157,7 @@ detector details, see [docs/detectors.md](docs/detectors.md).
 | MCP configs           | `mcp.json`, `claude_desktop_config.json`                      | Model Context Protocol server declarations                                                           |
 | Container configs     | `Dockerfile`, `compose.yaml`, `docker-compose.yml`            | Docker image definitions and service orchestration with direct AI evidence or nearby agent artifacts |
 | Browser footprints    | Chrome, Edge, Brave, Arc profiles                             | Extension directory presence only (no content reads)                                                 |
-| Custom rules          | Any `.toml` in `~/.ahscan/rules/`                             | Declarative rules you define                                                                         |
+| Custom rules          | Any `.toml` in `~/.vettd/rules/`                             | Declarative rules you define                                                                         |
 
 ## Risk scoring
 
@@ -175,21 +175,21 @@ Scores are based on: artifact type, detected capability keywords (shell, network
 
 ## Optional local access mode
 
-By default, proov shows the full local report.
+By default, vettd shows the full local report.
 
 If you want to locally limit emitted findings to the top three visible
-artifacts, add an `.ahscan.toml` file in your project root:
+artifacts, add an `.vettd.toml` file in your project root:
 
 ```toml
 [access]
 mode = "lite"
 ```
 
-When `.ahscan.toml` is absent, proov keeps full output enabled.
+When `.vettd.toml` is absent, vettd keeps full output enabled.
 
 ## Submitting to a compatible endpoint
 
-proov supports hosted submission flows through compatible ingest APIs.
+vettd supports hosted submission flows through compatible ingest APIs.
 You can configure an endpoint during setup or pass one directly for
 self-hosting, testing, or interoperability.
 
@@ -197,23 +197,23 @@ With an API key configured:
 
 ```bash
 # First-time setup (saves credentials and endpoint)
-proov setup
+vettd setup
 
 # Or prompt securely for credentials
-proov auth
+vettd auth
 
 # Or set credentials directly for automation
-proov auth --key your-api-key
+vettd auth --key your-api-key
 
 # Submit scan results (uses saved endpoint)
-proov repo . --submit --api-key your-key
+vettd repo . --submit --api-key your-key
 
 # Submit to a custom public endpoint — requires --allow-public-endpoint
-proov repo . --submit https://example.com/api/scans/ingest \
+vettd repo . --submit https://example.com/api/scans/ingest \
   --allow-public-endpoint --api-key your-key
 
 # Save a custom public endpoint for future use — also requires the flag
-proov auth --key your-api-key \
+vettd auth --key your-api-key \
   --endpoint https://example.com/api/scans/ingest \
   --allow-public-endpoint
 ```
@@ -231,13 +231,13 @@ Each submission payload contains:
 
 No file contents, secret values, or credential material are transmitted.
 
-In **interactive flows** (`proov scan` / `proov quick` / etc. from a terminal), proov displays this summary and asks for confirmation before sending.
+In **interactive flows** (`vettd scan` / `vettd quick` / etc. from a terminal), vettd displays this summary and asks for confirmation before sending.
 
-In **automation flows** (`--submit --api-key …`), the submission proceeds without a prompt. Review the data categories above before embedding `proov` in CI/CD pipelines.
+In **automation flows** (`--submit --api-key …`), the submission proceeds without a prompt. Review the data categories above before embedding `vettd` in CI/CD pipelines.
 
 ### `--allow-public-endpoint`
 
-By default, proov blocks submission to public (non-localhost, non-private-network) endpoints at the flag level. This prevents accidental data exfiltration in scripts that omit an explicit endpoint. Pass `--allow-public-endpoint` when you intentionally want to submit to or save a public endpoint.
+By default, vettd blocks submission to public (non-localhost, non-private-network) endpoints at the flag level. This prevents accidental data exfiltration in scripts that omit an explicit endpoint. Pass `--allow-public-endpoint` when you intentionally want to submit to or save a public endpoint.
 
 Local endpoints (`localhost`, `127.0.0.1`, `::1`, RFC-1918 addresses) are always allowed without the flag.
 
@@ -247,25 +247,25 @@ Local endpoints (`localhost`, `127.0.0.1`, `::1`, RFC-1918 addresses) are always
 - Compatible submission endpoints are supported, whether configured ahead of time or passed on the command line
 - Contract sync only runs during explicit submission flows, when the target endpoint exposes a compatible contract API
 - Retry logic handles transient failures (429, 502, 503, 504)
-- On Unix-like systems, saved API keys are written to `~/.config/ahscan/config.json` and proov explicitly tightens directory/file permissions to `0700` / `0600`
-- On Windows, saved API keys are written under the current user's config directory, typically `%APPDATA%\\ahscan\\config.json`, and currently rely on the default per-user profile ACLs rather than explicit ACL hardening by proov
+- On Unix-like systems, saved API keys are written to `~/.config/vettd/config.json` and vettd explicitly tightens directory/file permissions to `0700` / `0600`
+- On Windows, saved API keys are written under the current user's config directory, typically `%APPDATA%\\vettd\\config.json`, and currently rely on the default per-user profile ACLs rather than explicit ACL hardening by vettd
 
 ## Self-update
 
 ```bash
-proov update           # Check for and install updates
-proov update --check   # Check only, don't install
-proov update --force   # Force update even if current
+vettd update           # Check for and install updates
+vettd update --check   # Check only, don't install
+vettd update --force   # Force update even if current
 ```
 
-`proov update` explicitly checks for the latest release, verifies the signed
+`vettd update` explicitly checks for the latest release, verifies the signed
 manifest, checks the matching artifact SHA-256, and replaces the local binary.
 
 Official release binaries verify a detached AWS KMS-backed ECDSA signature on
 the update manifest before trusting artifact URLs or hashes.
 
-Source builds remain fully functional, but `proov update` will fail explicitly
-unless the binary was built with `PROOV_UPDATE_PUBLIC_KEY_DER_B64` set at
+Source builds remain fully functional, but `vettd update` will fail explicitly
+unless the binary was built with `VETTD_UPDATE_PUBLIC_KEY_DER_B64` set at
 compile time.
 
 ## Privacy
@@ -280,9 +280,9 @@ compile time.
 ## Project structure
 
 ```
-proov/
+vettd/
 ├── crates/
-│   └── proov/                    # CLI binary (scanning, detection, submission)
+│   └── vettd/                    # CLI binary (scanning, detection, submission)
 │       └── src/
 │           ├── detectors/         # Built-in artifact detectors
 │           └── contract/          # Scanner data contract builders
@@ -328,7 +328,7 @@ cargo audit                         # RustSec vulnerability scan
 
 > **CI runs all of these automatically on every PR.** See [.github/workflows/ci.yml](.github/workflows/ci.yml) for the full pipeline.
 
-Set `PROOV_TIMINGS=1` when you want per-stage scan timings on stderr during a
+Set `VETTD_TIMINGS=1` when you want per-stage scan timings on stderr during a
 local run or benchmark session.
 
 For detailed development instructions: [CONTRIBUTING.md](CONTRIBUTING.md)
@@ -342,12 +342,12 @@ For security vulnerability reports: [SECURITY.md](SECURITY.md)
 
 | File                           | Purpose                                       |
 | ------------------------------ | --------------------------------------------- |
-| `~/.config/ahscan/config.json` | API key + endpoint (created by `proov setup`) |
-| `.ahscan.toml`                 | Optional local access-mode settings           |
-| `~/.ahscan/scanner_uuid`       | Persistent scanner identity (auto-generated)  |
-| `~/.ahscan/rules/*.toml`       | Custom detection rules                        |
+| `~/.config/vettd/config.json` | API key + endpoint (created by `vettd setup`) |
+| `.vettd.toml`                 | Optional local access-mode settings           |
+| `~/.vettd/scanner_uuid`       | Persistent scanner identity (auto-generated)  |
+| `~/.vettd/rules/*.toml`       | Custom detection rules                        |
 
-Optional `.ahscan.toml`:
+Optional `.vettd.toml`:
 
 ```toml
 [access]
@@ -358,5 +358,5 @@ mode = "lite"                   # limit visible findings to the top three artifa
 
 Copyright (c) 2026 Agentic Highway.
 
-`proov` is licensed under the **MIT License**. See [LICENSE](LICENSE) and
+`vettd` is licensed under the **MIT License**. See [LICENSE](LICENSE) and
 [COPYRIGHT](COPYRIGHT).

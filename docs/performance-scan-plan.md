@@ -1,12 +1,12 @@
 # Scan Performance And Tiered Discovery Plan
 
-This document defines the next architecture tranche for making `proov` fast,
+This document defines the next architecture tranche for making `vettd` fast,
 efficient, and accurate without turning normal usage into an antivirus-style
 full-system crawl.
 
 Related tracker:
 
-- [#53](https://github.com/AgenticHighway/proov/issues/53) Performance roadmap: tiered discovery and efficient local scanning
+- [#53](https://github.com/AgenticHighway/vettd-cli/issues/53) Performance roadmap: tiered discovery and efficient local scanning
 
 ## Why this work exists
 
@@ -35,7 +35,7 @@ iteration, not terminal formatting or JSON serialization.
 ## Current local baseline
 
 Use `./scripts/benchmark-scanner.sh` to record a fresh local baseline. Set
-`PROOV_TIMINGS=1` to include discovery, per-detector, analysis, and total scan
+`VETTD_TIMINGS=1` to include discovery, per-detector, analysis, and total scan
 timings on stderr while the benchmark script runs.
 
 Representative baseline on Will's mac after issue #55:
@@ -48,7 +48,7 @@ Representative baseline on Will's mac after issue #55:
 - `full --summary`: about 113s with about 2.27 GB peak RSS
 
 Representative detector-routing improvement from issue #56 against `origin/main`
-using direct `PROOV_TIMINGS=1` release runs on the same machine:
+using direct `VETTD_TIMINGS=1` release runs on the same machine:
 
 - `quick --json`: `custom_rules` about `269ms -> 52ms`, `containers` about `4ms -> 2ms`, `mcp_configs` about `2ms -> 1ms`
 - `scan --summary`: `custom_rules` about `1976ms -> 436ms`, `containers` about `49ms -> 33ms`, `mcp_configs` about `15ms -> 13ms`
@@ -56,7 +56,7 @@ using direct `PROOV_TIMINGS=1` release runs on the same machine:
 
 ## Design constraints
 
-- `proov` should remain local-first and operator-friendly on developer machines
+- `vettd` should remain local-first and operator-friendly on developer machines
 - fast/default modes should prioritize high-value agent surfaces before broad traversal
 - full-root scanning should remain available, but clearly as a heavier forensic mode
 - performance improvements should not weaken detector correctness or contract stability
@@ -144,7 +144,7 @@ The first implementation slices are now in code for `quick`, default `scan`,
 explicit `file`, and repeated explicit `folder` / `repo` scans:
 
 - repeated runs persist scan profiles, file states, and detector output in
-  `~/.ahscan/scan-cache/scan-v1.sqlite3`
+  `~/.vettd/scan-cache/scan-v1.sqlite3`
 - unchanged file-backed detector inputs reuse cached artifacts for
   `custom_rules`, `containers`, and `mcp_configs`
 - explicit `file` scans now reuse the same cache path, and file-mode
@@ -168,16 +168,16 @@ The concrete design for that path now lives in
 
 The work is split into mergeable GitHub issues:
 
-1. [#54](https://github.com/AgenticHighway/proov/issues/54) Define tiered OS-aware scan surfaces and align scan modes
-2. [#55](https://github.com/AgenticHighway/proov/issues/55) Prune low-value discovery paths in non-forensic scans
-3. [#56](https://github.com/AgenticHighway/proov/issues/56) Reduce candidate fan-out and memory pressure in the scan pipeline
-4. [#57](https://github.com/AgenticHighway/proov/issues/57) Eliminate duplicate file reads and hashing in detection
-5. [#58](https://github.com/AgenticHighway/proov/issues/58) Add scan benchmarking and performance guardrails
-6. [#59](https://github.com/AgenticHighway/proov/issues/59) Design incremental scan caching and OS-native change tracking
+1. [#54](https://github.com/AgenticHighway/vettd-cli/issues/54) Define tiered OS-aware scan surfaces and align scan modes
+2. [#55](https://github.com/AgenticHighway/vettd-cli/issues/55) Prune low-value discovery paths in non-forensic scans
+3. [#56](https://github.com/AgenticHighway/vettd-cli/issues/56) Reduce candidate fan-out and memory pressure in the scan pipeline
+4. [#57](https://github.com/AgenticHighway/vettd-cli/issues/57) Eliminate duplicate file reads and hashing in detection
+5. [#58](https://github.com/AgenticHighway/vettd-cli/issues/58) Add scan benchmarking and performance guardrails
+6. [#59](https://github.com/AgenticHighway/vettd-cli/issues/59) Design incremental scan caching and OS-native change tracking
 
 Parent tracker:
 
-- [#53](https://github.com/AgenticHighway/proov/issues/53) Performance roadmap: tiered discovery and efficient local scanning
+- [#53](https://github.com/AgenticHighway/vettd-cli/issues/53) Performance roadmap: tiered discovery and efficient local scanning
 
 ## Proposed PR sequence
 

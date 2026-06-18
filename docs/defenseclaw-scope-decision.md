@@ -1,11 +1,11 @@
 # DefenseClaw Scope Decision
 
 This document records the final scope decision for the remaining DefenseClaw
-families after the bounded source-analysis work landed in proov.
+families after the bounded source-analysis work landed in vettd.
 
 ## Approved And Implemented
 
-These DefenseClaw-derived families fit proov's mission as a local AI execution
+These DefenseClaw-derived families fit vettd's mission as a local AI execution
 inventory and bounded risk surface scanner, and are now in scope:
 
 - structured secret detection in prompt, instruction, and config content
@@ -18,14 +18,14 @@ inventory and bounded risk surface scanner, and are now in scope:
 
 ## Explicit Non-Goals
 
-The following remaining DefenseClaw families are out of scope for proov's
+The following remaining DefenseClaw families are out of scope for vettd's
 current mission and should not be imported without a new product decision:
 
 - PII detection
-Reason: proov inventories AI execution artifacts and bounded execution-risk signals, not general data-loss or privacy classification.
+Reason: vettd inventories AI execution artifacts and bounded execution-risk signals, not general data-loss or privacy classification.
 
 - vulnerability or codeguard-style rules
-Reason: these shift proov toward a generic SAST or code-vulnerability scanner, which does not fit the current artifact-first contract or CLI scope.
+Reason: these shift vettd toward a generic SAST or code-vulnerability scanner, which does not fit the current artifact-first contract or CLI scope.
 
 - malware signatures, reverse-shell signatures, or broad payload-pattern scanning
 Reason: these families are better handled by dedicated malware, EDR, or runtime guardrail systems and would create noisy overlap in a filesystem inventory tool.
@@ -35,8 +35,8 @@ Reason: without stronger runtime context, these rules become generic malware/exf
 
 ## Decision Summary
 
-There is no remaining unclassified DefenseClaw import bucket for proov.
+There is no remaining unclassified DefenseClaw import bucket for vettd.
 
 - Approved families are implemented in the current source, config, and prompt analysis layers.
-- Deferred families are explicit non-goals until a future product review changes proov's mission.
+- Deferred families are explicit non-goals until a future product review changes vettd's mission.
 - No follow-on issue is approved right now for additional DefenseClaw corpus imports.
