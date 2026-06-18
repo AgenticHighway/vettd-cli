@@ -7,7 +7,7 @@ useDefault = true
 description = "Intentional GitHub PAT fixture used in source-analysis tests"
 condition = "AND"
 paths = [
-  '''(^|/)crates/vettd-cli/src/source_analysis\.rs$''',
+  '''(^|/)crates/(proov|vettd-cli)/src/source_analysis\.rs$''',
 ]
 regexTarget = "line"
 regexes = [
@@ -18,7 +18,7 @@ regexes = [
 description = "Intentional private-key detector literals in content pattern definitions"
 condition = "AND"
 paths = [
-  '''(^|/)crates/vettd-cli/src/content_patterns\.rs$''',
+  '''(^|/)crates/(proov|vettd-cli)/src/content_patterns\.rs$''',
 ]
 regexTarget = "line"
 regexes = [
@@ -29,7 +29,7 @@ regexes = [
 description = "Intentional JWT fixture used in content-pattern tests"
 condition = "AND"
 paths = [
-  '''(^|/)crates/vettd-cli/src/content_patterns\.rs$''',
+  '''(^|/)crates/(proov|vettd-cli)/src/content_patterns\.rs$''',
 ]
 regexTarget = "line"
 regexes = [
