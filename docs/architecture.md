@@ -19,7 +19,7 @@ compatible backend when you explicitly opt into submission:
 ```
 ┌──────────────────┐         HTTP POST          ┌──────────────────────┐
 │   vettd          │ ──────────────────────────► │ Compatible Backend   │
-│   (this repo)    │    /api/scans/ingest        │ (e.g. Vettd)         │
+│   (this repo)    │    /api/scans/ingest        │ (e.g. vettd remote)  │
 │                  │                              │                      │
 │  Rust CLI binary │                              │  Stores results      │
 │  Runs on target  │                              │  Renders review UI   │

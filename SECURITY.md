@@ -27,5 +27,5 @@ mitigation within **7 days** for critical issues.
 ## Scope
 
 This policy covers the `vettd` CLI scanner binary and its CI/CD
-pipelines. For vulnerabilities in the server/dashboard, please report
+pipelines. For vulnerabilities in the vettd remote, please report
 to the same email address.

@@ -25,7 +25,7 @@ flowchart TD
     end
 
     subgraph ExternalSystems["External Systems"]
-        Backend["Compatible Backend\n(optional ingest + review UI)\ncurrent hosted example: Vettd"]
+        Backend["Compatible Backend\n(optional ingest + review UI)\ncurrent hosted example: vettd remote"]
         ReleaseAPI["Hosted Release Metadata API\nmanifest + signature endpoints"]
         ReleaseHost["GitHub Releases\nplatform archives"]
     end

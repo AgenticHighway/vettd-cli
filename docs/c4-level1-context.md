@@ -7,7 +7,7 @@ flowchart TD
     User["👤 Operator / Security Reviewer\n(runs scans and reviews results)"]
     Terminal["🖥️ Local Terminal UX\nwizard, progress, reports,\npost-scan next steps"]
     Vettd["🔍 vettd Scanner\n(Rust CLI — detects, analyzes,\nand reports AI execution artifacts)"]
-    Backend["🌐 Compatible Backend\n(optional ingest + hosted review UI)\ncurrent hosted example: Vettd"]
+    Backend["🌐 Compatible Backend\n(optional ingest + hosted review UI)\ncurrent hosted example: vettd remote"]
     Contract["📄 Contract Endpoint\n(compatible /api/contract\nfor version negotiation)"]
     ReleaseAPI["📄 Hosted Release Metadata API\nmanifest + signature endpoints"]
     Releases["📦 Release Artifact Host\nGitHub Releases archives"]
