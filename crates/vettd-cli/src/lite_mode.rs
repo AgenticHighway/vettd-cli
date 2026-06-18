@@ -105,7 +105,7 @@ pub fn print_locked_summary(artifacts: &[ArtifactReport]) {
     }
     if let Some(obj) = summary["by_status"].as_object() {
         println!("  Status distribution:");
-        for status in &["fail", "conditional_pass", "pass", "pending"] {
+        for status in &["critical", "high", "medium", "low", "info", "pending"] {
             if let Some(v) = obj.get(*status) {
                 println!("    {}: {}", status, v);
             }

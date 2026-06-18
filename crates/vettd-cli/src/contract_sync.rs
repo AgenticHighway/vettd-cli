@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 /// The contract version this build of vettd was compiled to produce.
-pub const COMPILED_CONTRACT_VERSION: &str = "2.1.0";
+pub const COMPILED_CONTRACT_VERSION: &str = "2.2.0";
 
 /// Timeout (seconds) for contract endpoint requests.
 const REQUEST_TIMEOUT_SECS: u64 = 10;
@@ -249,6 +249,19 @@ mod tests {
         assert!(
             !COMPILED_CONTRACT_VERSION.is_empty(),
             "COMPILED_CONTRACT_VERSION must not be empty"
+        );
+    }
+
+    #[test]
+    fn bundled_contract_version_matches_compiled_version() {
+        let json = include_str!("../../../scanner-data-contract.json");
+        let contract: serde_json::Value =
+            serde_json::from_str(json).expect("scanner-data-contract.json must be valid JSON");
+        assert_eq!(
+            contract["version"].as_str().unwrap_or("missing"),
+            COMPILED_CONTRACT_VERSION,
+            "scanner-data-contract.json version must match COMPILED_CONTRACT_VERSION — \
+update one or the other to resolve the drift"
         );
     }
 

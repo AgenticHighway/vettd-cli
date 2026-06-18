@@ -1,943 +1,900 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Vettd Scanner Data Contract",
-  "description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-  "version": "2.1.0",
-  "type": "object",
-  "required": [
-    "scanMeta",
-    "prompts",
-    "skills",
-    "mcpServers",
-    "agents",
-    "agenticApps"
-  ],
-  "additionalProperties": false,
-  "properties": {
-    "scanMeta": {
-      "description": "Metadata about the scan itself. Sent once per payload.",
-      "type": "object",
-      "required": [
-        "scanId",
-        "endpointHostname",
-        "scannedAt",
-        "scannerVersion",
-        "scanDurationMs",
-        "scanRoots",
-        "hostNetwork"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "scanId": {
-          "type": "string",
-          "format": "uuid",
-          "description": "Unique identifier for this scan run."
-        },
-        "endpointHostname": {
-          "type": "string",
-          "description": "Hostname of the scanned endpoint (e.g. 'prod-gpu-node-01')."
-        },
-        "scannedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "ISO-8601 timestamp when the scan completed."
-        },
-        "scannerVersion": {
-          "type": "string",
-          "description": "Semantic version of the scanner binary (e.g. '0.3.1')."
-        },
-        "scanDurationMs": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Wall-clock duration of the scan in milliseconds."
-        },
-        "scanRoots": {
-          "type": "array",
-          "description": "Absolute directory paths the scanner walked. Tells the dashboard what scope the results cover.",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1
-        },
-        "hostNetwork": {
-          "type": "object",
-          "description": "Host-level network configuration observed at scan time. Used for contextual analysis of MCP server exposure.",
-          "required": [
-            "firewallEnabled",
-            "firewallMode",
-            "stealthMode",
-            "firewallRules"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "firewallEnabled": {
-              "type": "boolean",
-              "description": "Whether the host OS firewall is enabled (e.g. macOS Application Firewall)."
-            },
-            "firewallMode": {
-              "type": "string",
-              "enum": [
-                "off",
-                "on",
-                "block-all",
-                "unknown"
-              ],
-              "description": "Firewall operating mode. 'off' = disabled, 'on' = normal filtering, 'block-all' = block all incoming, 'unknown' = could not determine."
-            },
-            "stealthMode": {
-              "type": "boolean",
-              "description": "Whether stealth mode is active (host does not respond to probe requests like ICMP ping)."
-            },
-            "firewallRules": {
-              "type": "array",
-              "description": "Application-level firewall rules discovered on the host.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "appPath",
-                  "allowed"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "appPath": {
-                    "type": "string",
-                    "description": "Absolute path to the application binary (e.g. '/usr/bin/python3')."
-                  },
-                  "allowed": {
-                    "type": "boolean",
-                    "description": "Whether the firewall allows incoming connections for this application."
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "prompts": {
-      "type": "array",
-      "description": "Every prompt template discovered on the endpoint. Each entry MUST have a globally-unique 'id'.",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "sourceFilePath",
-          "classification",
-          "tokens",
-          "contentHash",
-          "lastChangedDate",
-          "capabilities",
-          "secretRefs",
-          "injectionSurfaces",
-          "dependencies",
-          "riskScore"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Globally unique identifier for this prompt. Use '<sourceFilePath>:<startLine>' or a deterministic UUID derived from file path + content hash. Must be stable across scans of the same file with the same content."
-          },
-          "name": {
-            "type": "string",
-            "description": "Human-readable display name. Derive from filename, front-matter title, or containing folder. MUST NOT be a generic label like 'agents' \u2014 if the source file is 'agents.md', use the parent directory or a distinguishing qualifier (e.g. 'zeroclaw/agents', 'example-backend/agents'). When multiple prompts share a source filename, prepend the project or parent directory name."
-          },
-          "sourceFilePath": {
-            "type": "string",
-            "description": "Absolute path to the file where the prompt was found (e.g. '/Users/example/project/.github/copilot-instructions.md'). This is what the dashboard uses to distinguish items that would otherwise share a name."
-          },
-          "classification": {
-            "type": "string",
-            "enum": [
-              "System Prompt",
-              "User Prompt",
-              "Tool Prompt"
-            ],
-            "description": "Functional role of the prompt."
-          },
-          "tokens": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Token count of the prompt body (using the model's tokenizer or cl100k_base)."
-          },
-          "contentHash": {
-            "type": "string",
-            "description": "SHA-256 hex digest of the raw prompt body. Used for change detection across scans."
-          },
-          "lastChangedDate": {
-            "type": "string",
-            "format": "date",
-            "description": "ISO-8601 date (YYYY-MM-DD) when the prompt file was last modified on disk."
-          },
-          "capabilities": {
-            "type": "array",
-            "description": "Capabilities the prompt grants or implies when executed.",
-            "items": {
-              "type": "object",
-              "required": [
-                "text",
-                "level"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "description": "Human-readable capability label (e.g. 'Shell execution')."
-                },
-                "level": {
-                  "type": "string",
-                  "enum": [
-                    "info",
-                    "warn",
-                    "danger"
-                  ],
-                  "description": "Severity of the capability."
-                }
-              }
-            }
-          },
-          "secretRefs": {
-            "type": "array",
-            "description": "Credential material found or referenced inside the prompt body.",
-            "items": {
-              "type": "object",
-              "required": [
-                "label",
-                "detail",
-                "tone"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "label": {
-                  "type": "string",
-                  "description": "Short descriptor (e.g. 'Env var reference (safe)' or 'Hardcoded token found')."
-                },
-                "detail": {
-                  "type": "string",
-                  "description": "The literal reference or redacted value (e.g. '$OPENAI_API_KEY' or 'sk-proj-****...a4f2')."
-                },
-                "tone": {
-                  "type": "string",
-                  "enum": [
-                    "safe",
-                    "danger"
-                  ],
-                  "description": "'safe' for env-var refs. 'danger' for inline/hardcoded secrets."
-                }
-              }
-            }
-          },
-          "injectionSurfaces": {
-            "type": "array",
-            "description": "Prompt injection attack surfaces detected via static analysis.",
-            "items": {
-              "type": "object",
-              "required": [
-                "text",
-                "severity"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "description": "Description of the injection surface."
-                },
-                "severity": {
-                  "type": "string",
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high"
-                  ],
-                  "description": "Assessed severity."
-                }
-              }
-            }
-          },
-          "dependencies": {
-            "type": "array",
-            "description": "External services, models, or tools this prompt depends on at runtime.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "riskScore": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Composite risk score. 0 = no risk, 100 = critical."
-          }
-        }
-      }
-    },
-    "skills": {
-      "type": "array",
-      "description": "Every reusable skill/tool discovered on the endpoint.",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "type",
-          "trustLevel",
-          "executionEnvironment",
-          "description",
-          "permissions",
-          "dependencies",
-          "consumers"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Globally unique identifier for this skill. Use the skill name if unique, or '<name>-<hash>' if collisions exist."
-          },
-          "name": {
-            "type": "string",
-            "description": "Display name for this skill (e.g. 'python', 'filesystem', 'shell'). May share a name if two different configs define the same capability \u2014 use 'id' for dedup."
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "Local Function",
-              "HTTP Integration",
-              "CLI Tool",
-              "Remote Service"
-            ],
-            "description": "How this skill is implemented."
-          },
-          "trustLevel": {
-            "type": "string",
-            "enum": [
-              "Trusted",
-              "Conditional",
-              "Untrusted"
-            ],
-            "description": "Assessed trust posture."
-          },
-          "executionEnvironment": {
-            "type": "string",
-            "enum": [
-              "Local Process",
-              "Container",
-              "Remote API"
-            ],
-            "description": "Where this skill runs."
-          },
-          "description": {
-            "type": "string",
-            "description": "One-line summary of what the skill does. Must be specific \u2014 not just 'python capability' but e.g. 'Executes Python scripts via local interpreter with unrestricted filesystem access'."
-          },
-          "permissions": {
-            "type": "array",
-            "description": "OS/runtime permissions this skill requires.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "required"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Permission label (e.g. 'Filesystem read/write', 'Network access', 'Shell execution', 'Database access', 'Secrets access')."
-                },
-                "required": {
-                  "type": "boolean",
-                  "description": "Whether this permission is actively used by the skill."
-                }
-              }
-            }
-          },
-          "dependencies": {
-            "type": "object",
-            "description": "Runtime dependency tree.",
-            "required": [
-              "libraries",
-              "binaries",
-              "apis"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "libraries": {
-                "type": "array",
-                "description": "Package dependencies with pinned versions (e.g. 'typescript@5.7').",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "binaries": {
-                "type": "array",
-                "description": "System binaries required at runtime (e.g. 'bash', 'git', 'curl').",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "apis": {
-                "type": "array",
-                "description": "External API services the skill calls (e.g. 'GitHub API', 'npm Registry'). Do NOT put documentation URLs here \u2014 only runtime service dependencies.",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "consumers": {
-            "type": "array",
-            "description": "Agents and apps that invoke this skill. Each consumer entry MUST reference the agent or app by its unique 'id', not by a generic name.",
-            "items": {
-              "type": "object",
-              "required": [
-                "id",
-                "name",
-                "type",
-                "invocations"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "description": "The unique 'id' of the consuming agent or app (matching agents[].id or agenticApps[].id)."
-                },
-                "name": {
-                  "type": "string",
-                  "description": "Display name of the consuming agent or app."
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "Agent",
-                    "App"
-                  ],
-                  "description": "Whether the consumer is an agent or an agentic app."
-                },
-                "invocations": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "description": "Total invocation count observed during the scan window. Use 0 only if invocation tracking is not available \u2014 do not fabricate counts."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "mcpServers": {
-      "type": "array",
-      "description": "Every MCP server instance discovered on the endpoint.",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "transport",
-          "network",
-          "auth",
-          "verified",
-          "command",
-          "tools",
-          "dependentAgents",
-          "networkEvidence",
-          "envVars"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Globally unique identifier for this MCP server. Use the package identifier (e.g. 'io.github.github/github-mcp-server') or '<name>-<hash>' if needed."
-          },
-          "name": {
-            "type": "string",
-            "description": "Display name for the server (e.g. 'github-mcp-server', 'playwright-mcp'). Use the short package name, not the full reverse-DNS identifier."
-          },
-          "transport": {
-            "type": "string",
-            "enum": [
-              "stdio",
-              "sse",
-              "streamable-http",
-              "unknown"
-            ],
-            "description": "MCP transport protocol. 'stdio' = local process pipe, 'sse' = HTTP Server-Sent Events, 'streamable-http' = HTTP streaming, 'unknown' = could not determine from config."
-          },
-          "network": {
-            "type": "string",
-            "enum": [
-              "Local Only",
-              "LAN",
-              "Internet Exposed"
-            ],
-            "description": "Network exposure level."
-          },
-          "auth": {
-            "type": "string",
-            "enum": [
-              "API Key",
-              "OAuth",
-              "mTLS",
-              "None"
-            ],
-            "description": "Authentication mechanism protecting the server surface."
-          },
-          "verified": {
-            "type": "boolean",
-            "description": "Whether the server's identity and integrity have been cryptographically verified."
-          },
-          "command": {
-            "type": "string",
-            "description": "The shell command used to launch this MCP server (e.g. 'npx -y @anthropic/mcp-server-github'). Useful for audit trail and identifying supply chain risk."
-          },
-          "tools": {
-            "type": "array",
-            "description": "Every tool the MCP server exposes. The scanner MUST enumerate individual tools from the server's tool manifest \u2014 do NOT emit a single generic '<server>_invoke' entry. If tool enumeration fails, set this to an empty array and note the failure in the tool description.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "risk",
-                "description"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Actual tool function name as declared by the server (e.g. 'create_issue', 'run_shell_command', 'browser_navigate'). NOT a synthetic '<server>_invoke' stub."
-                },
-                "risk": {
-                  "type": "string",
-                  "enum": [
-                    "Low",
-                    "Medium",
-                    "High"
-                  ],
-                  "description": "Assessed risk level based on capability scope."
-                },
-                "description": {
-                  "type": "string",
-                  "description": "One-line summary of what the tool does. Pull from the server's tool schema description field."
-                }
-              }
-            }
-          },
-          "dependentAgents": {
-            "type": "array",
-            "description": "IDs of agents that reference or invoke tools on this server. These MUST be cross-referenced from the agents[].tools array \u2014 if an agent lists a tool of type 'mcp' whose name matches this server, include that agent's id here.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "networkEvidence": {
-            "type": "array",
-            "description": "Factual network evidence gathered for this MCP server. Each item represents one observation from config analysis, known package profiles, log scanning, or firewall state. The scanner does not make risk judgments \u2014 it reports raw evidence for the server to analyze.",
-            "items": {
-              "type": "object",
-              "required": [
-                "source",
-                "category",
-                "detail"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "source": {
-                  "type": "string",
-                  "enum": [
-                    "config",
-                    "env",
-                    "firewall",
-                    "logs",
-                    "package-info",
-                    "port-scan",
-                    "code-analysis",
-                    "manifest"
-                  ],
-                  "description": "Where the evidence was gathered from. 'config' = MCP config file, 'env' = environment variables, 'firewall' = host firewall rules, 'logs' = application log files, 'package-info' = known package behavior database, 'port-scan' = active port scanning, 'code-analysis' = static code analysis, 'manifest' = package manifest files."
-                },
-                "category": {
-                  "type": "string",
-                  "enum": [
-                    "transport",
-                    "outbound-url",
-                    "local-endpoint",
-                    "websocket",
-                    "package-registry",
-                    "known-behavior",
-                    "firewall-match",
-                    "log-network-activity",
-                    "credential-in-env",
-                    "binding",
-                    "auth",
-                    "tls",
-                    "cors",
-                    "exposure"
-                  ],
-                  "description": "What kind of evidence this is. 'transport' = protocol type, 'outbound-url' = remote HTTP endpoint, 'local-endpoint' = localhost/127.0.0.1, 'websocket' = WebSocket connection, 'package-registry' = npm/pypi registry URL, 'known-behavior' = documented behavior for known packages, 'firewall-match' = matching firewall rule, 'log-network-activity' = network call found in logs, 'credential-in-env' = credential passed via environment variable, 'binding' = network binding/listening, 'auth' = authentication mechanism, 'tls' = TLS/SSL configuration, 'cors' = CORS policy, 'exposure' = general network exposure."
-                },
-                "detail": {
-                  "type": "string",
-                  "description": "Human-readable description of the finding."
-                },
-                "url": {
-                  "type": "string",
-                  "description": "The URL or network address observed, if applicable. Only present for URL-based evidence."
-                }
-              }
-            }
-          },
-          "envVars": {
-            "type": "array",
-            "description": "Environment variables referenced in this server's MCP config. The scanner checks whether each variable is set on the host (does NOT capture values). Useful for identifying credential dependencies and configuration requirements.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "isSet",
-                "sourceKey"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "The environment variable name (e.g. 'GITHUB_TOKEN', 'OPENAI_API_KEY')."
-                },
-                "isSet": {
-                  "type": "boolean",
-                  "description": "Whether this environment variable is currently set on the host. true = present (value not captured), false = not set."
-                },
-                "sourceKey": {
-                  "type": "string",
-                  "description": "Where in the MCP config this variable was referenced. 'env' = in the server's env block, 'args' = in command arguments via ${VAR} interpolation, 'inputs' = in the MCP config inputs section."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "agents": {
-      "type": "array",
-      "description": "Every AI agent definition discovered on the endpoint. Each entry MUST have a globally-unique 'id'.",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "sourceFilePath",
-          "classification",
-          "executionModel",
-          "trustScore",
-          "version",
-          "author",
-          "sourceRepo",
-          "capabilities",
-          "tools",
-          "trustBreakdown"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Globally unique identifier for this agent. Use '<sourceFilePath>:<startLine>' or a deterministic UUID derived from content. Must be stable across scans of the same file with the same content."
-          },
-          "name": {
-            "type": "string",
-            "description": "Human-readable display name. Derive from the filename, front-matter title, 'name' field in the agent config, or containing project directory. MUST NOT be a generic label like 'agents'. When the source file is 'AGENTS.md', use the project directory as a prefix (e.g. 'zeroclaw/agents', 'example-backend/agents') or extract the agent's declared name from the file's content."
-          },
-          "sourceFilePath": {
-            "type": "string",
-            "description": "Absolute path to the file where the agent definition was found."
-          },
-          "classification": {
-            "type": "string",
-            "enum": [
-              "Code",
-              "Automation",
-              "Research",
-              "System"
-            ],
-            "description": "Behavioral classification of the agent."
-          },
-          "executionModel": {
-            "type": "string",
-            "enum": [
-              "Autonomous",
-              "User-in-the-loop",
-              "Scheduled"
-            ],
-            "description": "How the agent is triggered and supervised."
-          },
-          "trustScore": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Composite trust score. 0 = untrusted, 100 = fully trusted."
-          },
-          "version": {
-            "type": "string",
-            "description": "Semantic version of the agent definition (e.g. 'v2.1.0'). Use 'unknown' only if genuinely undetectable."
-          },
-          "author": {
-            "type": "string",
-            "description": "Team or individual who authored the agent. Check git blame, package.json author, or file metadata. Use 'unknown' only if genuinely undetectable."
-          },
-          "sourceRepo": {
-            "type": "string",
-            "description": "Repository URL or local path where the agent source lives. Check nearest .git/config for remote origin. Use 'unknown' only if genuinely undetectable."
-          },
-          "capabilities": {
-            "type": "array",
-            "description": "System capabilities the agent has access to.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "enabled"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Capability label (e.g. 'Filesystem', 'Browser', 'Network', 'Shell', 'Database')."
-                },
-                "enabled": {
-                  "type": "boolean",
-                  "description": "Whether this capability is active for the agent."
-                }
-              }
-            }
-          },
-          "tools": {
-            "type": "array",
-            "description": "Tools bound to this agent.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "type"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Tool identifier \u2014 must match either a skills[].id or mcpServers[].id for cross-referencing."
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "skill",
-                    "mcp"
-                  ],
-                  "description": "Whether the tool is a local skill or exposed via an MCP server."
-                }
-              }
-            }
-          },
-          "trustBreakdown": {
-            "type": "array",
-            "description": "Line-item factors that contribute to the trust score.",
-            "items": {
-              "type": "object",
-              "required": [
-                "label",
-                "delta"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "label": {
-                  "type": "string",
-                  "description": "Human-readable explanation of the trust factor (e.g. 'High external tool usage'). Avoid opaque identifiers like 'dangerous_keyword:rm' \u2014 expand to 'Dangerous keyword detected: rm command'."
-                },
-                "delta": {
-                  "type": "integer",
-                  "description": "Signed integer adjustment to the trust score. Negative = risk factor, positive = trust signal."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "agenticApps": {
-      "type": "array",
-      "description": "Every multi-agent application or workflow discovered on the endpoint.",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "sourceFilePath",
-          "framework",
-          "agentCount",
-          "risk",
-          "reviewStatus",
-          "description",
-          "agents",
-          "toolsByAgent",
-          "workflow",
-          "integrations",
-          "verificationChecks",
-          "riskTags",
-          "riskSummary"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Globally unique identifier for this app. Use '<sourceFilePath>' or a deterministic UUID."
-          },
-          "name": {
-            "type": "string",
-            "description": "Human-readable display name. Derive from the project directory + file (e.g. 'zeroclaw/Dockerfile', 'example-backend/docker-compose'). MUST NOT be a bare generic like 'dockerfile' \u2014 always include the project context."
-          },
-          "sourceFilePath": {
-            "type": "string",
-            "description": "Absolute path to the file that defines or anchors this app (e.g. '/Users/example/project/docker-compose.yml'). This replaces embedding the path inside the 'description' field."
-          },
-          "framework": {
-            "type": "string",
-            "description": "Orchestration framework (e.g. 'LangGraph', 'CrewAI', 'AutoGen', 'Custom'). Detect from imports, config files, or framework-specific manifests."
-          },
-          "agentCount": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Number of distinct agents participating in this app."
-          },
-          "risk": {
-            "type": "string",
-            "enum": [
-              "Low",
-              "Medium",
-              "High"
-            ],
-            "description": "Overall assessed risk level."
-          },
-          "reviewStatus": {
-            "type": "string",
-            "enum": [
-              "Reviewed",
-              "Unreviewed",
-              "Flagged"
-            ],
-            "description": "Whether a human has reviewed this app's configuration."
-          },
-          "description": {
-            "type": "string",
-            "description": "One-line functional summary of what the app does. Do NOT embed the file path here \u2014 use 'sourceFilePath' for that. Focus on behavior (e.g. 'Multi-agent code review system with linting, security checks, and style feedback')."
-          },
-          "agents": {
-            "type": "array",
-            "description": "The ordered list of agents participating in this app. Each MUST reference the agent by its unique 'id' from the agents[] array. Index aligns with toolsByAgent.",
-            "items": {
-              "type": "object",
-              "required": [
-                "id",
-                "name"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "description": "Unique agent id matching agents[].id."
-                },
-                "name": {
-                  "type": "string",
-                  "description": "Display name of the agent."
-                }
-              }
-            }
-          },
-          "toolsByAgent": {
-            "type": "array",
-            "description": "Tools grouped by agent. toolsByAgent[i] corresponds to agents[i].",
-            "items": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "List of tool names available to this agent."
-            }
-          },
-          "workflow": {
-            "type": "array",
-            "description": "Ordered steps in the app's execution pipeline. If the pipeline cannot be statically determined, this may be empty.",
-            "items": {
-              "type": "object",
-              "required": [
-                "step",
-                "agent",
-                "action"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "step": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "description": "1-based step ordinal."
-                },
-                "agent": {
-                  "type": "string",
-                  "description": "Display name of the agent performing this step."
-                },
-                "action": {
-                  "type": "string",
-                  "description": "Description of what happens in this step."
-                }
-              }
-            }
-          },
-          "integrations": {
-            "type": "array",
-            "description": "External systems the app connects to.",
-            "items": {
-              "type": "object",
-              "required": [
-                "name",
-                "type",
-                "risk"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Integration target (e.g. 'GitHub API', 'CRM API')."
-                },
-                "type": {
-                  "type": "string",
-                  "description": "Category (e.g. 'REST API', 'Database', 'Webhook', 'Execution Env', 'Internal Service', 'Web Source')."
-                },
-                "risk": {
-                  "type": "string",
-                  "enum": [
-                    "Low",
-                    "Medium",
-                    "High"
-                  ],
-                  "description": "Risk level of this integration."
-                }
-              }
-            }
-          },
-          "verificationChecks": {
-            "type": "array",
-            "description": "Checklist labels the scanner evaluated. The dashboard derives pass/warn/fail from this list plus risk and reviewStatus.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "riskTags": {
-            "type": "array",
-            "description": "Short risk labels surfaced in the UI (e.g. 'Autonomous Code Execution', 'No Sandbox Isolation').",
-            "items": {
-              "type": "string"
-            }
-          },
-          "riskSummary": {
-            "type": "string",
-            "description": "Paragraph-length risk narrative for this app. Do NOT embed absolute file paths \u2014 reference the app by name."
-          }
-        }
-      }
-    }
-  }
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Vettd Scanner Data Contract",
+	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
+	"version": "2.2.0",
+	"type": "object",
+	"required": [
+		"scanMeta",
+		"prompts",
+		"skills",
+		"mcpServers",
+		"agents",
+		"agenticApps"
+	],
+	"additionalProperties": false,
+	"properties": {
+		"scanMeta": {
+			"description": "Metadata about the scan itself. Sent once per payload.",
+			"type": "object",
+			"required": [
+				"scanId",
+				"endpointHostname",
+				"scannedAt",
+				"scannerVersion",
+				"scanDurationMs",
+				"scanRoots",
+				"hostNetwork"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"scanId": {
+					"type": "string",
+					"format": "uuid",
+					"description": "Unique identifier for this scan run."
+				},
+				"endpointHostname": {
+					"type": "string",
+					"description": "Hostname of the scanned endpoint (e.g. 'prod-gpu-node-01')."
+				},
+				"scannedAt": {
+					"type": "string",
+					"format": "date-time",
+					"description": "ISO-8601 timestamp when the scan completed."
+				},
+				"scannerVersion": {
+					"type": "string",
+					"description": "Semantic version of the scanner binary (e.g. '0.3.1')."
+				},
+				"scanDurationMs": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Wall-clock duration of the scan in milliseconds."
+				},
+				"scanRoots": {
+					"type": "array",
+					"description": "Absolute directory paths the scanner walked. Tells the dashboard what scope the results cover.",
+					"items": {
+						"type": "string"
+					},
+					"minItems": 1
+				},
+				"hostNetwork": {
+					"type": "object",
+					"description": "Host-level network configuration observed at scan time. Used for contextual analysis of MCP server exposure.",
+					"required": [
+						"firewallEnabled",
+						"firewallMode",
+						"stealthMode",
+						"firewallRules"
+					],
+					"additionalProperties": false,
+					"properties": {
+						"firewallEnabled": {
+							"type": "boolean",
+							"description": "Whether the host OS firewall is enabled (e.g. macOS Application Firewall)."
+						},
+						"firewallMode": {
+							"type": "string",
+							"enum": ["off", "on", "block-all", "unknown"],
+							"description": "Firewall operating mode. 'off' = disabled, 'on' = normal filtering, 'block-all' = block all incoming, 'unknown' = could not determine."
+						},
+						"stealthMode": {
+							"type": "boolean",
+							"description": "Whether stealth mode is active (host does not respond to probe requests like ICMP ping)."
+						},
+						"firewallRules": {
+							"type": "array",
+							"description": "Application-level firewall rules discovered on the host.",
+							"items": {
+								"type": "object",
+								"required": ["appPath", "allowed"],
+								"additionalProperties": false,
+								"properties": {
+									"appPath": {
+										"type": "string",
+										"description": "Absolute path to the application binary (e.g. '/usr/bin/python3')."
+									},
+									"allowed": {
+										"type": "boolean",
+										"description": "Whether the firewall allows incoming connections for this application."
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"prompts": {
+			"type": "array",
+			"description": "Every prompt template discovered on the endpoint. Each entry MUST have a globally-unique 'id'.",
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"name",
+					"sourceFilePath",
+					"classification",
+					"tokens",
+					"contentHash",
+					"lastChangedDate",
+					"capabilities",
+					"secretRefs",
+					"injectionSurfaces",
+					"dependencies",
+					"riskScore"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Globally unique identifier for this prompt. Use '<sourceFilePath>:<startLine>' or a deterministic UUID derived from file path + content hash. Must be stable across scans of the same file with the same content."
+					},
+					"name": {
+						"type": "string",
+						"description": "Human-readable display name. Derive from filename, front-matter title, or containing folder. MUST NOT be a generic label like 'agents' \u2014 if the source file is 'agents.md', use the parent directory or a distinguishing qualifier (e.g. 'zeroclaw/agents', 'ah-verify/agents'). When multiple prompts share a source filename, prepend the project or parent directory name."
+					},
+					"sourceFilePath": {
+						"type": "string",
+						"description": "Absolute path to the file where the prompt was found (e.g. '/Users/will/project/.github/copilot-instructions.md'). This is what the dashboard uses to distinguish items that would otherwise share a name."
+					},
+					"classification": {
+						"type": "string",
+						"enum": ["System Prompt", "User Prompt", "Tool Prompt"],
+						"description": "Functional role of the prompt."
+					},
+					"tokens": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Token count of the prompt body (using the model's tokenizer or cl100k_base)."
+					},
+					"contentHash": {
+						"type": "string",
+						"description": "SHA-256 hex digest of the raw prompt body. Used for change detection across scans."
+					},
+					"lastChangedDate": {
+						"type": "string",
+						"format": "date",
+						"description": "ISO-8601 date (YYYY-MM-DD) when the prompt file was last modified on disk."
+					},
+					"capabilities": {
+						"type": "array",
+						"description": "Capabilities the prompt grants or implies when executed.",
+						"items": {
+							"type": "object",
+							"required": ["text", "level"],
+							"additionalProperties": false,
+							"properties": {
+								"text": {
+									"type": "string",
+									"description": "Human-readable capability label (e.g. 'Shell execution')."
+								},
+								"level": {
+									"type": "string",
+									"enum": ["info", "warn", "danger"],
+									"description": "Severity of the capability."
+								}
+							}
+						}
+					},
+					"secretRefs": {
+						"type": "array",
+						"description": "Credential material found or referenced inside the prompt body.",
+						"items": {
+							"type": "object",
+							"required": ["label", "detail", "tone"],
+							"additionalProperties": false,
+							"properties": {
+								"label": {
+									"type": "string",
+									"description": "Short descriptor (e.g. 'Env var reference (safe)' or 'Hardcoded token found')."
+								},
+								"detail": {
+									"type": "string",
+									"description": "The literal reference or redacted value (e.g. '$OPENAI_API_KEY' or 'sk-proj-****...a4f2')."
+								},
+								"tone": {
+									"type": "string",
+									"enum": ["safe", "danger"],
+									"description": "'safe' for env-var refs. 'danger' for inline/hardcoded secrets."
+								}
+							}
+						}
+					},
+					"injectionSurfaces": {
+						"type": "array",
+						"description": "Prompt injection attack surfaces detected via static analysis.",
+						"items": {
+							"type": "object",
+							"required": ["text", "severity"],
+							"additionalProperties": false,
+							"properties": {
+								"text": {
+									"type": "string",
+									"description": "Description of the injection surface."
+								},
+								"severity": {
+									"type": "string",
+									"enum": ["low", "medium", "high"],
+									"description": "Assessed severity."
+								}
+							}
+						}
+					},
+					"dependencies": {
+						"type": "array",
+						"description": "External services, models, or tools this prompt depends on at runtime.",
+						"items": {
+							"type": "string"
+						}
+					},
+					"riskScore": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "Composite risk score. 0 = no risk, 100 = critical."
+					}
+				}
+			}
+		},
+		"skills": {
+			"type": "array",
+			"description": "Every reusable skill/tool discovered on the endpoint.",
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"name",
+					"type",
+					"trustLevel",
+					"executionEnvironment",
+					"description",
+					"permissions",
+					"dependencies",
+					"consumers"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Globally unique identifier for this skill. Use the skill name if unique, or '<name>-<hash>' if collisions exist."
+					},
+					"name": {
+						"type": "string",
+						"description": "Display name for this skill (e.g. 'python', 'filesystem', 'shell'). May share a name if two different configs define the same capability \u2014 use 'id' for dedup."
+					},
+					"type": {
+						"type": "string",
+						"enum": [
+							"Local Function",
+							"HTTP Integration",
+							"CLI Tool",
+							"Remote Service"
+						],
+						"description": "How this skill is implemented."
+					},
+					"trustLevel": {
+						"type": "string",
+						"enum": ["Trusted", "Conditional", "Untrusted"],
+						"description": "Assessed trust posture."
+					},
+					"executionEnvironment": {
+						"type": "string",
+						"enum": ["Local Process", "Container", "Remote API"],
+						"description": "Where this skill runs."
+					},
+					"description": {
+						"type": "string",
+						"description": "One-line summary of what the skill does. Must be specific \u2014 not just 'python capability' but e.g. 'Executes Python scripts via local interpreter with unrestricted filesystem access'."
+					},
+					"permissions": {
+						"type": "array",
+						"description": "OS/runtime permissions this skill requires.",
+						"items": {
+							"type": "object",
+							"required": ["name", "required"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "Permission label (e.g. 'Filesystem read/write', 'Network access', 'Shell execution', 'Database access', 'Secrets access')."
+								},
+								"required": {
+									"type": "boolean",
+									"description": "Whether this permission is actively used by the skill."
+								}
+							}
+						}
+					},
+					"dependencies": {
+						"type": "object",
+						"description": "Runtime dependency tree.",
+						"required": ["libraries", "binaries", "apis"],
+						"additionalProperties": false,
+						"properties": {
+							"libraries": {
+								"type": "array",
+								"description": "Package dependencies with pinned versions (e.g. 'typescript@5.7').",
+								"items": {
+									"type": "string"
+								}
+							},
+							"binaries": {
+								"type": "array",
+								"description": "System binaries required at runtime (e.g. 'bash', 'git', 'curl').",
+								"items": {
+									"type": "string"
+								}
+							},
+							"apis": {
+								"type": "array",
+								"description": "External API services the skill calls (e.g. 'GitHub API', 'npm Registry'). Do NOT put documentation URLs here \u2014 only runtime service dependencies.",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"consumers": {
+						"type": "array",
+						"description": "Agents and apps that invoke this skill. Each consumer entry MUST reference the agent or app by its unique 'id', not by a generic name.",
+						"items": {
+							"type": "object",
+							"required": ["id", "name", "type", "invocations"],
+							"additionalProperties": false,
+							"properties": {
+								"id": {
+									"type": "string",
+									"description": "The unique 'id' of the consuming agent or app (matching agents[].id or agenticApps[].id)."
+								},
+								"name": {
+									"type": "string",
+									"description": "Display name of the consuming agent or app."
+								},
+								"type": {
+									"type": "string",
+									"enum": ["Agent", "App"],
+									"description": "Whether the consumer is an agent or an agentic app."
+								},
+								"invocations": {
+									"type": "integer",
+									"minimum": 0,
+									"description": "Total invocation count observed during the scan window. Use 0 only if invocation tracking is not available \u2014 do not fabricate counts."
+								}
+							}
+						}
+					},
+					"external_scanner_results": {
+						"type": "array",
+						"description": "Optional external scanner results for this skill. Omit entirely for endpoints that do not integrate external scanners \u2014 omitting the field is always valid (back-compat). Each entry corresponds to one scanner run.",
+						"items": {
+							"type": "object",
+							"required": ["source", "status"],
+							"additionalProperties": false,
+							"properties": {
+								"source": {
+									"type": "string",
+									"description": "Scanner identifier. Allowed values: 'cisco', 'snyk', 'socket', 'gen-trust-hub', or any future scanner slug. Aligns with AssetFinding.source and ScannerRun.source."
+								},
+								"version": {
+									"type": "string",
+									"description": "Scanner version string (e.g. '0.4.2'). Omit if unavailable."
+								},
+								"status": {
+									"type": "string",
+									"enum": [
+										"success",
+										"errored",
+										"timeout",
+										"skipped"
+									],
+									"description": "Outcome of this scanner run. A scanner that errored or timed out should still be reported so the audit record is complete."
+								},
+								"verdict": {
+									"type": "string",
+									"enum": ["pass", "warn", "fail"],
+									"description": "Scanner-level verdict. Omit when status is not 'success'."
+								},
+								"raw_report": {
+									"type": ["object", "null"],
+									"description": "Full upstream output (e.g. SARIF blob). Preserved for traceability and re-derivation without rescanning. May be null."
+								},
+								"findings": {
+									"type": "array",
+									"description": "Normalized findings produced by this scanner, mapped to vettd's category/severity shape.",
+									"items": {
+										"type": "object",
+										"required": [
+											"rule_id",
+											"category",
+											"severity",
+											"label"
+										],
+										"additionalProperties": false,
+										"properties": {
+											"rule_id": {
+												"type": "string",
+												"description": "Upstream rule identifier (e.g. 'AITech-1.1.1', 'E004', 'best-practices/no-curl-bash'). Aligns with AssetFinding.ruleId."
+											},
+											"category": {
+												"type": "string",
+												"enum": [
+													"security",
+													"structure",
+													"description",
+													"best-practices",
+													"scripts",
+													"evals"
+												],
+												"description": "vettd finding category."
+											},
+											"severity": {
+												"type": "string",
+												"enum": [
+													"fail",
+													"warn",
+													"info"
+												],
+												"description": "vettd severity. Cisco mapping: CRITICAL/HIGH \u2192 fail, MEDIUM \u2192 warn, LOW/INFO \u2192 info."
+											},
+											"label": {
+												"type": "string",
+												"description": "Short human-readable label for the finding (e.g. 'Prompt injection (AITech-1.1.1)')."
+											},
+											"detail": {
+												"type": "string",
+												"description": "Extended finding detail: file path, line number, remediation. Optional."
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"mcpServers": {
+			"type": "array",
+			"description": "Every MCP server instance discovered on the endpoint.",
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"name",
+					"transport",
+					"network",
+					"auth",
+					"verified",
+					"command",
+					"tools",
+					"dependentAgents",
+					"networkEvidence",
+					"envVars"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Globally unique identifier for this MCP server. Use the package identifier (e.g. 'io.github.github/github-mcp-server') or '<name>-<hash>' if needed."
+					},
+					"name": {
+						"type": "string",
+						"description": "Display name for the server (e.g. 'github-mcp-server', 'playwright-mcp'). Use the short package name, not the full reverse-DNS identifier."
+					},
+					"transport": {
+						"type": "string",
+						"enum": ["stdio", "sse", "streamable-http", "unknown"],
+						"description": "MCP transport protocol. 'stdio' = local process pipe, 'sse' = HTTP Server-Sent Events, 'streamable-http' = HTTP streaming, 'unknown' = could not determine from config."
+					},
+					"network": {
+						"type": "string",
+						"enum": ["Local Only", "LAN", "Internet Exposed"],
+						"description": "Network exposure level."
+					},
+					"auth": {
+						"type": "string",
+						"enum": ["API Key", "OAuth", "mTLS", "None"],
+						"description": "Authentication mechanism protecting the server surface."
+					},
+					"verified": {
+						"type": "boolean",
+						"description": "Whether the server's identity and integrity have been cryptographically verified."
+					},
+					"command": {
+						"type": "string",
+						"description": "The shell command used to launch this MCP server (e.g. 'npx -y @anthropic/mcp-server-github'). Useful for audit trail and identifying supply chain risk."
+					},
+					"tools": {
+						"type": "array",
+						"description": "Every tool the MCP server exposes. The scanner MUST enumerate individual tools from the server's tool manifest \u2014 do NOT emit a single generic '<server>_invoke' entry. If tool enumeration fails, set this to an empty array and note the failure in the tool description.",
+						"items": {
+							"type": "object",
+							"required": ["name", "risk", "description"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "Actual tool function name as declared by the server (e.g. 'create_issue', 'run_shell_command', 'browser_navigate'). NOT a synthetic '<server>_invoke' stub."
+								},
+								"risk": {
+									"type": "string",
+									"enum": ["Low", "Medium", "High"],
+									"description": "Assessed risk level based on capability scope."
+								},
+								"description": {
+									"type": "string",
+									"description": "One-line summary of what the tool does. Pull from the server's tool schema description field."
+								}
+							}
+						}
+					},
+					"dependentAgents": {
+						"type": "array",
+						"description": "IDs of agents that reference or invoke tools on this server. These MUST be cross-referenced from the agents[].tools array \u2014 if an agent lists a tool of type 'mcp' whose name matches this server, include that agent's id here.",
+						"items": {
+							"type": "string"
+						}
+					},
+					"networkEvidence": {
+						"type": "array",
+						"description": "Factual network evidence gathered for this MCP server. Each item represents one observation from config analysis, known package profiles, log scanning, or firewall state. The scanner does not make risk judgments \u2014 it reports raw evidence for the server to analyze.",
+						"items": {
+							"type": "object",
+							"required": ["source", "category", "detail"],
+							"additionalProperties": false,
+							"properties": {
+								"source": {
+									"type": "string",
+									"enum": [
+										"config",
+										"env",
+										"firewall",
+										"logs",
+										"package-info",
+										"port-scan",
+										"code-analysis",
+										"manifest"
+									],
+									"description": "Where the evidence was gathered from. 'config' = MCP config file, 'env' = environment variables, 'firewall' = host firewall rules, 'logs' = application log files, 'package-info' = known package behavior database, 'port-scan' = active port scanning, 'code-analysis' = static code analysis, 'manifest' = package manifest files."
+								},
+								"category": {
+									"type": "string",
+									"enum": [
+										"transport",
+										"outbound-url",
+										"local-endpoint",
+										"websocket",
+										"package-registry",
+										"known-behavior",
+										"firewall-match",
+										"log-network-activity",
+										"credential-in-env",
+										"binding",
+										"auth",
+										"tls",
+										"cors",
+										"exposure"
+									],
+									"description": "What kind of evidence this is. 'transport' = protocol type, 'outbound-url' = remote HTTP endpoint, 'local-endpoint' = localhost/127.0.0.1, 'websocket' = WebSocket connection, 'package-registry' = npm/pypi registry URL, 'known-behavior' = documented behavior for known packages, 'firewall-match' = matching firewall rule, 'log-network-activity' = network call found in logs, 'credential-in-env' = credential passed via environment variable, 'binding' = network binding/listening, 'auth' = authentication mechanism, 'tls' = TLS/SSL configuration, 'cors' = CORS policy, 'exposure' = general network exposure."
+								},
+								"detail": {
+									"type": "string",
+									"description": "Human-readable description of the finding."
+								},
+								"url": {
+									"type": "string",
+									"description": "The URL or network address observed, if applicable. Only present for URL-based evidence."
+								}
+							}
+						}
+					},
+					"envVars": {
+						"type": "array",
+						"description": "Environment variables referenced in this server's MCP config. The scanner checks whether each variable is set on the host (does NOT capture values). Useful for identifying credential dependencies and configuration requirements.",
+						"items": {
+							"type": "object",
+							"required": ["name", "isSet", "sourceKey"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "The environment variable name (e.g. 'GITHUB_TOKEN', 'OPENAI_API_KEY')."
+								},
+								"isSet": {
+									"type": "boolean",
+									"description": "Whether this environment variable is currently set on the host. true = present (value not captured), false = not set."
+								},
+								"sourceKey": {
+									"type": "string",
+									"description": "Where in the MCP config this variable was referenced. 'env' = in the server's env block, 'args' = in command arguments via ${VAR} interpolation, 'inputs' = in the MCP config inputs section."
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"agents": {
+			"type": "array",
+			"description": "Every AI agent definition discovered on the endpoint. Each entry MUST have a globally-unique 'id'.",
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"name",
+					"sourceFilePath",
+					"classification",
+					"executionModel",
+					"trustScore",
+					"version",
+					"author",
+					"sourceRepo",
+					"capabilities",
+					"tools",
+					"trustBreakdown"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Globally unique identifier for this agent. Use '<sourceFilePath>:<startLine>' or a deterministic UUID derived from content. Must be stable across scans of the same file with the same content."
+					},
+					"name": {
+						"type": "string",
+						"description": "Human-readable display name. Derive from the filename, front-matter title, 'name' field in the agent config, or containing project directory. MUST NOT be a generic label like 'agents'. When the source file is 'AGENTS.md', use the project directory as a prefix (e.g. 'zeroclaw/agents', 'ah-verify/agents') or extract the agent's declared name from the file's content."
+					},
+					"sourceFilePath": {
+						"type": "string",
+						"description": "Absolute path to the file where the agent definition was found."
+					},
+					"classification": {
+						"type": "string",
+						"enum": ["Code", "Automation", "Research", "System"],
+						"description": "Behavioral classification of the agent."
+					},
+					"executionModel": {
+						"type": "string",
+						"enum": ["Autonomous", "User-in-the-loop", "Scheduled"],
+						"description": "How the agent is triggered and supervised."
+					},
+					"trustScore": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "Composite trust score. 0 = untrusted, 100 = fully trusted."
+					},
+					"version": {
+						"type": "string",
+						"description": "Semantic version of the agent definition (e.g. 'v2.1.0'). Use 'unknown' only if genuinely undetectable."
+					},
+					"author": {
+						"type": "string",
+						"description": "Team or individual who authored the agent. Check git blame, package.json author, or file metadata. Use 'unknown' only if genuinely undetectable."
+					},
+					"sourceRepo": {
+						"type": "string",
+						"description": "Repository URL or local path where the agent source lives. Check nearest .git/config for remote origin. Use 'unknown' only if genuinely undetectable."
+					},
+					"capabilities": {
+						"type": "array",
+						"description": "System capabilities the agent has access to.",
+						"items": {
+							"type": "object",
+							"required": ["name", "enabled"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "Capability label (e.g. 'Filesystem', 'Browser', 'Network', 'Shell', 'Database')."
+								},
+								"enabled": {
+									"type": "boolean",
+									"description": "Whether this capability is active for the agent."
+								}
+							}
+						}
+					},
+					"tools": {
+						"type": "array",
+						"description": "Tools bound to this agent.",
+						"items": {
+							"type": "object",
+							"required": ["name", "type"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "Tool identifier \u2014 must match either a skills[].id or mcpServers[].id for cross-referencing."
+								},
+								"type": {
+									"type": "string",
+									"enum": ["skill", "mcp"],
+									"description": "Whether the tool is a local skill or exposed via an MCP server."
+								}
+							}
+						}
+					},
+					"trustBreakdown": {
+						"type": "array",
+						"description": "Line-item factors that contribute to the trust score.",
+						"items": {
+							"type": "object",
+							"required": ["label", "delta"],
+							"additionalProperties": false,
+							"properties": {
+								"label": {
+									"type": "string",
+									"description": "Human-readable explanation of the trust factor (e.g. 'High external tool usage'). Avoid opaque identifiers like 'dangerous_keyword:rm' \u2014 expand to 'Dangerous keyword detected: rm command'."
+								},
+								"delta": {
+									"type": "integer",
+									"description": "Signed integer adjustment to the trust score. Negative = risk factor, positive = trust signal."
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"agenticApps": {
+			"type": "array",
+			"description": "Every multi-agent application or workflow discovered on the endpoint.",
+			"items": {
+				"type": "object",
+				"required": [
+					"id",
+					"name",
+					"sourceFilePath",
+					"framework",
+					"agentCount",
+					"risk",
+					"reviewStatus",
+					"description",
+					"agents",
+					"toolsByAgent",
+					"workflow",
+					"integrations",
+					"verificationChecks",
+					"riskTags",
+					"riskSummary"
+				],
+				"additionalProperties": false,
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Globally unique identifier for this app. Use '<sourceFilePath>' or a deterministic UUID."
+					},
+					"name": {
+						"type": "string",
+						"description": "Human-readable display name. Derive from the project directory + file (e.g. 'zeroclaw/Dockerfile', 'ah-verify/docker-compose'). MUST NOT be a bare generic like 'dockerfile' \u2014 always include the project context."
+					},
+					"sourceFilePath": {
+						"type": "string",
+						"description": "Absolute path to the file that defines or anchors this app (e.g. '/Users/will/project/docker-compose.yml'). This replaces embedding the path inside the 'description' field."
+					},
+					"framework": {
+						"type": "string",
+						"description": "Orchestration framework (e.g. 'LangGraph', 'CrewAI', 'AutoGen', 'Custom'). Detect from imports, config files, or framework-specific manifests."
+					},
+					"agentCount": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Number of distinct agents participating in this app."
+					},
+					"risk": {
+						"type": "string",
+						"enum": ["Low", "Medium", "High"],
+						"description": "Overall assessed risk level."
+					},
+					"reviewStatus": {
+						"type": "string",
+						"enum": ["Reviewed", "Unreviewed", "Flagged"],
+						"description": "Whether a human has reviewed this app's configuration."
+					},
+					"description": {
+						"type": "string",
+						"description": "One-line functional summary of what the app does. Do NOT embed the file path here \u2014 use 'sourceFilePath' for that. Focus on behavior (e.g. 'Multi-agent code review system with linting, security checks, and style feedback')."
+					},
+					"agents": {
+						"type": "array",
+						"description": "The ordered list of agents participating in this app. Each MUST reference the agent by its unique 'id' from the agents[] array. Index aligns with toolsByAgent.",
+						"items": {
+							"type": "object",
+							"required": ["id", "name"],
+							"additionalProperties": false,
+							"properties": {
+								"id": {
+									"type": "string",
+									"description": "Unique agent id matching agents[].id."
+								},
+								"name": {
+									"type": "string",
+									"description": "Display name of the agent."
+								}
+							}
+						}
+					},
+					"toolsByAgent": {
+						"type": "array",
+						"description": "Tools grouped by agent. toolsByAgent[i] corresponds to agents[i].",
+						"items": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"description": "List of tool names available to this agent."
+						}
+					},
+					"workflow": {
+						"type": "array",
+						"description": "Ordered steps in the app's execution pipeline. If the pipeline cannot be statically determined, this may be empty.",
+						"items": {
+							"type": "object",
+							"required": ["step", "agent", "action"],
+							"additionalProperties": false,
+							"properties": {
+								"step": {
+									"type": "integer",
+									"minimum": 1,
+									"description": "1-based step ordinal."
+								},
+								"agent": {
+									"type": "string",
+									"description": "Display name of the agent performing this step."
+								},
+								"action": {
+									"type": "string",
+									"description": "Description of what happens in this step."
+								}
+							}
+						}
+					},
+					"integrations": {
+						"type": "array",
+						"description": "External systems the app connects to.",
+						"items": {
+							"type": "object",
+							"required": ["name", "type", "risk"],
+							"additionalProperties": false,
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "Integration target (e.g. 'GitHub API', 'CRM API')."
+								},
+								"type": {
+									"type": "string",
+									"description": "Category (e.g. 'REST API', 'Database', 'Webhook', 'Execution Env', 'Internal Service', 'Web Source')."
+								},
+								"risk": {
+									"type": "string",
+									"enum": ["Low", "Medium", "High"],
+									"description": "Risk level of this integration."
+								}
+							}
+						}
+					},
+					"verificationChecks": {
+						"type": "array",
+						"description": "Checklist labels the scanner evaluated. The dashboard derives pass/warn/fail from this list plus risk and reviewStatus.",
+						"items": {
+							"type": "string"
+						}
+					},
+					"riskTags": {
+						"type": "array",
+						"description": "Short risk labels surfaced in the UI (e.g. 'Autonomous Code Execution', 'No Sandbox Isolation').",
+						"items": {
+							"type": "string"
+						}
+					},
+					"riskSummary": {
+						"type": "string",
+						"description": "Paragraph-length risk narrative for this app. Do NOT embed absolute file paths \u2014 reference the app by name."
+					}
+				}
+			}
+		}
+	}
 }

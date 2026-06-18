@@ -76,8 +76,7 @@ fn risk_level(score: i32) -> &'static str {
 
 fn review_status_label(status: &str) -> &'static str {
     match status {
-        "pass" => "Reviewed",
-        "fail" => "Flagged",
+        "critical" | "high" => "Flagged",
         _ => "Unreviewed",
     }
 }
@@ -228,7 +227,7 @@ fn build_verification_checks(a: &ArtifactReport) -> Vec<String> {
         "Risk score computed".to_string(),
     ];
 
-    if a.verification_status == "pass" {
+    if matches!(a.verification_status.as_str(), "info" | "low") {
         checks.push("Verification passed".to_string());
     }
     if metadata_bool(a, "direct_agentic_evidence") {
@@ -358,19 +357,24 @@ mod tests {
     }
 
     #[test]
-    fn review_status_pass() {
-        assert_eq!(review_status_label("pass"), "Reviewed");
+    fn review_status_critical_flagged() {
+        assert_eq!(review_status_label("critical"), "Flagged");
     }
 
     #[test]
-    fn review_status_fail() {
-        assert_eq!(review_status_label("fail"), "Flagged");
+    fn review_status_high_flagged() {
+        assert_eq!(review_status_label("high"), "Flagged");
     }
 
     #[test]
-    fn review_status_unknown() {
-        assert_eq!(review_status_label("pending"), "Unreviewed");
-        assert_eq!(review_status_label("conditional_pass"), "Unreviewed");
+    fn review_status_medium_unreviewed() {
+        assert_eq!(review_status_label("medium"), "Unreviewed");
+    }
+
+    #[test]
+    fn review_status_low_and_info_unreviewed() {
+        assert_eq!(review_status_label("low"), "Unreviewed");
+        assert_eq!(review_status_label("info"), "Unreviewed");
     }
 
     #[test]
@@ -433,7 +437,7 @@ mod tests {
     #[test]
     fn build_verification_checks_pass() {
         let mut a = ArtifactReport::new("container_config", 0.8);
-        a.verification_status = "pass".to_string();
+        a.verification_status = "info".to_string();
         let checks = build_verification_checks(&a);
         assert!(checks.contains(&"Verification passed".to_string()));
     }

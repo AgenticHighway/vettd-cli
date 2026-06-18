@@ -1,26 +1,56 @@
 //! Pure-logic verification module.
 //!
 //! Applies governance rules to an `ArtifactReport` and sets its
-//! `verification_status` to one of `"pass"`, `"conditional_pass"`, or `"fail"`.
+//! `verification_status` to one of the five severity levels.
 
 use crate::models::ArtifactReport;
+use crate::scoring::{
+    SEVERITY_CRITICAL_SCORE, SEVERITY_HIGH_SCORE, SEVERITY_LOW_SCORE, SEVERITY_MEDIUM_SCORE,
+};
+
+// ---------------------------------------------------------------------------
+// Severity level constants
+// ---------------------------------------------------------------------------
+
+pub const SEVERITY_CRITICAL: &str = "critical";
+pub const SEVERITY_HIGH: &str = "high";
+pub const SEVERITY_MEDIUM: &str = "medium";
+pub const SEVERITY_LOW: &str = "low";
+pub const SEVERITY_INFO: &str = "info";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Return the higher-severity status of `a` and `b`.
+/// Return the higher-severity of `a` and `b`.
 fn rank_max<'a>(a: &'a str, b: &'a str) -> &'a str {
     let rank = |s: &str| match s {
-        "pass" => 0,
-        "conditional_pass" => 1,
-        "fail" => 2,
+        SEVERITY_CRITICAL => 5,
+        SEVERITY_HIGH => 4,
+        SEVERITY_MEDIUM => 3,
+        SEVERITY_LOW => 2,
+        SEVERITY_INFO => 1,
         _ => 0,
     };
     if rank(a) >= rank(b) {
         a
     } else {
         b
+    }
+}
+
+/// Map a numeric risk score to a severity level string.
+fn score_to_severity(score: i32) -> &'static str {
+    if score >= SEVERITY_CRITICAL_SCORE {
+        SEVERITY_CRITICAL
+    } else if score >= SEVERITY_HIGH_SCORE {
+        SEVERITY_HIGH
+    } else if score >= SEVERITY_MEDIUM_SCORE {
+        SEVERITY_MEDIUM
+    } else if score >= SEVERITY_LOW_SCORE {
+        SEVERITY_LOW
+    } else {
+        SEVERITY_INFO
     }
 }
 
@@ -43,33 +73,26 @@ fn has_governance_constraints(artifact: &ArtifactReport) -> bool {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Apply verification rules and return the resulting status string.
+/// Apply verification rules and return the resulting severity string.
 ///
 /// Rules (in priority order):
-///   1. `credential_exposure_signal` → always **fail**.
-///   2. Score bands: ≥50 → fail, ≥20 → conditional_pass, else pass.
-///   3. `dangerous_keyword:*` escalates to fail unless governance
-///      constraints are present (then conditional_pass).
-///   4. `dangerous_combo:*` escalates to at least conditional_pass.
+///   1. `credential_exposure_signal` → always **critical**.
+///   2. Score bands: ≥90 → critical, ≥70 → high, ≥40 → medium, ≥10 → low, else info.
+///   3. `dangerous_keyword:*` escalates to high unless governance
+///      constraints are present (then medium).
+///   4. `dangerous_combo:*` escalates to at least medium.
 pub fn verify(artifact: &mut ArtifactReport) -> String {
-    // Rule 1: credential exposure is an automatic failure.
+    // Rule 1: credential exposure is an automatic critical.
     if artifact
         .signals
         .contains(&"credential_exposure_signal".to_string())
     {
-        artifact.verification_status = "fail".to_string();
+        artifact.verification_status = SEVERITY_CRITICAL.to_string();
         return artifact.verification_status.clone();
     }
 
     // Rule 2: score-based bands.
-    let score = artifact.risk_score;
-    let mut status = if score >= 50 {
-        "fail"
-    } else if score >= 20 {
-        "conditional_pass"
-    } else {
-        "pass"
-    };
+    let mut status = score_to_severity(artifact.risk_score);
 
     // Rule 3-4: dangerous signal escalation.
     let has_dangerous_keyword = artifact
@@ -81,14 +104,14 @@ pub fn verify(artifact: &mut ArtifactReport) -> String {
         .iter()
         .any(|s| s.starts_with("dangerous_combo:"));
 
-    if has_dangerous_keyword && status != "fail" {
+    if has_dangerous_keyword && status != SEVERITY_CRITICAL {
         status = if has_governance_constraints(artifact) {
-            rank_max(status, "conditional_pass")
+            rank_max(status, SEVERITY_MEDIUM)
         } else {
-            "fail"
+            rank_max(status, SEVERITY_HIGH)
         };
-    } else if has_dangerous_combo && status != "fail" {
-        status = rank_max(status, "conditional_pass");
+    } else if has_dangerous_combo && status != SEVERITY_CRITICAL {
+        status = rank_max(status, SEVERITY_MEDIUM);
     }
 
     artifact.verification_status = status.to_string();
@@ -108,61 +131,81 @@ mod tests {
     }
 
     #[test]
-    fn credential_exposure_always_fails() {
+    fn credential_exposure_always_critical() {
         let mut a = artifact_with("mcp_config", 5, &["credential_exposure_signal"]);
         let status = verify(&mut a);
-        assert_eq!(status, "fail");
+        assert_eq!(status, SEVERITY_CRITICAL);
     }
 
     #[test]
-    fn high_score_fails() {
-        let mut a = artifact_with("cursor_rules", 55, &[]);
-        let status = verify(&mut a);
-        assert_eq!(status, "fail");
+    fn score_90_is_critical() {
+        let mut a = artifact_with("cursor_rules", 90, &[]);
+        assert_eq!(verify(&mut a), SEVERITY_CRITICAL);
     }
 
     #[test]
-    fn medium_score_conditional_pass() {
-        let mut a = artifact_with("cursor_rules", 25, &[]);
-        let status = verify(&mut a);
-        assert_eq!(status, "conditional_pass");
+    fn score_70_is_high() {
+        let mut a = artifact_with("cursor_rules", 70, &[]);
+        assert_eq!(verify(&mut a), SEVERITY_HIGH);
     }
 
     #[test]
-    fn low_score_passes() {
+    fn score_40_is_medium() {
+        let mut a = artifact_with("cursor_rules", 40, &[]);
+        assert_eq!(verify(&mut a), SEVERITY_MEDIUM);
+    }
+
+    #[test]
+    fn score_10_is_low() {
         let mut a = artifact_with("cursor_rules", 10, &[]);
-        let status = verify(&mut a);
-        assert_eq!(status, "pass");
+        assert_eq!(verify(&mut a), SEVERITY_LOW);
     }
 
     #[test]
-    fn dangerous_keyword_without_governance_fails() {
-        let mut a = artifact_with("cursor_rules", 10, &["dangerous_keyword:steal"]);
-        let status = verify(&mut a);
-        assert_eq!(status, "fail");
+    fn score_below_10_is_info() {
+        let mut a = artifact_with("cursor_rules", 5, &[]);
+        assert_eq!(verify(&mut a), SEVERITY_INFO);
     }
 
     #[test]
-    fn dangerous_keyword_with_governance_conditional_pass() {
-        let mut a = artifact_with("cursor_rules", 10, &["dangerous_keyword:steal"]);
+    fn dangerous_keyword_without_governance_escalates_to_high() {
+        let mut a = artifact_with("cursor_rules", 5, &["dangerous_keyword:steal"]);
+        assert_eq!(verify(&mut a), SEVERITY_HIGH);
+    }
+
+    #[test]
+    fn dangerous_keyword_with_governance_escalates_to_medium() {
+        let mut a = artifact_with("cursor_rules", 5, &["dangerous_keyword:steal"]);
         a.metadata
             .insert("declared_tools".to_string(), json!(["shell"]));
-        let status = verify(&mut a);
-        assert_eq!(status, "conditional_pass");
+        assert_eq!(verify(&mut a), SEVERITY_MEDIUM);
     }
 
     #[test]
-    fn dangerous_combo_escalates_to_conditional_pass() {
-        let mut a = artifact_with("cursor_rules", 10, &["dangerous_combo:shell+network+fs"]);
-        let status = verify(&mut a);
-        assert_eq!(status, "conditional_pass");
+    fn dangerous_combo_escalates_to_medium() {
+        let mut a = artifact_with("cursor_rules", 5, &["dangerous_combo:shell+network+fs"]);
+        assert_eq!(verify(&mut a), SEVERITY_MEDIUM);
     }
 
     #[test]
     fn credential_overrides_low_score() {
         let mut a = artifact_with("cursor_rules", 0, &["credential_exposure_signal"]);
-        let status = verify(&mut a);
-        assert_eq!(status, "fail");
+        assert_eq!(verify(&mut a), SEVERITY_CRITICAL);
+    }
+
+    #[test]
+    fn high_score_with_dangerous_keyword_stays_at_score_band() {
+        // score already at high, dangerous_keyword without governance → floor at high → no change
+        let mut a = artifact_with("cursor_rules", 75, &["dangerous_keyword:steal"]);
+        assert_eq!(verify(&mut a), SEVERITY_HIGH);
+    }
+
+    #[test]
+    fn critical_score_not_downgraded_by_governance() {
+        let mut a = artifact_with("cursor_rules", 95, &["dangerous_keyword:steal"]);
+        a.metadata
+            .insert("declared_tools".to_string(), json!(["shell"]));
+        assert_eq!(verify(&mut a), SEVERITY_CRITICAL);
     }
 
     #[test]
@@ -189,9 +232,15 @@ mod tests {
 
     #[test]
     fn rank_max_returns_higher_severity() {
-        assert_eq!(rank_max("pass", "fail"), "fail");
-        assert_eq!(rank_max("fail", "pass"), "fail");
-        assert_eq!(rank_max("pass", "conditional_pass"), "conditional_pass");
-        assert_eq!(rank_max("pass", "pass"), "pass");
+        assert_eq!(
+            rank_max(SEVERITY_INFO, SEVERITY_CRITICAL),
+            SEVERITY_CRITICAL
+        );
+        assert_eq!(
+            rank_max(SEVERITY_CRITICAL, SEVERITY_INFO),
+            SEVERITY_CRITICAL
+        );
+        assert_eq!(rank_max(SEVERITY_LOW, SEVERITY_MEDIUM), SEVERITY_MEDIUM);
+        assert_eq!(rank_max(SEVERITY_HIGH, SEVERITY_HIGH), SEVERITY_HIGH);
     }
 }

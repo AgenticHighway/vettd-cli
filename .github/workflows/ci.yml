@@ -84,6 +84,7 @@ jobs:
                   filters: |
                       rust:
                         - 'crates/**'
+                        - 'scanner-data-contract.json'
                         - 'Cargo.toml'
                         - 'Cargo.lock'
                         - 'rust-toolchain.toml'

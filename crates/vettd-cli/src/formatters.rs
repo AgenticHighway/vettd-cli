@@ -7,6 +7,12 @@ use std::collections::HashMap;
 
 use crate::capabilities::derive_capabilities;
 use crate::models::{ArtifactReport, ScanReport};
+use crate::scoring::{
+    SEVERITY_CRITICAL_SCORE, SEVERITY_HIGH_SCORE, SEVERITY_LOW_SCORE, SEVERITY_MEDIUM_SCORE,
+};
+use crate::verifier::{
+    SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_INFO, SEVERITY_LOW, SEVERITY_MEDIUM,
+};
 
 // ── ANSI helpers ────────────────────────────────────────────────────────
 
@@ -16,13 +22,13 @@ const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 
 pub fn severity(score: i32) -> (&'static str, &'static str) {
-    if score >= 90 {
+    if score >= SEVERITY_CRITICAL_SCORE {
         ("CRITICAL", "\x1b[1;35m")
-    } else if score >= 70 {
+    } else if score >= SEVERITY_HIGH_SCORE {
         ("HIGH    ", "\x1b[31m")
-    } else if score >= 40 {
+    } else if score >= SEVERITY_MEDIUM_SCORE {
         ("MEDIUM  ", "\x1b[33m")
-    } else if score >= 10 {
+    } else if score >= SEVERITY_LOW_SCORE {
         ("LOW     ", "\x1b[36m")
     } else {
         ("INFO    ", "\x1b[2m")
@@ -88,9 +94,20 @@ fn pretty_type(raw: &str) -> &str {
 
 fn status_icon(status: &str) -> (&'static str, &'static str) {
     match status {
-        "fail" => ("\x1b[31m✗\x1b[0m", "\x1b[31m"),
-        "conditional_pass" => ("\x1b[33m⚠\x1b[0m", "\x1b[33m"),
+        SEVERITY_CRITICAL | SEVERITY_HIGH => ("\x1b[31m✗\x1b[0m", "\x1b[31m"),
+        SEVERITY_MEDIUM => ("\x1b[33m⚠\x1b[0m", "\x1b[33m"),
         _ => ("\x1b[32m✓\x1b[0m", "\x1b[32m"),
+    }
+}
+
+fn status_rank(s: &str) -> u8 {
+    match s {
+        SEVERITY_CRITICAL => 5,
+        SEVERITY_HIGH => 4,
+        SEVERITY_MEDIUM => 3,
+        SEVERITY_LOW => 2,
+        SEVERITY_INFO => 1,
+        _ => 0,
     }
 }
 
@@ -114,32 +131,37 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     }
 
     // ── Posture headline ────────────────────────────────────────────
-    let fail_count = report
+    let flagged_count = report
         .artifacts
         .iter()
-        .filter(|a| a.verification_status == "fail")
+        .filter(|a| {
+            matches!(
+                a.verification_status.as_str(),
+                SEVERITY_CRITICAL | SEVERITY_HIGH
+            )
+        })
         .count();
     let review_count = report
         .artifacts
         .iter()
-        .filter(|a| a.verification_status == "conditional_pass")
+        .filter(|a| a.verification_status == SEVERITY_MEDIUM)
         .count();
-    let pass_count = report
+    let clear_count = report
         .artifacts
         .iter()
-        .filter(|a| a.verification_status == "pass")
+        .filter(|a| matches!(a.verification_status.as_str(), SEVERITY_LOW | SEVERITY_INFO))
         .count();
 
     println!();
     let mut status_parts: Vec<String> = Vec::new();
-    if fail_count > 0 {
-        status_parts.push(format!("\x1b[31m{fail_count} flagged\x1b[0m"));
+    if flagged_count > 0 {
+        status_parts.push(format!("\x1b[31m{flagged_count} flagged\x1b[0m"));
     }
     if review_count > 0 {
         status_parts.push(format!("\x1b[33m{review_count} review\x1b[0m"));
     }
-    if pass_count > 0 {
-        status_parts.push(format!("\x1b[32m{pass_count} clear\x1b[0m"));
+    if clear_count > 0 {
+        status_parts.push(format!("\x1b[32m{clear_count} clear\x1b[0m"));
     }
     println!(
         "  {BOLD}RISK{RESET}  {}  {DIM}({} artifact(s)){RESET}",
@@ -151,13 +173,8 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     // ── Top 3 riskiest findings ─────────────────────────────────────
     let mut sorted: Vec<&ArtifactReport> = report.artifacts.iter().collect();
     sorted.sort_by(|a, b| {
-        let rank = |s: &str| match s {
-            "fail" => 2,
-            "conditional_pass" => 1,
-            _ => 0,
-        };
-        rank(&b.verification_status)
-            .cmp(&rank(&a.verification_status))
+        status_rank(&b.verification_status)
+            .cmp(&status_rank(&a.verification_status))
             .then(b.risk_score.cmp(&a.risk_score))
     });
 
@@ -191,9 +208,10 @@ fn print_risk_card(a: &ArtifactReport) {
     let loc = shorten_path(artifact_location(a));
     let (icon, color) = status_icon(&a.verification_status);
     let label = match a.verification_status.as_str() {
-        "fail" => "FLAGGED",
-        "conditional_pass" => "REVIEW",
-        _ => "PASS",
+        SEVERITY_CRITICAL => "CRITICAL",
+        SEVERITY_HIGH => "FLAGGED",
+        SEVERITY_MEDIUM => "REVIEW",
+        _ => "CLEAR",
     };
     let kind = pretty_type(&a.artifact_type);
 
@@ -300,13 +318,8 @@ fn print_type_counts(report: &ScanReport) {
 fn print_artifact_details(report: &ScanReport) {
     let mut sorted: Vec<&ArtifactReport> = report.artifacts.iter().collect();
     sorted.sort_by(|a, b| {
-        let rank = |s: &str| match s {
-            "fail" => 2,
-            "conditional_pass" => 1,
-            _ => 0,
-        };
-        rank(&b.verification_status)
-            .cmp(&rank(&a.verification_status))
+        status_rank(&b.verification_status)
+            .cmp(&status_rank(&a.verification_status))
             .then(b.risk_score.cmp(&a.risk_score))
     });
 
@@ -322,9 +335,10 @@ fn print_artifact_details(report: &ScanReport) {
             &a.artifact_hash
         };
         let status_label = match a.verification_status.as_str() {
-            "fail" => "FAIL",
-            "conditional_pass" => "REVIEW",
-            _ => "PASS",
+            SEVERITY_CRITICAL => "CRITICAL",
+            SEVERITY_HIGH => "FLAGGED",
+            SEVERITY_MEDIUM => "REVIEW",
+            _ => "CLEAR",
         };
 
         println!(
@@ -450,40 +464,42 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
         .filter(|a| a.registry_eligible)
         .collect();
     let counts = count_by_status(&eligible);
-    let fail_n = counts.get("fail").copied().unwrap_or(0);
-    let review_n = counts.get("conditional_pass").copied().unwrap_or(0);
-    let pass_n = counts.get("pass").copied().unwrap_or(0);
+    let flagged_n = counts.get(SEVERITY_CRITICAL).copied().unwrap_or(0)
+        + counts.get(SEVERITY_HIGH).copied().unwrap_or(0);
+    let review_n = counts.get(SEVERITY_MEDIUM).copied().unwrap_or(0);
+    let clear_n = counts.get(SEVERITY_LOW).copied().unwrap_or(0)
+        + counts.get(SEVERITY_INFO).copied().unwrap_or(0);
 
     // ── Posture headline ────────────────────────────────────────────
     println!();
     let mut parts: Vec<String> = Vec::new();
-    if fail_n > 0 {
-        parts.push(format!("\x1b[31m{fail_n} flagged\x1b[0m"));
+    if flagged_n > 0 {
+        parts.push(format!("\x1b[31m{flagged_n} flagged\x1b[0m"));
     }
     if review_n > 0 {
         parts.push(format!("\x1b[33m{review_n} need review\x1b[0m"));
     }
-    if pass_n > 0 {
-        parts.push(format!("\x1b[32m{pass_n} clear\x1b[0m"));
+    if clear_n > 0 {
+        parts.push(format!("\x1b[32m{clear_n} clear\x1b[0m"));
     }
     println!("  {}", parts.join(&format!("  {DIM}·{RESET}  ")));
 
     // ── Flagged items (listed individually — usually few) ───────────
     let mut sorted: Vec<&ArtifactReport> = eligible.to_vec();
     sorted.sort_by(|a, b| {
-        let rank = |s: &str| match s {
-            "fail" => 2,
-            "conditional_pass" => 1,
-            _ => 0,
-        };
-        rank(&b.verification_status)
-            .cmp(&rank(&a.verification_status))
+        status_rank(&b.verification_status)
+            .cmp(&status_rank(&a.verification_status))
             .then(b.risk_score.cmp(&a.risk_score))
     });
 
     let flagged: Vec<&&ArtifactReport> = sorted
         .iter()
-        .filter(|a| a.verification_status == "fail")
+        .filter(|a| {
+            matches!(
+                a.verification_status.as_str(),
+                SEVERITY_CRITICAL | SEVERITY_HIGH
+            )
+        })
         .collect();
 
     if !flagged.is_empty() {
@@ -498,7 +514,7 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
     // ── Review items (grouped by top risk reason) ───────────────────
     let review: Vec<&&ArtifactReport> = sorted
         .iter()
-        .filter(|a| a.verification_status == "conditional_pass")
+        .filter(|a| a.verification_status == SEVERITY_MEDIUM)
         .collect();
 
     if !review.is_empty() {
@@ -509,10 +525,10 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
     }
 
     // ── Clear items (compact one-liner) ─────────────────────────────
-    if pass_n > 0 {
+    if clear_n > 0 {
         println!();
         println!(
-            "  \x1b[32m{BOLD}CLEAR{RESET} {DIM}── {pass_n} artifact(s) passed all checks{RESET}"
+            "  \x1b[32m{BOLD}CLEAR{RESET} {DIM}── {clear_n} artifact(s) passed all checks{RESET}"
         );
     }
 
@@ -604,6 +620,9 @@ fn count_by_status(artifacts: &[&ArtifactReport]) -> HashMap<String, usize> {
 mod tests {
     use super::*;
     use crate::models::ArtifactReport;
+    use crate::verifier::{
+        SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_INFO, SEVERITY_LOW, SEVERITY_MEDIUM,
+    };
     use serde_json::json;
 
     fn make_artifact(atype: &str, risk: i32, status: &str) -> ArtifactReport {
@@ -663,29 +682,41 @@ mod tests {
     }
 
     #[test]
-    fn status_icon_fail() {
-        let (icon, _color) = status_icon("fail");
-        assert!(icon.contains("✗"));
+    fn status_icon_critical_and_high_are_red() {
+        let (icon_c, _) = status_icon(SEVERITY_CRITICAL);
+        let (icon_h, _) = status_icon(SEVERITY_HIGH);
+        assert!(icon_c.contains("✗"));
+        assert!(icon_h.contains("✗"));
     }
 
     #[test]
-    fn status_icon_conditional_pass() {
-        let (icon, _) = status_icon("conditional_pass");
+    fn status_icon_medium_is_warning() {
+        let (icon, _) = status_icon(SEVERITY_MEDIUM);
         assert!(icon.contains("⚠"));
     }
 
     #[test]
-    fn status_icon_pass() {
-        let (icon, _) = status_icon("pass");
-        assert!(icon.contains("✓"));
+    fn status_icon_low_and_info_are_clear() {
+        let (icon_l, _) = status_icon(SEVERITY_LOW);
+        let (icon_i, _) = status_icon(SEVERITY_INFO);
+        assert!(icon_l.contains("✓"));
+        assert!(icon_i.contains("✓"));
+    }
+
+    #[test]
+    fn status_rank_ordering() {
+        assert!(status_rank(SEVERITY_CRITICAL) > status_rank(SEVERITY_HIGH));
+        assert!(status_rank(SEVERITY_HIGH) > status_rank(SEVERITY_MEDIUM));
+        assert!(status_rank(SEVERITY_MEDIUM) > status_rank(SEVERITY_LOW));
+        assert!(status_rank(SEVERITY_LOW) > status_rank(SEVERITY_INFO));
     }
 
     #[test]
     fn count_by_groups_by_type() {
         let artifacts = vec![
-            make_artifact("prompt_config", 10, "pass"),
-            make_artifact("prompt_config", 20, "pass"),
-            make_artifact("agents_md", 50, "fail"),
+            make_artifact("prompt_config", 10, SEVERITY_INFO),
+            make_artifact("prompt_config", 20, SEVERITY_LOW),
+            make_artifact("agents_md", 50, SEVERITY_HIGH),
         ];
         let counts = count_by(&artifacts, |a| &a.artifact_type);
         let prompt_count = counts.iter().find(|(k, _)| k == "prompt_config").unwrap().1;
@@ -697,10 +728,10 @@ mod tests {
     #[test]
     fn count_by_sorted_descending() {
         let artifacts = vec![
-            make_artifact("prompt_config", 10, "pass"),
-            make_artifact("agents_md", 50, "fail"),
-            make_artifact("agents_md", 60, "fail"),
-            make_artifact("agents_md", 70, "fail"),
+            make_artifact("prompt_config", 10, SEVERITY_INFO),
+            make_artifact("agents_md", 50, SEVERITY_HIGH),
+            make_artifact("agents_md", 60, SEVERITY_HIGH),
+            make_artifact("agents_md", 70, SEVERITY_CRITICAL),
         ];
         let counts = count_by(&artifacts, |a| &a.artifact_type);
         assert_eq!(counts[0].0, "agents_md");
@@ -709,20 +740,21 @@ mod tests {
 
     #[test]
     fn count_by_status_counts_correctly() {
-        let a1 = make_artifact("prompt_config", 10, "pass");
-        let a2 = make_artifact("prompt_config", 50, "fail");
-        let a3 = make_artifact("prompt_config", 30, "conditional_pass");
-        let a4 = make_artifact("prompt_config", 15, "pass");
+        let a1 = make_artifact("prompt_config", 10, SEVERITY_INFO);
+        let a2 = make_artifact("prompt_config", 50, SEVERITY_HIGH);
+        let a3 = make_artifact("prompt_config", 30, SEVERITY_MEDIUM);
+        let a4 = make_artifact("prompt_config", 15, SEVERITY_LOW);
         let refs: Vec<&ArtifactReport> = vec![&a1, &a2, &a3, &a4];
         let counts = count_by_status(&refs);
-        assert_eq!(counts.get("pass").copied().unwrap_or(0), 2);
-        assert_eq!(counts.get("fail").copied().unwrap_or(0), 1);
-        assert_eq!(counts.get("conditional_pass").copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(SEVERITY_INFO).copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(SEVERITY_HIGH).copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(SEVERITY_MEDIUM).copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(SEVERITY_LOW).copied().unwrap_or(0), 1);
     }
 
     #[test]
     fn artifact_location_from_paths() {
-        let a = make_artifact("prompt_config", 10, "pass");
+        let a = make_artifact("prompt_config", 10, SEVERITY_INFO);
         assert_eq!(artifact_location(&a), "/tmp/test");
     }
 
@@ -734,7 +766,7 @@ mod tests {
 
     #[test]
     fn top_risk_reasons_max_two() {
-        let mut a = make_artifact("prompt_config", 50, "fail");
+        let mut a = make_artifact("prompt_config", 50, SEVERITY_HIGH);
         a.risk_reasons = vec![
             "reason1".to_string(),
             "reason2".to_string(),
@@ -745,7 +777,7 @@ mod tests {
 
     #[test]
     fn top_risk_reasons_empty() {
-        let a = make_artifact("prompt_config", 10, "pass");
+        let a = make_artifact("prompt_config", 10, SEVERITY_INFO);
         assert!(top_risk_reasons(&a).is_empty());
     }
 

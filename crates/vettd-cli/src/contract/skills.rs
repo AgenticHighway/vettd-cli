@@ -47,9 +47,9 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     Skill {
         id,
         name,
-        skill_type: "Instruction Skill".to_string(),
+        skill_type: "Local Function".to_string(),
         trust_level: trust_level(artifact).to_string(),
-        execution_environment: "Agent Runtime".to_string(),
+        execution_environment: "Local Process".to_string(),
         description: skill_artifact_description(artifact),
         permissions,
         dependencies: SkillDependencies {
@@ -58,6 +58,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
             apis: skill_artifact_apis(&capabilities),
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
+        external_scanner_results: None,
     }
 }
 
@@ -208,6 +209,7 @@ fn extract_mcp_command_skills(
                 apis: Vec::new(),
             },
             consumers: find_skill_consumers(&skill_name, agents),
+            external_scanner_results: None,
         });
     }
 }
@@ -247,6 +249,7 @@ fn tool_to_skill(tool_name: &str, artifact: &ArtifactReport, agents: &[Agent]) -
             apis: Vec::new(),
         },
         consumers: find_skill_consumers(tool_name, agents),
+        external_scanner_results: None,
     }
 }
 
@@ -499,8 +502,8 @@ mod tests {
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "release-notes/SKILL");
-        assert_eq!(skills[0].skill_type, "Instruction Skill");
-        assert_eq!(skills[0].execution_environment, "Agent Runtime");
+        assert_eq!(skills[0].skill_type, "Local Function");
+        assert_eq!(skills[0].execution_environment, "Local Process");
         assert!(skills[0]
             .permissions
             .iter()

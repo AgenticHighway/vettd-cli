@@ -1,3 +1,8 @@
+pub const SEVERITY_CRITICAL_SCORE: i32 = 90;
+pub const SEVERITY_HIGH_SCORE: i32 = 70;
+pub const SEVERITY_MEDIUM_SCORE: i32 = 40;
+pub const SEVERITY_LOW_SCORE: i32 = 10;
+
 pub(crate) fn shared_signal_weight(signal: &str) -> Option<i32> {
     match signal {
         "credential_exposure_signal" => Some(25),
