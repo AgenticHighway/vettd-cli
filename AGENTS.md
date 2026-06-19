@@ -27,6 +27,16 @@ in this repository.
 - Add or update tests when behavior changes.
 - Commit messages must be **under 100 characters** (subject line). Use the PR description for detail.
 
+## Issues
+
+- New issues should have 3-4 sections:
+  - Description: Describe the issue. Prefer shorter descriptions when appropriate
+  - (OPTIONAL) Design Decisions: if the issue is reasonably large or the user explicitly asks, include this section. Focus on large decisions, avoid small details unless instructed otherwise. Generally, lean away from including this section unless prompted
+  - Scope: List what is in scope for the issue
+  - Acceptance Criteria: Use checkboxes to list what needs to happen before this issue can be marked resolved
+- Issue bodies should **always** focus on what the issue/task is, not how to solve it. If there are explicit solution details decided before opening the issue, these should be added as a comment after opening
+- Use the Projects API fields correctly when instructed: by default, use status=Todo and leave other fields blank unless instructed
+
 ## Required behavior for agents
 
 These rules apply to every task in this project unless explicitly overridden.
