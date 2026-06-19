@@ -49,6 +49,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         name,
         skill_type: "Local Function".to_string(),
         trust_level: trust_level(artifact).to_string(),
+        overall_grade: overall_grade(artifact).to_string(),
         execution_environment: "Local Process".to_string(),
         description: skill_artifact_description(artifact),
         permissions,
@@ -59,6 +60,15 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
         external_scanner_results: None,
+    }
+}
+
+fn overall_grade(artifact: &ArtifactReport) -> &'static str {
+    match artifact.verification_status.as_str() {
+        "critical" => "F",
+        "high" => "C",
+        "medium" => "B",
+        _ => "A",
     }
 }
 
@@ -197,6 +207,7 @@ fn extract_mcp_command_skills(
             name: skill_name.clone(),
             skill_type: "CLI Tool".to_string(),
             trust_level: "Conditional".to_string(),
+            overall_grade: "pending".to_string(),
             execution_environment: "Local Process".to_string(),
             description: format!("Executes MCP server via: {full_cmd}"),
             permissions: vec![SkillPermission {
@@ -240,6 +251,7 @@ fn tool_to_skill(tool_name: &str, artifact: &ArtifactReport, agents: &[Agent]) -
         name: tool_name.to_string(),
         skill_type: skill_type.to_string(),
         trust_level: trust_level(artifact).to_string(),
+        overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
         permissions,
@@ -465,6 +477,48 @@ mod tests {
         a.risk_score = 10;
         let skill = tool_to_skill("shell", &a, &[]);
         assert_eq!(skill.trust_level, "Trusted");
+    }
+
+    #[test]
+    fn tool_to_skill_overall_grade_is_pending() {
+        let a = ArtifactReport::new("agents_md", 0.8);
+        let skill = tool_to_skill("shell", &a, &[]);
+        assert_eq!(skill.overall_grade, "pending");
+    }
+
+    #[test]
+    fn overall_grade_maps_verification_status() {
+        let cases = [
+            ("critical", "F"),
+            ("high", "C"),
+            ("medium", "B"),
+            ("low", "A"),
+            ("info", "A"),
+            ("pending", "A"),
+        ];
+        for (status, expected_grade) in cases {
+            let mut a = ArtifactReport::new("skill", 0.9);
+            a.verification_status = status.to_string();
+            assert_eq!(
+                overall_grade(&a),
+                expected_grade,
+                "verification_status={status}"
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_to_skill_overall_grade_from_verification_status() {
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.metadata.insert(
+            "paths".to_string(),
+            serde_json::json!(["/repo/skills/release-notes/SKILL.md"]),
+        );
+        a.verification_status = "high".to_string();
+        a.compute_hash();
+
+        let skills = build_skills(&[a], &[]);
+        assert_eq!(skills[0].overall_grade, "C");
     }
 
     #[test]

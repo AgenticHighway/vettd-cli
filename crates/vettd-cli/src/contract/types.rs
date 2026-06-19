@@ -87,6 +87,7 @@ pub struct Skill {
     #[serde(rename = "type")]
     pub skill_type: String,
     pub trust_level: String,
+    pub overall_grade: String,
     pub execution_environment: String,
     pub description: String,
     pub permissions: Vec<SkillPermission>,
