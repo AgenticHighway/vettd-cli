@@ -20,3 +20,5 @@ vettd-*.json
 vettd-*.json
 results.json
 *.jsonl
+
+.local/
