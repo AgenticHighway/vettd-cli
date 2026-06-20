@@ -59,7 +59,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
             apis: skill_artifact_apis(&capabilities),
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
-        external_scanner_results: None,
+        external_scanner_results: super::skill_scan::run_skill_scanner(artifact).map(|r| vec![r]),
     }
 }
 

@@ -9,6 +9,7 @@ mod apps;
 mod helpers;
 mod mcp;
 mod prompts;
+mod skill_scan;
 mod skills;
 pub mod types;
 

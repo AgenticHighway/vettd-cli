@@ -11,6 +11,7 @@ name = "vettd"
 path = "src/main.rs"
 
 [dependencies]
+vettd-skill-scanner = { path = "../vettd-skill-scanner" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

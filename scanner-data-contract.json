@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "Vettd Scanner Data Contract",
 	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-	"version": "2.3.0",
+	"version": "2.4.0",
 	"type": "object",
 	"required": [
 		"scanMeta",
@@ -371,7 +371,7 @@
 							}
 						}
 					},
-					"external_scanner_results": {
+					"externalScannerResults": {
 						"type": "array",
 						"description": "Optional external scanner results for this skill. Omit entirely for endpoints that do not integrate external scanners \u2014 omitting the field is always valid (back-compat). Each entry corresponds to one scanner run.",
 						"items": {
@@ -399,10 +399,10 @@
 								},
 								"verdict": {
 									"type": "string",
-									"enum": ["pass", "warn", "fail"],
-									"description": "Scanner-level verdict. Omit when status is not 'success'."
+									"enum": ["A", "B", "C", "F"],
+									"description": "Scanner-level grade. Omit when status is not 'success'."
 								},
-								"raw_report": {
+								"rawReport": {
 									"type": ["object", "null"],
 									"description": "Full upstream output (e.g. SARIF blob). Preserved for traceability and re-derivation without rescanning. May be null."
 								},
@@ -412,16 +412,16 @@
 									"items": {
 										"type": "object",
 										"required": [
-											"rule_id",
+											"ruleId",
 											"category",
 											"severity",
 											"label"
 										],
 										"additionalProperties": false,
 										"properties": {
-											"rule_id": {
+											"ruleId": {
 												"type": "string",
-												"description": "Upstream rule identifier (e.g. 'AITech-1.1.1', 'E004', 'best-practices/no-curl-bash'). Aligns with AssetFinding.ruleId."
+												"description": "Rule identifier (e.g. 'VTD-0001', 'AITech-1.1.1'). Empty string when not applicable. Aligns with AssetFinding.ruleId."
 											},
 											"category": {
 												"type": "string",
@@ -438,11 +438,13 @@
 											"severity": {
 												"type": "string",
 												"enum": [
-													"fail",
-													"warn",
+													"critical",
+													"high",
+													"medium",
+													"low",
 													"info"
 												],
-												"description": "vettd severity. Cisco mapping: CRITICAL/HIGH \u2192 fail, MEDIUM \u2192 warn, LOW/INFO \u2192 info."
+												"description": "vettd finding severity."
 											},
 											"label": {
 												"type": "string",

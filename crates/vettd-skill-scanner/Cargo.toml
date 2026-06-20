@@ -1,0 +1,11 @@
+[package]
+name = "vettd-skill-scanner"
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+description = "Pure, I/O-free skill scanner for the vettd scanner pipeline."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1819,7 +1819,16 @@ dependencies = [
  "toml",
  "ureq",
  "uuid",
+ "vettd-skill-scanner",
  "walkdir",
+]
+
+[[package]]
+name = "vettd-skill-scanner"
+version = "0.7.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

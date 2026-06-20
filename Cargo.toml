@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/vettd-cli",
+    "crates/vettd-skill-scanner",
 ]
 exclude = []
 
