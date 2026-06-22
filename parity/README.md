@@ -37,8 +37,15 @@ All commands are run from the **vettd-cli repo root**.
 
 ```sh
 python parity/case_test.py \
+  --vettd-adapter "../vettd/node_modules/.bin/tsx ../vettd/tools/parity-adapter.ts"
+```
+
+Omit `--cli-adapter` to use the default (`cargo run -q -p vettd-cli --bin parity-adapter --`), or override it:
+
+```sh
+python parity/case_test.py \
   --vettd-adapter "../vettd/node_modules/.bin/tsx ../vettd/tools/parity-adapter.ts" \
-  [--cli-adapter "cargo run -q -p vettd-cli --bin parity-adapter --"]
+  --cli-adapter "cargo run -q -p vettd-cli --bin parity-adapter --"
 ```
 
 Run a single case:
