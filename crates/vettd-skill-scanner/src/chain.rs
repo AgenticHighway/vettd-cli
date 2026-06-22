@@ -45,8 +45,8 @@ use crate::finding::Finding;
 /// **before** returning `SkillScanResult`. Grade computation by the caller must
 /// happen after receiving the result for the same reason.
 // The real implementation pushes synthetic chain findings into the Vec, so
-// &mut Vec<Finding> is correct here even though the stub body is a no-op.
-#[allow(clippy::ptr_arg)]
+// Stub retained for compatibility; engine.rs now calls detect_exfiltration_chains directly.
+#[allow(dead_code, clippy::ptr_arg)]
 pub(crate) fn detect_chains(_findings: &mut Vec<Finding>, _files: &HashMap<String, String>) {
     // TODO: implement exfiltration chain detection (VTD-0089)
     // TODO: implement malicious activity chain detection (VTD-0090)

@@ -11,22 +11,88 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::chain;
 use crate::consts::DEFAULT_SOURCE;
 use crate::finding::{Finding, FindingCategory, Intent, Severity};
 use crate::result::SkillScanResult;
 
 // ── Rule IDs (must match skill-rule-registry.ts) ─────────────────────────────
 
-// Security
-const RULE_NO_REPOSITORY_LINK: &str = "VTD-0083";
-// Forensic-evasion / persistence (SENSITIVE_PATTERNS subset implemented here)
+// Security — credential & secret patterns
+const RULE_EMBEDDED_PRIVATE_KEY: &str = "VTD-0001";
+const RULE_POTENTIAL_API_TOKEN: &str = "VTD-0002";
+const RULE_HIGH_ENTROPY_SECRET: &str = "VTD-0003";
+const RULE_ENV_FILE_IN_PACKAGE: &str = "VTD-0004";
+const RULE_CLOUD_CREDENTIAL_FILE: &str = "VTD-0005";
+const RULE_SSH_KEY_FILE: &str = "VTD-0006";
+const RULE_NPM_CREDENTIAL_FILE: &str = "VTD-0007";
+const RULE_PYPI_CREDENTIAL_FILE: &str = "VTD-0008";
+const RULE_DOCKER_CREDENTIAL_FILE: &str = "VTD-0009";
+const RULE_KUBERNETES_CREDENTIAL_FILE: &str = "VTD-0010";
+const RULE_GITHUB_CLI_CREDENTIAL_FILE: &str = "VTD-0011";
+const RULE_NETRC_CREDENTIAL_FILE: &str = "VTD-0012";
+const RULE_MACOS_KEYCHAIN_ACCESS: &str = "VTD-0013";
+const RULE_WINDOWS_CREDENTIAL_STORE: &str = "VTD-0014";
+const RULE_WINDOWS_CREDENTIAL_DATABASE: &str = "VTD-0015";
+const RULE_AD_CREDENTIAL_DATABASE: &str = "VTD-0016";
+// Security — code injection / exec
+const RULE_EVAL_CODE_INJECTION: &str = "VTD-0017";
+const RULE_SHELL_EXEC_UNSANDBOXED: &str = "VTD-0018";
+const RULE_DESTRUCTIVE_FILESYSTEM_OP: &str = "VTD-0019";
+const RULE_RCE_PIPE_TO_SHELL: &str = "VTD-0020";
+const RULE_RCE_COMMAND_SUBSTITUTION: &str = "VTD-0021";
+const RULE_REMOTE_FETCH_TO_VARIABLE: &str = "VTD-0022";
+const RULE_SHELL_VARIABLE_EXECUTION: &str = "VTD-0023";
+const RULE_PYTHON_REMOTE_FETCH: &str = "VTD-0024";
+const RULE_PYTHON_BASE64_DECODE_VARIABLE: &str = "VTD-0025";
+const RULE_PYTHON_EXEC_VARIABLE: &str = "VTD-0026";
+const RULE_SHELL_BASE64_LITERAL: &str = "VTD-0027";
+const RULE_SAFETY_BYPASS_FLAG: &str = "VTD-0028";
+// Security — cloud metadata / network / malicious
+const RULE_CLOUD_METADATA_PROBE_AWS: &str = "VTD-0029";
+const RULE_CLOUD_METADATA_PROBE_GCP: &str = "VTD-0030";
+const RULE_CLOUD_METADATA_PROBE_AZURE: &str = "VTD-0031";
+const RULE_CLOUD_METADATA_PROBE_ALIBABA: &str = "VTD-0032";
+const RULE_CREDENTIAL_DUMPING_TOOL: &str = "VTD-0033";
+const RULE_LSASS_MEMORY_ACCESS: &str = "VTD-0034";
+const RULE_GITHUB_OIDC_TOKEN_READ: &str = "VTD-0035";
+const RULE_SCRIPT_SELF_DELETION_RM: &str = "VTD-0036";
+const RULE_SCRIPT_SELF_DELETION_PYTHON: &str = "VTD-0037";
+const RULE_SCRIPT_SELF_DELETION_NODE: &str = "VTD-0038";
+const RULE_SHELL_HISTORY_SUPPRESSION: &str = "VTD-0039";
+const RULE_SHELL_HISTORY_CLEARING: &str = "VTD-0040";
+const RULE_SHELL_HISTORY_FILE_WIPE: &str = "VTD-0041";
+const RULE_AUDIT_DAEMON_DISABLE: &str = "VTD-0042";
+const RULE_AUDIT_DAEMON_STOP: &str = "VTD-0043";
+const RULE_WINDOWS_EVENTLOG_CLEARING: &str = "VTD-0044";
 const RULE_SYSTEM_LOG_TRUNCATION: &str = "VTD-0045";
 const RULE_JOURNAL_LOG_VACUUM: &str = "VTD-0046";
 const RULE_FORCED_LOG_ROTATION: &str = "VTD-0047";
+const RULE_CRON_PERSISTENCE: &str = "VTD-0048";
+const RULE_SYSTEMD_SERVICE_PERSISTENCE: &str = "VTD-0049";
+const RULE_SYSTEMD_SERVICE_FILE_WRITE: &str = "VTD-0050";
+const RULE_SHELL_RC_PERSISTENCE: &str = "VTD-0051";
+const RULE_GIT_HOOK_INJECTION: &str = "VTD-0052";
+const RULE_LD_PRELOAD_INJECTION: &str = "VTD-0053";
 const RULE_TIME_DELAYED_EXECUTION: &str = "VTD-0054";
-// External-URL / chain
+const RULE_DESTRUCTIVE_RECURSIVE_DELETE_SYSTEM: &str = "VTD-0055";
+const RULE_DESTRUCTIVE_RECURSIVE_DELETE_FIND: &str = "VTD-0056";
+const RULE_DNS_COVERT_CHANNEL: &str = "VTD-0057";
+const RULE_DNS_TXT_LOOKUP: &str = "VTD-0058";
+const RULE_OCTET_STREAM_POST: &str = "VTD-0059";
+const RULE_POWERSHELL_ENCODED_COMMAND: &str = "VTD-0060";
+const RULE_POWERSHELL_IEX_CRADLE: &str = "VTD-0061";
+const RULE_POWERSHELL_EXECUTION_POLICY_BYPASS: &str = "VTD-0062";
+const RULE_POWERSHELL_HIDDEN_WINDOW: &str = "VTD-0063";
+// Security — obfuscation / base64 / typosquat / chain
+const RULE_OBFUSCATED_DANGEROUS_CODE: &str = "VTD-0077";
+const RULE_OBFUSCATED_NETWORK_CALL: &str = "VTD-0078";
+const RULE_OBFUSCATED_EXTERNAL_URL: &str = "VTD-0079";
+const RULE_BASE64_IN_MARKDOWN: &str = "VTD-0080";
+const RULE_POSSIBLE_TYPOSQUATTING: &str = "VTD-0082";
+const RULE_NO_REPOSITORY_LINK: &str = "VTD-0083";
+const RULE_DESCRIPTION_BEHAVIOR_MISMATCH: &str = "VTD-0087";
 const RULE_EXTERNAL_URL_REFERENCE: &str = "VTD-0088";
+const RULE_CREDENTIAL_EXFILTRATION_CHAIN: &str = "VTD-0089";
 const RULE_MALICIOUS_ACTIVITY_CHAIN: &str = "VTD-0090";
 const RULE_NO_SECRETS_DETECTED: &str = "VTD-0091";
 const RULE_NO_BEHAVIORAL_SIGNALS: &str = "VTD-0092";
@@ -44,6 +110,8 @@ const RULE_SKILL_MD_BODY_LENGTH: &str = "VTD-0101";
 const RULE_EXAMPLES_PRESENT: &str = "VTD-0103";
 const RULE_VALIDATION_LOOP: &str = "VTD-0105";
 const RULE_WORKFLOW_STRUCTURE: &str = "VTD-0106";
+const RULE_PROGRESSIVE_DISCLOSURE: &str = "VTD-0107";
+const RULE_GENERIC_INSTRUCTION: &str = "VTD-0108";
 
 // Description
 const RULE_DESCRIPTION_PRESENT: &str = "VTD-0109";
@@ -52,6 +120,8 @@ const RULE_DESCRIPTION_CONTEXT: &str = "VTD-0111";
 
 // Scripts
 const RULE_SCRIPT_CLI_HELP: &str = "VTD-0114";
+const RULE_SCRIPT_INTERACTIVE_PROMPTS: &str = "VTD-0115";
+const RULE_SCRIPT_STRUCTURED_OUTPUT: &str = "VTD-0116";
 
 // Evals
 const RULE_EVALS_PRESENT: &str = "VTD-0118";
@@ -85,49 +155,659 @@ struct SensitivePattern {
     label: &'static str,
     severity: Severity,
     intent: Intent,
+    /// Skip this pattern for .md files (mirrors vettd's CODE_ONLY_LABELS).
+    code_only: bool,
+    /// When scanning a .md file, use this severity instead of `severity`.
+    /// `None` means the pattern fires at its normal severity on .md files too.
+    doc_severity: Option<Severity>,
 }
 
-// Array order mirrors vettd's SENSITIVE_PATTERNS definition order — it determines
-// the bucket insertion order in chain detection, which affects the chain detail string.
+// Array order mirrors vettd's SENSITIVE_PATTERNS definition order.
 static SENSITIVE_PATTERNS: &[SensitivePattern] = &[
-    // VTD-0054 comes before the forensic-evasion group in skill-analyzer.ts
+    SensitivePattern {
+        rule_id: RULE_EMBEDDED_PRIVATE_KEY,
+        label: "Embedded private key",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_POTENTIAL_API_TOKEN,
+        label: "Potential API token detected",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_EVAL_CODE_INJECTION,
+        label: "Use of eval() — potential code injection risk",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_EXEC_UNSANDBOXED,
+        label: "Shell execution without sandboxing",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_DESTRUCTIVE_FILESYSTEM_OP,
+        label: "Destructive file system operation",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_RCE_PIPE_TO_SHELL,
+        label: "Remote code execution via pipe to shell",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_RCE_PIPE_TO_SHELL,
+        label: "Remote code execution via pipe to shell",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SAFETY_BYPASS_FLAG,
+        label: "Safety bypass flag detected",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SAFETY_BYPASS_FLAG,
+        label: "Safety bypass flag detected",
+        severity: Severity::Low,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_CREDENTIAL_FILE,
+        label: "Cloud credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_CREDENTIAL_FILE,
+        label: "Cloud credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_SSH_KEY_FILE,
+        label: "SSH private key file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_NPM_CREDENTIAL_FILE,
+        label: "npm credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_PYPI_CREDENTIAL_FILE,
+        label: "PyPI credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_DOCKER_CREDENTIAL_FILE,
+        label: "Docker credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_KUBERNETES_CREDENTIAL_FILE,
+        label: "Kubernetes credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_GITHUB_CLI_CREDENTIAL_FILE,
+        label: "GitHub CLI credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_NETRC_CREDENTIAL_FILE,
+        label: "netrc credential file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_MACOS_KEYCHAIN_ACCESS,
+        label: "macOS Keychain file access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_WINDOWS_CREDENTIAL_STORE,
+        label: "Windows credential store access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_WINDOWS_CREDENTIAL_DATABASE,
+        label: "Windows credential database access",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: false,
+        doc_severity: Some(Severity::Medium),
+    },
+    SensitivePattern {
+        rule_id: RULE_AD_CREDENTIAL_DATABASE,
+        label: "Active Directory credential database access (NTDS.dit)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_METADATA_PROBE_AWS,
+        label: "Cloud metadata service probe (AWS/standard IMDS)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_METADATA_PROBE_GCP,
+        label: "Cloud metadata service probe (GCP)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_METADATA_PROBE_AZURE,
+        label: "Cloud metadata service probe (Azure)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CLOUD_METADATA_PROBE_ALIBABA,
+        label: "Cloud metadata service probe (Alibaba Cloud)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SCRIPT_SELF_DELETION_RM,
+        label: "Script self-deletion (rm -- $0)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SCRIPT_SELF_DELETION_PYTHON,
+        label: "Script self-deletion (os.remove(__file__))",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SCRIPT_SELF_DELETION_NODE,
+        label: "Script self-deletion (fs.unlinkSync(__filename))",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_HISTORY_SUPPRESSION,
+        label: "Shell history suppression (unset HISTFILE)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_HISTORY_CLEARING,
+        label: "Shell history clearing (history -c/-w/-d/-a)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_AUDIT_DAEMON_DISABLE,
+        label: "Audit daemon disable (auditctl -e 0)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_WINDOWS_EVENTLOG_CLEARING,
+        label: "Windows event log clearing (wevtutil cl)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_AUDIT_DAEMON_STOP,
+        label: "Audit daemon stop (systemctl stop auditd)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CREDENTIAL_DUMPING_TOOL,
+        label: "Credential dumping tool reference (mimikatz/sekurlsa/lsadump)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_LSASS_MEMORY_ACCESS,
+        label: "LSASS process memory access (credential dumping)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_LD_PRELOAD_INJECTION,
+        label: "LD_PRELOAD environment injection",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_GIT_HOOK_INJECTION,
+        label: "Git hook injection (.git/hooks/ write)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
     SensitivePattern {
         rule_id: RULE_TIME_DELAYED_EXECUTION,
         label: "Time-delayed execution via at command",
         severity: Severity::Critical,
         intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_RCE_COMMAND_SUBSTITUTION,
+        label: "Remote code execution via command substitution",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_REMOTE_FETCH_TO_VARIABLE,
+        label: "Remote content fetched into variable for execution",
+        severity: Severity::High,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_VARIABLE_EXECUTION,
+        label: "Shell variable execution (eval/bash -c with variable)",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_DESTRUCTIVE_RECURSIVE_DELETE_SYSTEM,
+        label: "Destructive recursive delete of system or home root",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_DESTRUCTIVE_RECURSIVE_DELETE_FIND,
+        label: "Destructive recursive delete via find -exec rm",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
     },
     SensitivePattern {
         rule_id: RULE_SYSTEM_LOG_TRUNCATION,
         label: "System log truncation (forensic evasion)",
         severity: Severity::Critical,
         intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_HISTORY_FILE_WIPE,
+        label: "Shell history file wipe (forensic evasion)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
     },
     SensitivePattern {
         rule_id: RULE_JOURNAL_LOG_VACUUM,
         label: "Journal log vacuum (forensic evasion)",
         severity: Severity::Critical,
         intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
     },
     SensitivePattern {
         rule_id: RULE_FORCED_LOG_ROTATION,
         label: "Forced log rotation (forensic evasion)",
         severity: Severity::Critical,
         intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_CRON_PERSISTENCE,
+        label: "Cron persistence (writing cron entry)",
+        severity: Severity::Medium,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SYSTEMD_SERVICE_PERSISTENCE,
+        label: "Systemd user service persistence (systemctl --user enable)",
+        severity: Severity::Medium,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SYSTEMD_SERVICE_FILE_WRITE,
+        label: "Systemd user service file write",
+        severity: Severity::Medium,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_RC_PERSISTENCE,
+        label: "Shell rc file write (persistence via alias/source injection)",
+        severity: Severity::Medium,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_DNS_COVERT_CHANNEL,
+        label: "DNS query with variable-constructed hostname (possible covert channel)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_DNS_TXT_LOOKUP,
+        label: "DNS TXT record lookup (C2 indicator)",
+        severity: Severity::Medium,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_POWERSHELL_ENCODED_COMMAND,
+        label: "PowerShell encoded command (-enc/-EncodedCommand)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_POWERSHELL_IEX_CRADLE,
+        label: "PowerShell IEX download cradle",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_POWERSHELL_EXECUTION_POLICY_BYPASS,
+        label: "PowerShell ExecutionPolicy Bypass",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_POWERSHELL_HIDDEN_WINDOW,
+        label: "PowerShell hidden window flag",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_PYTHON_REMOTE_FETCH,
+        label: "Remote content fetched into variable for execution (Python)",
+        severity: Severity::High,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_PYTHON_BASE64_DECODE_VARIABLE,
+        label: "Base64-decoded content stored in variable",
+        severity: Severity::High,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_PYTHON_EXEC_VARIABLE,
+        label: "Python exec/eval of variable content",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_GITHUB_OIDC_TOKEN_READ,
+        label: "GitHub Actions OIDC token environment variable read",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_OCTET_STREAM_POST,
+        label: "Outbound POST with application/octet-stream",
+        severity: Severity::Critical,
+        intent: Intent::Negligent,
+        code_only: true,
+        doc_severity: None,
+    },
+    SensitivePattern {
+        rule_id: RULE_SHELL_BASE64_LITERAL,
+        label: "Shell variable assigned long base64 literal (obfuscation)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+        code_only: false,
+        doc_severity: None,
     },
 ];
 
-// Regex strings indexed parallel to SENSITIVE_PATTERNS.
-// Compiled on first use via get_sensitive_regexes().
+// Regex strings indexed parallel to SENSITIVE_PATTERNS (same order, same count).
 static SENSITIVE_PATTERN_STRS: &[&str] = &[
-    // VTD-0054 — | at <time>
+    // VTD-0001 — embedded private key header
+    r"(?i)(?:BEGIN\s+(?:RSA|DSA|EC|OPENSSH)\s+PRIVATE\s+KEY)",
+    // VTD-0002 — GitHub/OpenAI API tokens
+    r"(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,}|sk-[a-zA-Z0-9]{20,})",
+    // VTD-0017 — eval() code injection
+    r"(?i)\beval\s*\(",
+    // VTD-0018 — shell exec without sandboxing
+    r"(?i)(?:\bchild_process\b|(?:^|[^.\w])(?:exec|spawn|execSync|spawnSync|execFile|execFileSync)\s*\()",
+    // VTD-0019 — destructive filesystem op
+    r"(?im)(?:^|[\s;&|])(?:rm\s+-rf|rmdir/s|del\s+/f)\s+(?:/|~|\.{1,2}(?:/|\s|$)|\*|\$[{(]?[A-Za-z_])",
+    // VTD-0020 — pipe to shell (curl/wget | bash)
+    r"(?i)(?:curl|wget)\s+\S.*\|\s*(?:bash|sh|zsh|dash|ksh|python3?|node|perl|ruby)(?:\s|;|$)",
+    // VTD-0020 — process substitution <(curl/wget)
+    r"(?i)(?:bash|sh|zsh|dash)\s+<\(\s*(?:curl|wget)\s",
+    // VTD-0028 — --no-verify safety bypass
+    r"(?i)--no-verify",
+    // VTD-0028 — --force safety bypass (low severity)
+    r"(?i)--force",
+    // VTD-0005 — .aws credentials/config
+    r"(?i)\.aws[/\\](?:credentials|config)\b",
+    // VTD-0005 — .config/gcloud credentials
+    r"(?i)\.config[/\\]gcloud[/\\](?:application_default_credentials|credentials\.db|access_tokens\.db|legacy_credentials)",
+    // VTD-0006 — SSH private key files
+    r"(?i)\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa|ecdsa-sk|ed25519-sk)\b",
+    // VTD-0007 — npm credential file
+    r"(?i)~[/\\]\.npmrc\b",
+    // VTD-0008 — PyPI credential file
+    r"(?i)\.pypirc\b",
+    // VTD-0009 — Docker credential file
+    r"(?i)\.docker[/\\]config\.json\b",
+    // VTD-0010 — Kubernetes credential file
+    r"(?i)\.kube[/\\]config\b",
+    // VTD-0011 — GitHub CLI credential file
+    r"(?i)\.config[/\\]gh[/\\]hosts\.yml\b",
+    // VTD-0012 — netrc credential file
+    r"(?i)(?:~[/\\])?\.netrc\b",
+    // VTD-0013 — macOS Keychain
+    r"(?i)Library[/\\]Keychains\b",
+    // VTD-0014 — Windows credential store
+    r"(?i)(?:%APPDATA%|%LOCALAPPDATA%)[/\\]Microsoft[/\\](?:Credentials|Protect|Vault)\b",
+    // VTD-0015 — Windows credential database
+    r"(?i)[/\\]Windows[/\\]System32[/\\]config[/\\](?:SAM|SYSTEM|SECURITY)\b",
+    // VTD-0016 — Active Directory NTDS.dit
+    r"(?i)\bNTDS\.dit\b",
+    // VTD-0029 — AWS IMDS (169.254.169.254 or hex/decimal equivalents)
+    r"169\.254\.169\.254|2852039166|0[xX][aA]9[fF][eE][aA]9[fF][eE]",
+    // VTD-0030 — GCP metadata endpoint
+    r"(?i)metadata\.google\.internal",
+    // VTD-0031 — Azure metadata endpoint
+    r"(?i)metadata\.azure\.com",
+    // VTD-0032 — Alibaba Cloud metadata endpoint
+    r"100\.100\.100\.200",
+    // VTD-0036 — script self-deletion via rm -- $0
+    r#"rm\s+--\s+["']?\$0["']?"#,
+    // VTD-0037 — script self-deletion via os.remove(__file__)
+    r"os\.remove\s*\(\s*__file__\s*\)",
+    // VTD-0038 — script self-deletion via fs.unlinkSync(__filename)
+    r"fs\.unlinkSync\s*\(\s*__filename\s*\)",
+    // VTD-0039 — shell history suppression
+    r"unset\s+HISTFILE",
+    // VTD-0040 — shell history clearing
+    r"history\s+-[cwda]",
+    // VTD-0042 — audit daemon disable
+    r"auditctl\s+-e\s+0",
+    // VTD-0044 — Windows event log clearing
+    r"(?i)wevtutil\s+cl\b",
+    // VTD-0043 — audit daemon stop
+    r"systemctl\s+stop\s+auditd",
+    // VTD-0033 — credential dumping tools
+    r"(?i)\b(?:mimikatz|sekurlsa|lsadump|kerberoast)\b",
+    // VTD-0034 — LSASS memory access
+    r"(?i)\blsass\.(?:exe|dmp)\b",
+    // VTD-0053 — LD_PRELOAD injection
+    r"\bLD_PRELOAD\s*=",
+    // VTD-0052 — git hook injection
+    r"\.git[/\\]hooks[/\\]",
+    // VTD-0054 — time-delayed execution via at(1)
     r"\|\s*at\s+(?:now\b|\d{1,2}:\d{2}|tomorrow\b|midnight\b|noon\b)",
-    // VTD-0045 — truncate -s 0 or redirect into system log files
-    r#"(?i)(?:truncate\s+-s\s+0\s+["']?|(?:^|[\s;&|])>\s*["']?)(?:~|(?:/var/log))/(?:auth\.log|syslog|audit/audit\.log|kern\.log|dpkg\.log|messages|secure)\b"#,
-    // VTD-0046 — journalctl --vacuum-*
+    // VTD-0021 — RCE via command substitution (bash -c "$(curl ...)")
+    r#"(?i)(?:bash|sh|zsh|dash|ksh)\s+-c\s+["']?\$\(\s*(?:curl|wget)\s"#,
+    // VTD-0022 — remote content fetched into variable (VAR=$(curl ...))
+    r"(?i)\b[A-Za-z_]\w*\s*=\s*\$\(\s*(?:curl|wget)\s+[^)]+\)",
+    // VTD-0023 — shell variable execution (eval "$VAR" or bash -c "$VAR")
+    r#"(?i)(?:\beval\s+["']?\$[A-Za-z_]|(?:bash|sh|zsh)\s+-c\s+["']?\$[A-Za-z_])"#,
+    // VTD-0055 — destructive recursive delete of system/home root
+    r"(?im)(?:^|[\s;&|])rm\s+-[rf]{1,2}\s+(?:/(?:var|etc|usr|bin|sbin|lib|boot|sys|proc|home|root|tmp)(?:[/\s;]|$)|~/?(?:\s|;|&|$)|\$(?:HOME|\{HOME\})/?(?:\s|;|&|$))",
+    // VTD-0056 — destructive recursive delete via find -exec rm
+    r"(?i)\bfind\s+(?:/|~|\$(?:HOME|\{HOME\}))\s+[^\n;]+?-exec\s+rm\b",
+    // VTD-0045 — system log truncation
+    r#"(?im)(?:truncate\s+-s\s+0\s+["']?|(?:^|[\s;&|])>\s*["']?)(?:~|(?:/var/log))/(?:auth\.log|syslog|audit/audit\.log|kern\.log|dpkg\.log|messages|secure)\b"#,
+    // VTD-0041 — shell history file wipe
+    r#"(?im)(?:truncate\s+-s\s+0\s+["']?|(?:^|[\s;&|])>\s*["']?)(?:~|/root|\$(?:HOME|\{HOME\}))/\.(?:bash_history|zsh_history|history|python_history)\b"#,
+    // VTD-0046 — journal log vacuum
     r"\bjournalctl\s+--vacuum-(?:time|size)\b",
-    // VTD-0047 — logrotate -f
+    // VTD-0047 — forced log rotation
     r"\blogrotate\s+-f\b",
+    // VTD-0048 — cron persistence
+    r"(?i)(?:echo\s+[^|;\n]{1,300}\|\s*crontab\s+-|\(?crontab\s+-l[^)]*\)?[^|]*\|\s*crontab|(?:tee\s+|>>?\s*)[^;&\n]*/(?:etc/cron\.(?:d|daily|hourly|weekly|monthly)|var/spool/cron)/)",
+    // VTD-0049 — systemd service persistence
+    r"\bsystemctl\s+--user\s+enable\b",
+    // VTD-0050 — systemd service file write
+    r"~/\.config/systemd/user/[^/\s]+\.service\b",
+    // VTD-0051 — shell rc persistence
+    r"(?i)(?:>>|tee\s+-a)\s+[^;&\n]*~/\.(?:bashrc|zshrc|profile|bash_profile)\b",
+    // VTD-0057 — DNS covert channel (variable-constructed hostname)
+    r"(?i)(?:dig|nslookup|host)\s+[^;&\n]*\$(?:[{(]?[A-Za-z_]\w*[})]?)\s*\.[a-zA-Z]",
+    // VTD-0058 — DNS TXT record lookup
+    r"(?i)(?:dig\s+(?:[^;&\n]*\s+)?TXT\b|dig\s+TXT\b|nslookup\s+-(?:type|querytype)=txt)",
+    // VTD-0060 — PowerShell encoded command (-enc not -encoding)
+    r#"(?i)(?:^|[\s;|"'])-(?:enc\b|EncodedCommand)\b\s+[A-Za-z0-9+/=]{16,}"#,
+    // VTD-0061 — PowerShell IEX download cradle
+    r"(?i)(?:IEX|Invoke-Expression)\b[\s\S]{0,200}?(?:DownloadString|DownloadFile|WebClient|Invoke-WebRequest|\biwr\b)",
+    // VTD-0062 — PowerShell ExecutionPolicy bypass
+    r"(?i)-ExecutionPolicy\s+(?:Bypass|Unrestricted)\b",
+    // VTD-0063 — PowerShell hidden window
+    r"(?i)(?:-WindowStyle\s+Hidden|(?:^|[\s;|])-w\s+hidden)\b",
+    // VTD-0024 — Python remote fetch to variable
+    r"(?i)\b\w+\s*=\s*(?:urllib\.request\.urlopen|urlopen|requests\.get|requests\.post)\s*\([^)]+\)\s*\.\s*(?:read|text|content)\b",
+    // VTD-0025 — Python base64 decode to variable
+    r"(?i)\b\w+\s*=\s*base64\.b64decode\s*\(",
+    // VTD-0026 — Python exec/eval of variable
+    r"(?i)(?:^|[^.\w])(?:exec|eval)\s*\(\s*\w+\s*[,)]",
+    // VTD-0035 — GitHub Actions OIDC token
+    r"\bACTIONS_ID_TOKEN_REQUEST_(?:TOKEN|URL)\b",
+    // VTD-0059 — outbound POST with application/octet-stream
+    r#"(?i)(?:Content-Type|content[_-]?type)["']?\s*[:=]\s*["']?application/octet-stream"#,
+    // VTD-0027 — shell variable assigned long base64 literal
+    r#"\b[A-Za-z_]\w*=["'][A-Za-z0-9+/]{40,}={0,2}["']"#,
 ];
 
 static SENSITIVE_REGEXES: OnceLock<Vec<Regex>> = OnceLock::new();
@@ -148,9 +828,20 @@ fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding
     let regexes = get_sensitive_regexes();
 
     for (path, content) in text_files {
+        let is_doc = path.to_lowercase().ends_with(".md");
         let lines: Vec<&str> = content.split('\n').collect();
 
         for (i_pat, pat) in SENSITIVE_PATTERNS.iter().enumerate() {
+            if pat.code_only && is_doc {
+                continue;
+            }
+            let effective_severity = if is_doc {
+                pat.doc_severity
+                    .clone()
+                    .unwrap_or_else(|| pat.severity.clone())
+            } else {
+                pat.severity.clone()
+            };
             let re = &regexes[i_pat];
             for (i_line, line) in lines.iter().enumerate() {
                 if re.is_match(line) {
@@ -160,7 +851,7 @@ fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding
                     findings.push(Finding {
                         rule_id: pat.rule_id.to_string(),
                         category: FindingCategory::Security,
-                        severity: pat.severity.clone(),
+                        severity: effective_severity,
                         label: pat.label.to_string(),
                         detail,
                         filepath: Some(path.clone()),
@@ -180,6 +871,97 @@ fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding
         .any(|f| matches!(f.severity, Severity::Critical | Severity::High));
 
     (findings, secrets_check_failed)
+}
+
+// ── Entropy scan ──────────────────────────────────────────────────────────────
+
+fn shannon_entropy(s: &str) -> f64 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let mut freq = [0u32; 256];
+    for b in s.bytes() {
+        freq[b as usize] += 1;
+    }
+    let len = s.len() as f64;
+    freq.iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+static ASSIGNMENT_QUOTED_VALUE_STR: &str =
+    r#"(?:["']?([A-Za-z_][A-Za-z0-9_.:-]*)["']?\s*[:=]\s*["']([^"'\r\n]{20,})["'])"#;
+static SUSPICIOUS_SECRET_KEY_STR: &str = r"(?i)(?:^|[-_.])(?:api[-_.]?key|access[-_.]?token|auth[-_.]?token|refresh[-_.]?token|token|secret|password|passwd|pwd|private[-_.]?key|client[-_.]?secret|credential|credentials|bearer)(?:$|[-_.])";
+
+static ASSIGNMENT_QUOTED_VALUE_RE: OnceLock<Regex> = OnceLock::new();
+static SUSPICIOUS_SECRET_KEY_RE: OnceLock<Regex> = OnceLock::new();
+
+fn scan_entropy(text_files: &HashMap<String, String>, findings: &mut Vec<Finding>) {
+    let assign_re = ASSIGNMENT_QUOTED_VALUE_RE
+        .get_or_init(|| Regex::new(ASSIGNMENT_QUOTED_VALUE_STR).expect("bad entropy regex"));
+    let key_re = SUSPICIOUS_SECRET_KEY_RE
+        .get_or_init(|| Regex::new(SUSPICIOUS_SECRET_KEY_STR).expect("bad key regex"));
+
+    for (path, content) in text_files {
+        if path.to_lowercase().ends_with(".md") {
+            continue;
+        }
+        for (i_line, line) in content.split('\n').enumerate() {
+            for cap in assign_re.captures_iter(line) {
+                let key = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                let value = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+                if value.len() < 20 {
+                    continue;
+                }
+                if !key_re.is_match(key) {
+                    continue;
+                }
+                if shannon_entropy(value) >= 3.5 {
+                    let snippet = line.trim();
+                    let snippet = &snippet[..snippet.len().min(120)];
+                    findings.push(Finding {
+                        rule_id: RULE_HIGH_ENTROPY_SECRET.to_string(),
+                        category: FindingCategory::Security,
+                        severity: Severity::Critical,
+                        label: "High-entropy value — potential hardcoded secret".to_string(),
+                        detail: format!("Detected in {path}:{} — `{snippet}`", i_line + 1),
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: None,
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                    break; // one finding per line
+                }
+            }
+        }
+    }
+}
+
+fn scan_env_files(text_files: &HashMap<String, String>, findings: &mut Vec<Finding>) {
+    static ENV_FILE_RE: OnceLock<Regex> = OnceLock::new();
+    let re =
+        ENV_FILE_RE.get_or_init(|| Regex::new(r"(?:^|/)\.env($|\.)").expect("bad env file regex"));
+    for path in text_files.keys() {
+        if re.is_match(path) {
+            findings.push(Finding {
+                rule_id: RULE_ENV_FILE_IN_PACKAGE.to_string(),
+                category: FindingCategory::Security,
+                severity: Severity::Critical,
+                label: "Environment file included in skill package".to_string(),
+                detail: format!("Found {path} — should be excluded from distribution"),
+                filepath: Some(path.clone()),
+                owasp_llm_category: None,
+                chain_id: None,
+                intent: None,
+                source: DEFAULT_SOURCE.to_string(),
+            });
+        }
+    }
 }
 
 // ── Malicious activity chain detection ────────────────────────────────────────
@@ -339,6 +1121,607 @@ fn detect_malicious_activity_chains(findings: &mut Vec<Finding>) {
     }
 
     findings.extend(new_findings);
+}
+
+// ── Credential-exfiltration chain detection ───────────────────────────────────
+
+const CRED_SOURCE_FRAGS: &[&str] = &[
+    "credential file access",
+    "private key file access",
+    "Keychain file access",
+    "hardcoded secret",
+    "API key",
+    ".env",
+    "High-entropy value",
+    "OIDC token environment variable",
+];
+
+static NETWORK_SINK_STRS: &[&str] = &[
+    r"(?i)(?:fetch|axios|requests)\s*\.\s*(?:post|put|patch)\s*\(",
+    r#"(?i)fetch\s*\(\s*['"`]https?:"#,
+    r"(?i)new\s+XMLHttpRequest\s*\(\s*\)",
+    r"(?i)(?:curl|wget)\s+.*-[Xd]",
+    r"(?i)(?:socket|sock)\s*\.\s*(?:send|write|connect)\s*\(",
+    r"(?i)smtplib|nodemailer|sendgrid",
+    r"(?i)requests\.post\s*\(",
+    r"(?i)http\.request\s*\(",
+];
+
+static NETWORK_SINK_REGEXES: OnceLock<Vec<Regex>> = OnceLock::new();
+
+fn get_network_sink_regexes() -> &'static [Regex] {
+    NETWORK_SINK_REGEXES.get_or_init(|| {
+        NETWORK_SINK_STRS
+            .iter()
+            .map(|s| Regex::new(s).expect("invalid network sink pattern"))
+            .collect()
+    })
+}
+
+fn detect_exfiltration_chains(findings: &mut Vec<Finding>, text_files: &HashMap<String, String>) {
+    // Group credential-source finding indices by file path.
+    let mut sources_by_file: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, finding) in findings.iter().enumerate() {
+        if finding.category != FindingCategory::Security {
+            continue;
+        }
+        if !CRED_SOURCE_FRAGS
+            .iter()
+            .any(|&frag| finding.label.contains(frag))
+        {
+            continue;
+        }
+        if matches!(finding.severity, Severity::Info) {
+            continue;
+        }
+        if let Some(fp) = extract_filepath_from_detail(&finding.detail) {
+            sources_by_file.entry(fp.to_string()).or_default().push(idx);
+        }
+    }
+
+    let sinks = get_network_sink_regexes();
+    let mut chain_index: u32 = 0;
+
+    // Collect (filepath, source_indices, chain_id) for files that have both sources and sinks.
+    let mut chains: Vec<(String, Vec<usize>, String)> = Vec::new();
+    for (file_path, source_indices) in &sources_by_file {
+        if let Some(content) = text_files.get(file_path.as_str()) {
+            if sinks.iter().any(|re| re.is_match(content)) {
+                chains.push((
+                    file_path.clone(),
+                    source_indices.clone(),
+                    format!("cred-exfil-{chain_index}"),
+                ));
+                chain_index += 1;
+            }
+        }
+    }
+
+    let mut new_findings: Vec<Finding> = Vec::new();
+    for (file_path, source_indices, chain_id) in &chains {
+        // Mutate source findings.
+        for &idx in source_indices {
+            findings[idx].chain_id = Some(chain_id.clone());
+            findings[idx].intent = Some(Intent::Malicious);
+            if !matches!(findings[idx].severity, Severity::Critical) {
+                findings[idx].severity = Severity::Critical;
+            }
+        }
+        // Tag any network-related findings in the same file.
+        let indices_to_tag: Vec<usize> = findings
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| {
+                !source_indices.contains(i)
+                    && f.chain_id.is_none()
+                    && extract_filepath_from_detail(&f.detail)
+                        .map(|p| p == file_path.as_str())
+                        .unwrap_or(false)
+                    && {
+                        let lbl = f.label.to_lowercase();
+                        lbl.contains("remote code")
+                            || lbl.contains("dead-drop")
+                            || lbl.contains("network")
+                            || lbl.contains("exfil")
+                    }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in indices_to_tag {
+            findings[i].chain_id = Some(chain_id.clone());
+            findings[i].intent = Some(Intent::Malicious);
+            if !matches!(findings[i].severity, Severity::Critical) {
+                findings[i].severity = Severity::Critical;
+            }
+        }
+        new_findings.push(Finding {
+            rule_id: RULE_CREDENTIAL_EXFILTRATION_CHAIN.to_string(),
+            category: FindingCategory::Security,
+            severity: Severity::Critical,
+            label: "Credential access followed by network transmission".to_string(),
+            detail: format!(
+                "{file_path} reads a credential source and transmits data over the network. \
+                 Common exfiltration pattern."
+            ),
+            filepath: Some(file_path.clone()),
+            owasp_llm_category: None,
+            chain_id: Some(chain_id.clone()),
+            intent: Some(Intent::Malicious),
+            source: DEFAULT_SOURCE.to_string(),
+        });
+    }
+    findings.extend(new_findings);
+}
+
+// ── Base64 obfuscation scan ───────────────────────────────────────────────────
+
+fn decode_base64_lenient(s: &str) -> Option<String> {
+    use base64::{engine::general_purpose, Engine as _};
+    // Standard decode. Use from_utf8_lossy to mirror atob() which is binary-safe.
+    if let Ok(bytes) = general_purpose::STANDARD.decode(s) {
+        return Some(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    // Auto-pad then decode.
+    let pad = match s.len() % 4 {
+        2 => "==",
+        3 => "=",
+        _ => "",
+    };
+    if !pad.is_empty() {
+        let padded = format!("{s}{pad}");
+        if let Ok(bytes) = general_purpose::STANDARD.decode(&padded) {
+            return Some(String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+    // Base64url: swap - → + and _ → /
+    let swapped: String = s
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .collect();
+    let pad2 = match swapped.len() % 4 {
+        2 => "==",
+        3 => "=",
+        _ => "",
+    };
+    let padded2 = format!("{swapped}{pad2}");
+    if let Ok(bytes) = general_purpose::STANDARD.decode(&padded2) {
+        return Some(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    None
+}
+
+fn join_concatenated_strings(content: &str) -> Vec<String> {
+    // Find quoted segments with 4+ base64-like chars, join adjacent ones.
+    let mut results = Vec::new();
+    let mut group = String::new();
+    let mut seg_count: usize = 0;
+    let mut prev_end: Option<usize> = None;
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let quote = bytes[i];
+        if quote != b'\'' && quote != b'"' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != quote {
+            end += 1;
+        }
+        if end >= bytes.len() {
+            i = end + 1;
+            continue;
+        }
+        let inner = &content[start..end];
+        if inner.len() >= 4
+            && inner.chars().all(
+                |c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '=' | '_' | '-'),
+            )
+        {
+            let match_start = i;
+            let match_end = end + 1;
+            let is_joining = prev_end
+                .map(|pe| {
+                    let gap = &content[pe..match_start];
+                    gap.len() <= 10
+                        && gap
+                            .trim_matches(|c: char| c == '+' || c.is_whitespace())
+                            .is_empty()
+                })
+                .unwrap_or(false);
+            if is_joining {
+                group.push_str(inner);
+                seg_count += 1;
+            } else {
+                if seg_count > 1 && group.len() >= 40 {
+                    results.push(group.clone());
+                }
+                group = inner.to_string();
+                seg_count = 1;
+            }
+            prev_end = Some(match_end);
+        }
+        i = end + 1;
+    }
+    if seg_count > 1 && group.len() >= 40 {
+        results.push(group);
+    }
+    results
+}
+
+/// Returns (secrets_failed, behavioral_failed) — mirrors vettd's checkBase64Payloads.
+fn check_base64_payloads(
+    text_files: &HashMap<String, String>,
+    findings: &mut Vec<Finding>,
+) -> (bool, bool) {
+    static BASE64_CHUNK_RE: OnceLock<Regex> = OnceLock::new();
+    static SHELL_VAR_ASSIGN_RE: OnceLock<Regex> = OnceLock::new();
+    static OBFUSC_URL_RE: OnceLock<Regex> = OnceLock::new();
+    static SHELL_VAR_VALID_RE: OnceLock<Regex> = OnceLock::new();
+    let chunk_re = BASE64_CHUNK_RE
+        .get_or_init(|| Regex::new(r"[A-Za-z0-9+/_-]{32,}={0,2}").expect("bad b64 chunk re"));
+    let assign_re = SHELL_VAR_ASSIGN_RE.get_or_init(|| {
+        Regex::new(r#"[A-Z_][A-Z0-9_]*=["']([^"'\r\n]{32,})["']"#).expect("bad shell var re")
+    });
+    let url_re =
+        OBFUSC_URL_RE.get_or_init(|| Regex::new(r#"https?://[^\s)>\]"']+"#).expect("bad url re"));
+    let valid_b64_re = SHELL_VAR_VALID_RE
+        .get_or_init(|| Regex::new(r"^[A-Za-z0-9+/=_-]+$").expect("bad valid b64 re"));
+    let sinks = get_network_sink_regexes();
+    let sensitive_regexes = get_sensitive_regexes();
+
+    let mut secrets_failed = false;
+    let behavioral_failed = false;
+    let mut obfusc_count: u32 = 0;
+
+    for (path, content) in text_files {
+        // Skip reference/eval directories.
+        if path.starts_with("evals/") || path.starts_with("references/") {
+            continue;
+        }
+        let is_doc = path.to_lowercase().ends_with(".md");
+        let mut warn_emitted = false;
+
+        // Collect candidates: chunk matches, joined strings, shell var assignments.
+        let mut candidates: Vec<(String, Option<usize>)> = Vec::new();
+        for m in chunk_re.find_iter(content) {
+            candidates.push((m.as_str().to_string(), Some(m.start())));
+        }
+        for joined in join_concatenated_strings(content) {
+            candidates.push((joined, None));
+        }
+        for cap in assign_re.captures_iter(content) {
+            if let Some(val) = cap.get(1) {
+                let stripped: String = val
+                    .as_str()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                if stripped.len() >= 32 && valid_b64_re.is_match(&stripped) {
+                    candidates.push((stripped, None));
+                }
+            }
+        }
+
+        let mut matched_dangerous = false;
+        for (b64, byte_index) in &candidates {
+            let Some(decoded) = decode_base64_lenient(b64) else {
+                continue;
+            };
+
+            // 1. Sensitive patterns.
+            for (i_pat, pat) in SENSITIVE_PATTERNS.iter().enumerate() {
+                if pat.code_only && is_doc {
+                    continue;
+                }
+                let re = &sensitive_regexes[i_pat];
+                if re.is_match(&decoded) {
+                    findings.push(Finding {
+                        rule_id: RULE_OBFUSCATED_DANGEROUS_CODE.to_string(),
+                        category: FindingCategory::Security,
+                        severity: Severity::Critical,
+                        label: "Obfuscated dangerous code".to_string(),
+                        detail: format!("Decoded base64 in {path} matched: {}", pat.label),
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: Some(format!("obfusc-code-{obfusc_count}")),
+                        intent: Some(Intent::Malicious),
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                    obfusc_count += 1;
+                    matched_dangerous = true;
+                    secrets_failed = true;
+                    break;
+                }
+            }
+
+            // 2. Network sink patterns.
+            if !matched_dangerous {
+                for re in sinks {
+                    if re.is_match(&decoded) {
+                        findings.push(Finding {
+                            rule_id: RULE_OBFUSCATED_NETWORK_CALL.to_string(),
+                            category: FindingCategory::Security,
+                            severity: Severity::Critical,
+                            label: "Obfuscated network call".to_string(),
+                            detail: format!(
+                                "Decoded base64 in {path} contained a network transmission call"
+                            ),
+                            filepath: Some(path.clone()),
+                            owasp_llm_category: None,
+                            chain_id: Some(format!("obfusc-net-{obfusc_count}")),
+                            intent: Some(Intent::Malicious),
+                            source: DEFAULT_SOURCE.to_string(),
+                        });
+                        obfusc_count += 1;
+                        matched_dangerous = true;
+                        break;
+                    }
+                }
+            }
+
+            // 3. External URL.
+            if !matched_dangerous && url_re.is_match(&decoded) {
+                findings.push(Finding {
+                    rule_id: RULE_OBFUSCATED_EXTERNAL_URL.to_string(),
+                    category: FindingCategory::Security,
+                    severity: Severity::Critical,
+                    label: "Obfuscated external URL (dead-drop)".to_string(),
+                    detail: format!(
+                        "Decoded base64 in {path} contained an external URL. \
+                         Possible dead-drop or remote instruction source."
+                    ),
+                    filepath: Some(path.clone()),
+                    owasp_llm_category: None,
+                    chain_id: Some(format!("obfusc-url-{obfusc_count}")),
+                    intent: Some(Intent::Malicious),
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+                obfusc_count += 1;
+                matched_dangerous = true;
+            }
+
+            // 4. Markdown printable-ratio warn fallback.
+            if !matched_dangerous && is_doc && !warn_emitted {
+                if let Some(byte_idx) = byte_index {
+                    let printable = decoded
+                        .chars()
+                        .filter(|&c| {
+                            let n = c as u32;
+                            (32u32..=126).contains(&n) || matches!(n, 9 | 10 | 13)
+                        })
+                        .count();
+                    if !decoded.is_empty() && printable as f64 / decoded.len() as f64 >= 0.75 {
+                        let line_num = content[..*byte_idx].split('\n').count();
+                        findings.push(Finding {
+                            rule_id: RULE_BASE64_IN_MARKDOWN.to_string(),
+                            category: FindingCategory::Security,
+                            severity: Severity::Medium,
+                            label: "Base64-encoded content in markdown file".to_string(),
+                            detail: format!(
+                                "Detected in {path}:{line_num} — base64 content is \
+                                 rarely expected in skill documentation"
+                            ),
+                            filepath: Some(path.clone()),
+                            owasp_llm_category: None,
+                            chain_id: None,
+                            intent: None,
+                            source: DEFAULT_SOURCE.to_string(),
+                        });
+                        warn_emitted = true;
+                    }
+                }
+            }
+
+            if matched_dangerous {
+                break;
+            }
+        }
+    }
+
+    (secrets_failed, behavioral_failed)
+}
+
+// ── Description-behavior mismatch ────────────────────────────────────────────
+
+const BENIGN_DESCRIPTION_KEYWORDS: &[&str] = &[
+    "format",
+    "parse",
+    "convert",
+    "search",
+    "summarize",
+    "summarization",
+    "translate",
+    "lint",
+    "validate",
+    "sort",
+    "filter",
+    "render",
+    "pretty",
+    "prettify",
+    "diff",
+    "compare",
+    "clean",
+    "normalize",
+    "transform",
+    "extract",
+    "template",
+    "generate",
+    "scaffold",
+    "snippet",
+    "helper",
+    "utility",
+    "wrapper",
+    "markdown",
+    "json",
+    "yaml",
+    "csv",
+    "html",
+    "css",
+];
+
+fn check_description_behavior_mismatch(description: &str, findings: &mut Vec<Finding>) {
+    let has_malicious = findings
+        .iter()
+        .any(|f| f.category == FindingCategory::Security && f.intent == Some(Intent::Malicious));
+    if !has_malicious {
+        return;
+    }
+    let desc_lower = description.to_lowercase();
+    let matched: Vec<&str> = BENIGN_DESCRIPTION_KEYWORDS
+        .iter()
+        .copied()
+        .filter(|&kw| desc_lower.contains(kw))
+        .collect();
+    if matched.is_empty() {
+        return;
+    }
+    let keywords = matched[..matched.len().min(3)].join(", ");
+    findings.push(Finding {
+        rule_id: RULE_DESCRIPTION_BEHAVIOR_MISMATCH.to_string(),
+        category: FindingCategory::Security,
+        severity: Severity::Medium,
+        label: "Description suggests benign skill but code contains malicious security patterns"
+            .to_string(),
+        detail: format!(
+            "Description uses benign-sounding terms ({keywords}) but the package contains \
+             malicious security findings. Review carefully."
+        ),
+        filepath: None,
+        owasp_llm_category: None,
+        chain_id: None,
+        intent: None,
+        source: DEFAULT_SOURCE.to_string(),
+    });
+}
+
+// ── Typosquatting check ───────────────────────────────────────────────────────
+
+const POPULAR_SKILL_NAMES: &[&str] = &[
+    "github-pr-review",
+    "github-issue-triage",
+    "git-commit-helper",
+    "github-actions-helper",
+    "github-actions-debug",
+    "github-release-notes",
+    "aws-cost-explorer",
+    "aws-s3-manager",
+    "gcp-resource-audit",
+    "azure-devops-helper",
+    "terraform-plan-review",
+    "kubernetes-debug",
+    "solana-wallet",
+    "phantom-wallet",
+    "metamask-helper",
+    "ethereum-signer",
+    "bitcoin-address",
+    "binance-api",
+    "coinbase-trader",
+    "uniswap-helper",
+    "ledger-connect",
+    "trezor-verify",
+    "code-review",
+    "test-generator",
+    "doc-writer",
+    "api-mocker",
+    "sql-query-builder",
+    "regex-builder",
+    "json-formatter",
+    "openai-validator",
+    "lint-fixer",
+    "dependency-updater",
+    "prompt-optimizer",
+    "context-summarizer",
+    "claude-helper",
+    "openai-wrapper",
+    "llm-evaluator",
+    "slack-notifier",
+    "jira-issue-creator",
+    "linear-ticket",
+    "notion-page-writer",
+    "calendar-scheduler",
+    "email-drafter",
+    "secret-scanner",
+    "vulnerability-scanner",
+    "cve-lookup",
+    "permissions-auditor",
+    "sast-runner",
+];
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (la, lb) = (a.len(), b.len());
+    let mut dp = vec![0usize; lb + 1];
+    dp.iter_mut().enumerate().for_each(|(j, v)| *v = j);
+    for i in 1..=la {
+        let mut prev = dp[0];
+        dp[0] = i;
+        for j in 1..=lb {
+            let temp = dp[j];
+            dp[j] = if a[i - 1] == b[j - 1] {
+                prev
+            } else {
+                1 + prev.min(dp[j]).min(dp[j - 1])
+            };
+            prev = temp;
+        }
+    }
+    dp[lb]
+}
+
+fn check_typosquat(name: &str, findings: &mut Vec<Finding>) {
+    if name == "unknown" || name.is_empty() {
+        return;
+    }
+    let matches: Vec<&str> = POPULAR_SKILL_NAMES
+        .iter()
+        .copied()
+        .filter(|&popular| name != popular && levenshtein(name, popular) <= 2)
+        .collect();
+    if matches.is_empty() {
+        return;
+    }
+    let (severity, detail) = if matches.len() >= 2 {
+        let list = matches[..matches.len().min(3)].join(", ");
+        let extra = if matches.len() > 3 {
+            format!(" and {} more", matches.len() - 3)
+        } else {
+            String::new()
+        };
+        (
+            Severity::Critical,
+            format!(
+                "Skill name \"{name}\" is within Levenshtein distance 2 of {} popular skills: {list}{extra}",
+                matches.len()
+            ),
+        )
+    } else {
+        (
+            Severity::Medium,
+            format!(
+                "Skill name \"{name}\" is within Levenshtein distance 2 of popular skill \"{}\"",
+                matches[0]
+            ),
+        )
+    };
+    findings.push(Finding {
+        rule_id: RULE_POSSIBLE_TYPOSQUATTING.to_string(),
+        category: FindingCategory::Security,
+        severity,
+        label: "Possible typosquatting".to_string(),
+        detail,
+        filepath: None,
+        owasp_llm_category: None,
+        chain_id: None,
+        intent: Some(Intent::Negligent),
+        source: DEFAULT_SOURCE.to_string(),
+    });
 }
 
 // ── Frontmatter parser ────────────────────────────────────────────────────────
@@ -818,6 +2201,9 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                 body: String::new(),
             });
 
+        // Typosquatting check (VTD-0082) — runs before security scan, after name parse
+        check_typosquat(&parsed.name, &mut findings);
+
         // Name validation (VTD-0099)
         if let Some(err) = validate_name(&parsed.name) {
             findings.push(f!(
@@ -980,6 +2366,51 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                         .to_string()
                 ));
             }
+
+            // VTD-0107 — progressive disclosure: body refs files that exist as dirs
+            let body_refs_files = parsed.body.contains("references/")
+                || parsed.body.contains("scripts/")
+                || parsed.body.contains("assets/")
+                || {
+                    static READ_MD_RE: OnceLock<Regex> = OnceLock::new();
+                    let re = READ_MD_RE
+                        .get_or_init(|| Regex::new(r"(?i)read.*\.md").expect("bad read md re"));
+                    re.is_match(&parsed.body)
+                };
+            if body_refs_files && (has_references || has_scripts || has_assets) {
+                findings.push(f!(
+                    RULE_PROGRESSIVE_DISCLOSURE,
+                    FindingCategory::BestPractices,
+                    Severity::Info,
+                    "Progressive disclosure used",
+                    "SKILL.md body references files in references/, scripts/, or assets/ — \
+                     agents can load additional context on demand instead of consuming \
+                     everything upfront"
+                        .to_string()
+                ));
+            }
+
+            // VTD-0108 — generic instruction phrases
+            const GENERIC_PHRASES: &[&str] = &[
+                "follow best practices",
+                "handle errors appropriately",
+                "use proper",
+                "ensure quality",
+            ];
+            let body_lower = parsed.body.to_lowercase();
+            for &phrase in GENERIC_PHRASES {
+                if body_lower.contains(phrase) {
+                    findings.push(f!(
+                        RULE_GENERIC_INSTRUCTION,
+                        FindingCategory::BestPractices,
+                        Severity::Info,
+                        "Generic instruction detected",
+                        format!(
+                            "\"{phrase}\" is too vague — provide specific, actionable guidance instead"
+                        )
+                    ));
+                }
+            }
         }
     }
 
@@ -994,7 +2425,19 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         // Sort for deterministic output order
         script_files.sort_by_key(|(p, _)| *p);
 
+        static INTERACTIVE_RE: OnceLock<Regex> = OnceLock::new();
+        static STRUCTURED_RE: OnceLock<Regex> = OnceLock::new();
+        let interactive_re = INTERACTIVE_RE.get_or_init(|| {
+            Regex::new(r"(?i)input\s*\(|readline|prompt\s*\(|inquirer")
+                .expect("bad interactive re")
+        });
+        let structured_re = STRUCTURED_RE.get_or_init(|| {
+            Regex::new(r"(?i)json\.dumps|JSON\.stringify|\.to_json|\.to_csv|csv\.writer")
+                .expect("bad structured re")
+        });
+
         for (path, content) in script_files {
+            // VTD-0114 — CLI help
             findings.push(Finding {
                 rule_id: RULE_SCRIPT_CLI_HELP.to_string(),
                 category: FindingCategory::Scripts,
@@ -1015,21 +2458,73 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                 intent: None,
                 source: DEFAULT_SOURCE.to_string(),
             });
+
+            // VTD-0115 — interactive prompts
+            if interactive_re.is_match(content) {
+                findings.push(Finding {
+                    rule_id: RULE_SCRIPT_INTERACTIVE_PROMPTS.to_string(),
+                    category: FindingCategory::Scripts,
+                    severity: Severity::High,
+                    label: "Interactive prompts detected".to_string(),
+                    detail: format!(
+                        "{path}: Agents run in non-interactive shells — replace prompts with CLI flags or stdin"
+                    ),
+                    filepath: Some(path.to_string()),
+                    owasp_llm_category: None,
+                    chain_id: None,
+                    intent: None,
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+            }
+
+            // VTD-0116 — structured output
+            if structured_re.is_match(content) {
+                findings.push(Finding {
+                    rule_id: RULE_SCRIPT_STRUCTURED_OUTPUT.to_string(),
+                    category: FindingCategory::Scripts,
+                    severity: Severity::Info,
+                    label: "Structured output format".to_string(),
+                    detail: format!(
+                        "{path}: Uses JSON/CSV output which is easily parseable by agents"
+                    ),
+                    filepath: Some(path.to_string()),
+                    owasp_llm_category: None,
+                    chain_id: None,
+                    intent: None,
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+            }
         }
     }
 
     // ── Security scan ────────────────────────────────────────────────────────
-    // Mirrors vettd's checkSecurity(). Sensitive patterns (forensic evasion,
-    // persistence, etc.) are scanned first; their presence suppresses the
-    // VTD-0091 clean signal. Behavioral scan is not yet fully implemented —
-    // VTD-0092 fires unconditionally (matching vettd's clean-path output for
-    // skills without prompt injection markers).
+    // Order mirrors vettd's checkSecurity():
+    //   1. Sensitive patterns (SENSITIVE_PATTERNS array)
+    //   2. Entropy scan (high-entropy assignment values)
+    //   3. .env file detection
+    //   4. Capture secretsCheckFailed (before behavioral scan)
+    //   5. Behavioral scan (not implemented — VTD-0092 fires unconditionally)
+    //   6. Base64 obfuscation scan
+    //   7. VTD-0091 conditional (suppressed if secrets or base64 secrets found)
+    //   8. VTD-0092 unconditional (known limitation: behavioral scan not implemented)
 
-    let (sensitive_findings, secrets_check_failed) = scan_sensitive_patterns(text_files);
+    let (sensitive_findings, secrets_check_failed_pat) = scan_sensitive_patterns(text_files);
     findings.extend(sensitive_findings);
 
+    scan_entropy(text_files, &mut findings);
+    scan_env_files(text_files, &mut findings);
+
+    let secrets_check_failed = secrets_check_failed_pat
+        || findings.iter().any(|f| {
+            f.category == FindingCategory::Security
+                && matches!(f.severity, Severity::Critical | Severity::High)
+        });
+
+    let (base64_secrets_failed, _base64_behavioral_failed) =
+        check_base64_payloads(text_files, &mut findings);
+
     // VTD-0091: only emit when no critical/high secrets/code-risk findings found.
-    if !secrets_check_failed {
+    if !secrets_check_failed && !base64_secrets_failed {
         findings.push(f!(
             RULE_NO_SECRETS_DETECTED,
             FindingCategory::Security,
@@ -1139,12 +2634,25 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         }
     }
 
-    // ── Malicious-activity chain detection ───────────────────────────────────
-    // Must run after all security pattern findings are added.
+    // ── Chain detection and mismatch checks ─────────────────────────────────
+    // Order mirrors vettd: exfiltration chains → malicious activity chains →
+    // description-behavior mismatch.
+    detect_exfiltration_chains(&mut findings, text_files);
     detect_malicious_activity_chains(&mut findings);
-
-    // ── Credential-exfiltration chain detection (existing) ───────────────────
-    chain::detect_chains(&mut findings, text_files);
+    let description_for_mismatch = if has_skill_md {
+        let key = if text_files.contains_key("SKILL.md") {
+            "SKILL.md"
+        } else {
+            "skill.md"
+        };
+        text_files
+            .get(key)
+            .map(|c| parse_skill_md(c).description)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    check_description_behavior_mismatch(&description_for_mismatch, &mut findings);
 
     SkillScanResult {
         findings,
