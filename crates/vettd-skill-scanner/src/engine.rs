@@ -7,6 +7,9 @@
 //! the parity test can reach a clean pass.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use crate::chain;
 use crate::consts::DEFAULT_SOURCE;
@@ -17,6 +20,14 @@ use crate::result::SkillScanResult;
 
 // Security
 const RULE_NO_REPOSITORY_LINK: &str = "VTD-0083";
+// Forensic-evasion / persistence (SENSITIVE_PATTERNS subset implemented here)
+const RULE_SYSTEM_LOG_TRUNCATION: &str = "VTD-0045";
+const RULE_JOURNAL_LOG_VACUUM: &str = "VTD-0046";
+const RULE_FORCED_LOG_ROTATION: &str = "VTD-0047";
+const RULE_TIME_DELAYED_EXECUTION: &str = "VTD-0054";
+// External-URL / chain
+const RULE_EXTERNAL_URL_REFERENCE: &str = "VTD-0088";
+const RULE_MALICIOUS_ACTIVITY_CHAIN: &str = "VTD-0090";
 const RULE_NO_SECRETS_DETECTED: &str = "VTD-0091";
 const RULE_NO_BEHAVIORAL_SIGNALS: &str = "VTD-0092";
 const RULE_NO_EXTERNAL_URLS: &str = "VTD-0093";
@@ -31,6 +42,7 @@ const RULE_SKILL_NAME_VALIDITY: &str = "VTD-0099";
 // Best practices
 const RULE_SKILL_MD_BODY_LENGTH: &str = "VTD-0101";
 const RULE_EXAMPLES_PRESENT: &str = "VTD-0103";
+const RULE_VALIDATION_LOOP: &str = "VTD-0105";
 const RULE_WORKFLOW_STRUCTURE: &str = "VTD-0106";
 
 // Description
@@ -61,6 +73,273 @@ const EVAL_JSON_CANDIDATES: &[&str] = &[
     "test/evals.json",
     "evals/tests.json",
 ];
+
+// ── Sensitive pattern detection ───────────────────────────────────────────────
+// Partial implementation of vettd's SENSITIVE_PATTERNS from checkSecurity().
+// Only patterns NOT in CODE_ONLY_LABELS are included here (they fire on all
+// file types including .md). Each pattern fires once per file at the first
+// matching line.
+
+struct SensitivePattern {
+    rule_id: &'static str,
+    label: &'static str,
+    severity: Severity,
+    intent: Intent,
+}
+
+// Array order mirrors vettd's SENSITIVE_PATTERNS definition order — it determines
+// the bucket insertion order in chain detection, which affects the chain detail string.
+static SENSITIVE_PATTERNS: &[SensitivePattern] = &[
+    // VTD-0054 comes before the forensic-evasion group in skill-analyzer.ts
+    SensitivePattern {
+        rule_id: RULE_TIME_DELAYED_EXECUTION,
+        label: "Time-delayed execution via at command",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+    },
+    SensitivePattern {
+        rule_id: RULE_SYSTEM_LOG_TRUNCATION,
+        label: "System log truncation (forensic evasion)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+    },
+    SensitivePattern {
+        rule_id: RULE_JOURNAL_LOG_VACUUM,
+        label: "Journal log vacuum (forensic evasion)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+    },
+    SensitivePattern {
+        rule_id: RULE_FORCED_LOG_ROTATION,
+        label: "Forced log rotation (forensic evasion)",
+        severity: Severity::Critical,
+        intent: Intent::Malicious,
+    },
+];
+
+// Regex strings indexed parallel to SENSITIVE_PATTERNS.
+// Compiled on first use via get_sensitive_regexes().
+static SENSITIVE_PATTERN_STRS: &[&str] = &[
+    // VTD-0054 — | at <time>
+    r"\|\s*at\s+(?:now\b|\d{1,2}:\d{2}|tomorrow\b|midnight\b|noon\b)",
+    // VTD-0045 — truncate -s 0 or redirect into system log files
+    r#"(?i)(?:truncate\s+-s\s+0\s+["']?|(?:^|[\s;&|])>\s*["']?)(?:~|(?:/var/log))/(?:auth\.log|syslog|audit/audit\.log|kern\.log|dpkg\.log|messages|secure)\b"#,
+    // VTD-0046 — journalctl --vacuum-*
+    r"\bjournalctl\s+--vacuum-(?:time|size)\b",
+    // VTD-0047 — logrotate -f
+    r"\blogrotate\s+-f\b",
+];
+
+static SENSITIVE_REGEXES: OnceLock<Vec<Regex>> = OnceLock::new();
+
+fn get_sensitive_regexes() -> &'static [Regex] {
+    SENSITIVE_REGEXES.get_or_init(|| {
+        SENSITIVE_PATTERN_STRS
+            .iter()
+            .map(|s| Regex::new(s).expect("invalid sensitive pattern"))
+            .collect()
+    })
+}
+
+/// Scan all text files for SENSITIVE_PATTERNS. Returns findings and whether
+/// any critical/high security finding was found (used to suppress VTD-0091).
+fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding>, bool) {
+    let mut findings: Vec<Finding> = Vec::new();
+    let regexes = get_sensitive_regexes();
+
+    for (path, content) in text_files {
+        let lines: Vec<&str> = content.split('\n').collect();
+
+        for (i_pat, pat) in SENSITIVE_PATTERNS.iter().enumerate() {
+            let re = &regexes[i_pat];
+            for (i_line, line) in lines.iter().enumerate() {
+                if re.is_match(line) {
+                    let snippet = line.trim();
+                    let snippet = &snippet[..snippet.len().min(120)];
+                    let detail = format!("Detected in {path}:{} — `{snippet}`", i_line + 1);
+                    findings.push(Finding {
+                        rule_id: pat.rule_id.to_string(),
+                        category: FindingCategory::Security,
+                        severity: pat.severity.clone(),
+                        label: pat.label.to_string(),
+                        detail,
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: Some(pat.intent.clone()),
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                    break; // first match per pattern per file only
+                }
+            }
+        }
+    }
+
+    let secrets_check_failed = findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Critical | Severity::High));
+
+    (findings, secrets_check_failed)
+}
+
+// ── Malicious activity chain detection ────────────────────────────────────────
+// Mirrors vettd's detectMaliciousActivityChains().
+// Groups security findings by file, classifies into EVASION/PERSISTENCE/etc.
+// buckets, and emits a chain finding when 2+ distinct buckets co-occur.
+
+const EVASION_FRAGS: &[&str] = &[
+    "Shell history",
+    "Audit daemon",
+    "Windows event log clearing",
+    "Script self-deletion",
+    "System log truncation",
+    "Shell history file wipe",
+    "Journal log vacuum",
+    "Forced log rotation",
+];
+
+const PERSISTENCE_FRAGS: &[&str] = &[
+    "Cron persistence",
+    "Systemd user service",
+    "Shell rc file write",
+    "Time-delayed execution via at",
+    "Git hook injection",
+    "LD_PRELOAD environment injection",
+];
+
+const FETCH_FRAGS: &[&str] = &[
+    "Remote content fetched into variable",
+    "Remote content fetched into variable for execution (Python)",
+    "Base64-decoded content stored in variable",
+];
+
+const EXECUTION_FRAGS: &[&str] = &[
+    "Remote code execution via command substitution",
+    "Shell variable execution",
+    "Remote code execution via pipe to shell",
+    "PowerShell encoded command",
+    "PowerShell IEX download cradle",
+    "Python exec/eval of variable content",
+];
+
+const COVERT_CHANNEL_FRAGS: &[&str] = &[
+    "DNS query with variable-constructed hostname",
+    "DNS TXT record lookup",
+    "Outbound POST with application/octet-stream",
+];
+
+fn classify_malicious_bucket(label: &str) -> Option<&'static str> {
+    if EVASION_FRAGS.iter().any(|f| label.contains(f)) {
+        return Some("EVASION");
+    }
+    if PERSISTENCE_FRAGS.iter().any(|f| label.contains(f)) {
+        return Some("PERSISTENCE");
+    }
+    if FETCH_FRAGS.iter().any(|f| label.contains(f)) {
+        return Some("FETCH");
+    }
+    if EXECUTION_FRAGS.iter().any(|f| label.contains(f)) {
+        return Some("EXECUTION");
+    }
+    if COVERT_CHANNEL_FRAGS.iter().any(|f| label.contains(f)) {
+        return Some("COVERT_CHANNEL");
+    }
+    None
+}
+
+fn extract_filepath_from_detail(detail: &str) -> Option<&str> {
+    let rest = detail.strip_prefix("Detected in ")?;
+    let colon = rest.find(':')?;
+    Some(&rest[..colon])
+}
+
+fn detect_malicious_activity_chains(findings: &mut Vec<Finding>) {
+    // Group bucket-classified findings by file path (extracted from detail).
+    let mut buckets_by_file: HashMap<String, Vec<&'static str>> = HashMap::new();
+    // Track which finding indices belong to each file.
+    let mut indices_by_file: HashMap<String, Vec<usize>> = HashMap::new();
+
+    for (idx, finding) in findings.iter().enumerate() {
+        if finding.category != FindingCategory::Security {
+            continue;
+        }
+        let Some(file_path) = extract_filepath_from_detail(&finding.detail) else {
+            continue;
+        };
+        let file_path = file_path.to_string();
+
+        indices_by_file
+            .entry(file_path.clone())
+            .or_default()
+            .push(idx);
+
+        if let Some(bucket) = classify_malicious_bucket(&finding.label) {
+            let buckets = buckets_by_file.entry(file_path).or_default();
+            // Maintain insertion order with dedup (mirrors JS Set).
+            if !buckets.contains(&bucket) {
+                buckets.push(bucket);
+            }
+        }
+    }
+
+    let mut chain_index: u32 = 0;
+    let mut new_findings: Vec<Finding> = Vec::new();
+
+    for (file_path, buckets) in &buckets_by_file {
+        let file_indices = indices_by_file.get(file_path).cloned().unwrap_or_default();
+
+        // Condition A: 2+ distinct buckets.
+        // Condition B: 1 bucket + external malicious finding not in any bucket.
+        let has_external_malicious = file_indices.iter().any(|&idx| {
+            let f = &findings[idx];
+            matches!(f.severity, Severity::Critical | Severity::High)
+                && f.intent == Some(Intent::Malicious)
+                && f.chain_id.is_none()
+                && classify_malicious_bucket(&f.label).is_none()
+        });
+
+        if buckets.len() < 2 && !has_external_malicious {
+            continue;
+        }
+
+        let chain_id = format!("mal-activity-{chain_index}");
+        chain_index += 1;
+
+        // Mutate component findings: assign chainId, escalate intent/severity.
+        for &idx in &file_indices {
+            let f = &mut findings[idx];
+            if f.chain_id.is_some() {
+                continue;
+            }
+            if classify_malicious_bucket(&f.label).is_none() {
+                continue;
+            }
+            f.chain_id = Some(chain_id.clone());
+            f.intent = Some(Intent::Malicious);
+            if f.severity != Severity::Critical {
+                f.severity = Severity::Critical;
+            }
+        }
+
+        let bucket_list = buckets.join(" + ");
+        new_findings.push(Finding {
+            rule_id: RULE_MALICIOUS_ACTIVITY_CHAIN.to_string(),
+            category: FindingCategory::Security,
+            severity: Severity::Critical,
+            label: "Multiple malicious-activity indicators in same file".to_string(),
+            detail: format!(
+                "{file_path} contains {bucket_list} indicators that co-occur in a malicious pattern."
+            ),
+            filepath: Some(file_path.clone()),
+            owasp_llm_category: None,
+            chain_id: Some(chain_id),
+            intent: Some(Intent::Malicious),
+            source: DEFAULT_SOURCE.to_string(),
+        });
+    }
+
+    findings.extend(new_findings);
+}
 
 // ── Frontmatter parser ────────────────────────────────────────────────────────
 
@@ -210,6 +489,20 @@ fn has_examples(body: &str) -> bool {
         || lower.contains("**example**")
         || lower.contains("**good**")
         || lower.contains("**bad**")
+}
+
+// Mirrors vettd's hasValidation: /validat/i.test(body) || /##?\s*verification/i.
+// Note: matches "invalidation" and similar — this is a vettd bug reproduced as-is.
+fn has_validation(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    lower.contains("validat")
+        || lower.lines().any(|l| {
+            l.trim_start_matches('#')
+                .trim()
+                .to_lowercase()
+                .starts_with("verification")
+                && l.trim_start().starts_with('#')
+        })
 }
 
 fn has_workflow(body: &str) -> bool {
@@ -675,6 +968,18 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                         .to_string()
                 )
             });
+
+            // VTD-0105 only fires when validation keywords are present (no negative case).
+            if has_validation(&parsed.body) {
+                findings.push(f!(
+                    RULE_VALIDATION_LOOP,
+                    FindingCategory::BestPractices,
+                    Severity::Info,
+                    "Validation loop referenced",
+                    "Instructions for the agent to validate its own work before proceeding"
+                        .to_string()
+                ));
+            }
         }
     }
 
@@ -713,21 +1018,28 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         }
     }
 
-    // ── Security clean signals ───────────────────────────────────────────────
-    // These "no bad things found" findings mirror vettd's checkSecurity()
-    // clean-path signals. A full behavioral + secrets scan is not yet
-    // implemented in the Rust engine; these fire unconditionally for inputs
-    // that have no dangerous patterns. Tracked in a follow-on issue.
+    // ── Security scan ────────────────────────────────────────────────────────
+    // Mirrors vettd's checkSecurity(). Sensitive patterns (forensic evasion,
+    // persistence, etc.) are scanned first; their presence suppresses the
+    // VTD-0091 clean signal. Behavioral scan is not yet fully implemented —
+    // VTD-0092 fires unconditionally (matching vettd's clean-path output for
+    // skills without prompt injection markers).
 
-    findings.push(f!(
-        RULE_NO_SECRETS_DETECTED,
-        FindingCategory::Security,
-        Severity::Info,
-        "No secrets or unsafe code patterns detected",
-        "Scanned all files for credentials, private keys, and code-level risks \
-         (eval, shell exec, destructive ops)"
-            .to_string()
-    ));
+    let (sensitive_findings, secrets_check_failed) = scan_sensitive_patterns(text_files);
+    findings.extend(sensitive_findings);
+
+    // VTD-0091: only emit when no critical/high secrets/code-risk findings found.
+    if !secrets_check_failed {
+        findings.push(f!(
+            RULE_NO_SECRETS_DETECTED,
+            FindingCategory::Security,
+            Severity::Info,
+            "No secrets or unsafe code patterns detected",
+            "Scanned all files for credentials, private keys, and code-level risks \
+             (eval, shell exec, destructive ops)"
+                .to_string()
+        ));
+    }
 
     findings.push(f!(
         RULE_NO_BEHAVIORAL_SIGNALS,
@@ -739,16 +1051,44 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
             .to_string()
     ));
 
-    // VTD-0093 only fires when at least one SKILL.md or references/ file is present
-    let has_url_target = text_files
-        .keys()
-        .any(|p| p.eq_ignore_ascii_case("skill.md") || p.to_lowercase().starts_with("references/"));
-    if has_url_target {
-        let external_url_found = text_files.iter().any(|(p, c)| {
-            (p.eq_ignore_ascii_case("skill.md") || p.to_lowercase().starts_with("references/"))
-                && has_external_url(c)
-        });
-        if !external_url_found {
+    // External URL check — mirrors vettd's urlTargetFiles scan.
+    // VTD-0088 fires on the first URL-containing SKILL.md or references/ file;
+    // VTD-0093 (clean signal) fires only when no URL was found.
+    let url_target_files: Vec<(&str, &str)> = {
+        // Preserve SKILL.md-first order to match vettd's Map insertion order.
+        let mut targets: Vec<(&str, &str)> = Vec::new();
+        for name in &["SKILL.md", "skill.md"] {
+            if let Some(c) = text_files.get(*name) {
+                targets.push((name, c.as_str()));
+            }
+        }
+        for (p, c) in text_files {
+            if p.to_lowercase().starts_with("references/") {
+                targets.push((p.as_str(), c.as_str()));
+            }
+        }
+        targets
+    };
+
+    if !url_target_files.is_empty() {
+        let url_file = url_target_files.iter().find(|(_, c)| has_external_url(c));
+        if let Some((path, _)) = url_file {
+            findings.push(Finding {
+                rule_id: RULE_EXTERNAL_URL_REFERENCE.to_string(),
+                category: FindingCategory::Security,
+                severity: Severity::Medium,
+                label: "References external URL — review for indirect prompt injection risk"
+                    .to_string(),
+                detail: format!(
+                    "External URL(s) detected in {path} — referenced content can change after audit"
+                ),
+                filepath: Some(path.to_string()),
+                owasp_llm_category: None,
+                chain_id: None,
+                intent: None,
+                source: DEFAULT_SOURCE.to_string(),
+            });
+        } else {
             findings.push(f!(
                 RULE_NO_EXTERNAL_URLS,
                 FindingCategory::Security,
@@ -799,7 +1139,11 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         }
     }
 
-    // ── Chain detection (must run last) ──────────────────────────────────────
+    // ── Malicious-activity chain detection ───────────────────────────────────
+    // Must run after all security pattern findings are added.
+    detect_malicious_activity_chains(&mut findings);
+
+    // ── Credential-exfiltration chain detection (existing) ───────────────────
     chain::detect_chains(&mut findings, text_files);
 
     SkillScanResult {

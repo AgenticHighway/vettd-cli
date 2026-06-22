@@ -9,3 +9,4 @@ description = "Pure, I/O-free skill scanner for the vettd scanner pipeline."
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+regex = { workspace = true }

@@ -1827,6 +1827,7 @@ dependencies = [
 name = "vettd-skill-scanner"
 version = "0.7.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
 ]
