@@ -141,10 +141,6 @@ fn present_skill_md_emits_info_structure_finding() {
 // ---------------------------------------------------------------------------
 // Category and severity variety tests
 // ---------------------------------------------------------------------------
-// These tests guard the stub contract: the engine must produce findings across
-// all categories and severity tiers so the CLI mapping layer sees realistic
-// input during development. If real rules are added that replace stubs, update
-// these tests to reflect the new expected minimum.
 
 #[test]
 fn findings_span_multiple_categories() {
@@ -174,24 +170,21 @@ fn findings_span_multiple_categories() {
 
 #[test]
 fn findings_span_multiple_severities() {
+    // A well-formed skill produces info-only findings.
     let (text_files, all_paths) = with_skill_md();
     let result = scan_skill(&text_files, &all_paths);
+    let has_info = result.findings.iter().any(|f| f.severity == Severity::Info);
+    assert!(has_info, "missing info findings");
 
-    let severities: std::collections::HashSet<String> = result
+    // A skill with no SKILL.md must produce a critical finding.
+    let bad = scan_skill(&HashMap::new(), &[]);
+    let has_critical = bad
         .findings
         .iter()
-        .map(|f| f.severity.as_str().to_string())
-        .collect();
-
-    assert!(severities.contains("info"), "missing info findings");
-    assert!(severities.contains("low"), "missing low findings");
-    // At least one of medium/high must be present from stub security findings
-    let has_medium_or_higher = severities.contains("medium")
-        || severities.contains("high")
-        || severities.contains("critical");
+        .any(|f| f.severity == Severity::Critical);
     assert!(
-        has_medium_or_higher,
-        "no medium/high/critical findings present"
+        has_critical,
+        "missing critical finding when SKILL.md absent"
     );
 }
 

@@ -12,6 +12,13 @@ fn default_source() -> String {
     DEFAULT_SOURCE.to_string()
 }
 
+// vettd's skill-analyzer never sets the `source` field on its findings, so it
+// is absent (null) in the wire format. For parity we omit the field when it
+// carries the default "vettd" value, matching vettd's implicit-null behavior.
+fn is_default_source(s: &str) -> bool {
+    s == DEFAULT_SOURCE
+}
+
 // ---------------------------------------------------------------------------
 // Finding
 // ---------------------------------------------------------------------------
@@ -78,7 +85,9 @@ pub struct Finding {
 
     /// Scanner that produced this finding. Defaults to `"vettd"` for first-party findings.
     /// Kept as `String` (not enum) to remain open to third-party scanner names.
-    #[serde(default = "default_source")]
+    /// Omitted from serialized output when set to the default value so that the wire
+    /// format matches vettd's behaviour of not emitting the field for first-party findings.
+    #[serde(default = "default_source", skip_serializing_if = "is_default_source")]
     pub source: String,
 }
 
