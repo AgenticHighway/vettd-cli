@@ -874,7 +874,11 @@ fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding
             for (i_line, line) in lines.iter().enumerate() {
                 if re.is_match(line) {
                     let snippet = line.trim();
-                    let snippet = &snippet[..snippet.len().min(120)];
+                    let snippet = snippet
+                        .char_indices()
+                        .nth(120)
+                        .map(|(i, _)| &snippet[..i])
+                        .unwrap_or(snippet);
                     let detail = format!("Detected in {path}:{} — `{snippet}`", i_line + 1);
                     findings.push(Finding {
                         rule_id: pat.rule_id.to_string(),
@@ -1434,7 +1438,11 @@ fn scan_entropy(text_files: &HashMap<String, String>, findings: &mut Vec<Finding
                 }
                 if shannon_entropy(value) >= 3.5 {
                     let snippet = line.trim();
-                    let snippet = &snippet[..snippet.len().min(120)];
+                    let snippet = snippet
+                        .char_indices()
+                        .nth(120)
+                        .map(|(i, _)| &snippet[..i])
+                        .unwrap_or(snippet);
                     findings.push(Finding {
                         rule_id: RULE_HIGH_ENTROPY_SECRET.to_string(),
                         category: FindingCategory::Security,
