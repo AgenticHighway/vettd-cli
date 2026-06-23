@@ -10,7 +10,12 @@ description = "AI Execution Inventory — detect, analyze, and report AI executi
 name = "vettd"
 path = "src/main.rs"
 
+[[bin]]
+name = "parity-adapter"
+path = "src/bin/parity_adapter.rs"
+
 [dependencies]
+vettd-skill-scanner = { path = "../vettd-skill-scanner" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

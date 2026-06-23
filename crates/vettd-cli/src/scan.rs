@@ -218,6 +218,9 @@ pub fn run_scan(
         score_artifact(artifact);
         verify(artifact);
         classify_artifact(artifact, mode);
+        if artifact.artifact_type == "skill" {
+            artifact.cached_scan_result = crate::contract::run_skill_scanner(artifact);
+        }
     }
     timings.emit(
         "analysis",

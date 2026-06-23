@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 /// The contract version this build of vettd was compiled to produce.
-pub const COMPILED_CONTRACT_VERSION: &str = "2.3.0";
+pub const COMPILED_CONTRACT_VERSION: &str = "2.4.0";
 
 /// Timeout (seconds) for contract endpoint requests.
 const REQUEST_TIMEOUT_SECS: u64 = 10;

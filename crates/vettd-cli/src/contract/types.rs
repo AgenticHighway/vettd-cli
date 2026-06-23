@@ -121,6 +121,7 @@ pub struct SkillConsumer {
 
 // v2.2.0 addition — optional external scanner results attached to a skill
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalScannerResult {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,6 +136,7 @@ pub struct ExternalScannerResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalScannerFinding {
     pub rule_id: String,
     pub category: String,
