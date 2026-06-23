@@ -10,6 +10,7 @@ mod helpers;
 mod mcp;
 mod prompts;
 mod skill_scan;
+pub(crate) use skill_scan::run_skill_scanner;
 mod skills;
 pub mod types;
 

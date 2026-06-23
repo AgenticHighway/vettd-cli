@@ -46,7 +46,10 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
 
-    let scanner_result = super::skill_scan::run_skill_scanner(artifact);
+    let scanner_result = artifact
+        .cached_scan_result
+        .clone()
+        .or_else(|| super::skill_scan::run_skill_scanner(artifact));
     let overall_grade = grade_from_scanner_result(scanner_result.as_ref()).to_string();
     let trust_level = trust_level_from_grade(&overall_grade).to_string();
 

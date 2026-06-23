@@ -37,6 +37,10 @@ pub struct ArtifactReport {
     pub artifact_hash: String,
     pub registry_eligible: bool,
     pub artifact_scope: String,
+    /// Cached skill scanner result — populated during the scan phase so
+    /// report generation does not re-walk disk for every skill.
+    #[serde(skip)]
+    pub cached_scan_result: Option<crate::contract::types::ExternalScannerResult>,
 }
 
 impl ArtifactReport {
@@ -53,6 +57,7 @@ impl ArtifactReport {
             artifact_hash: String::new(),
             registry_eligible: true,
             artifact_scope: "project".to_string(),
+            cached_scan_result: None,
         }
     }
 
