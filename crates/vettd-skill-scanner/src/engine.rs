@@ -147,11 +147,15 @@ const RULE_SCRIPT_DEPENDENCY_PINNING: &str = "VTD-0117";
 
 // Evals
 const RULE_EVALS_PRESENT: &str = "VTD-0118";
+const RULE_EVALS_TEST_CASE_COUNT: &str = "VTD-0119";
+const RULE_EVALS_ASSERTIONS: &str = "VTD-0120";
+const RULE_EVALS_MIN_COUNT: &str = "VTD-0121";
 const RULE_EVAL_FILES_FOUND: &str = "VTD-0123";
 
 // ── Constants (must match skill-analyzer.ts) ──────────────────────────────────
 
 const DESCRIPTION_MAX_LENGTH: usize = 1024;
+const EVALS_MIN_TEST_CASES: usize = 3;
 const SKILL_NAME_MAX_LENGTH: usize = 64;
 const SKILL_MD_BODY_MAX_LINES: usize = 500;
 
@@ -2292,24 +2296,61 @@ fn parse_skill_md(content: &str) -> ParsedSkillMd {
     let mut description = String::new();
     let mut repository = String::new();
 
-    for line in raw.lines() {
-        // Skip indented lines (nested objects — not needed for scalar fields)
+    let fm_lines: Vec<&str> = raw.lines().collect();
+    let mut idx = 0;
+    while idx < fm_lines.len() {
+        let line = fm_lines[idx];
+        // Skip indented lines at the top level — consumed by block-scalar logic below.
         if line.starts_with(' ') || line.starts_with('\t') {
+            idx += 1;
             continue;
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            idx += 1;
             continue;
         }
         let Some(colon_pos) = trimmed.find(':') else {
+            idx += 1;
             continue;
         };
         let key = trimmed[..colon_pos].trim();
-        let value = strip_quotes(trimmed[colon_pos + 1..].trim());
+        let inline_value = trimmed[colon_pos + 1..].trim();
+        idx += 1;
+
+        let value: String = if !inline_value.is_empty() {
+            // Inline value — strip quotes to match parseScalarValue.
+            strip_quotes(inline_value).to_string()
+        } else {
+            // Block scalar — collect more-indented child lines and join with " ",
+            // mirroring vettd's parseFrontmatter lines 264-307 (no quote-strip).
+            let indent = line.len() - line.trim_start().len();
+            let mut block: Vec<&str> = Vec::new();
+            while idx < fm_lines.len() {
+                let child = fm_lines[idx];
+                if child.trim().is_empty() {
+                    block.push(child);
+                    idx += 1;
+                    continue;
+                }
+                let child_indent = child.len() - child.trim_start().len();
+                if child_indent <= indent {
+                    break;
+                }
+                block.push(child);
+                idx += 1;
+            }
+            block.iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
         match key {
-            "name" => name = value.to_string(),
-            "description" => description = value.to_string(),
-            "repository" => repository = value.to_string(),
+            "name" => name = value,
+            "description" => description = value,
+            "repository" => repository = value,
             _ => {}
         }
     }
@@ -2530,10 +2571,6 @@ fn is_likely_cli_script(path: &str, content: &str) -> bool {
     }
     let ext = lower.rsplit('.').next().unwrap_or("");
 
-    if matches!(ext, "sh" | "bash" | "zsh") {
-        return true;
-    }
-
     const NON_CLI_EXTS: &[&str] = &[
         "json", "xml", "xsd", "yaml", "yml", "toml", "txt", "md", "csv", "tsv",
     ];
@@ -2541,23 +2578,27 @@ fn is_likely_cli_script(path: &str, content: &str) -> bool {
         return false;
     }
 
-    // helpers/lib/validators subdirs: only if CLI hint present
+    // schemas/templates/fixtures/examples/testdata: skip regardless of extension
+    if lower.contains("/schemas/")
+        || lower.contains("/templates/")
+        || lower.contains("/fixtures/")
+        || lower.contains("/examples/")
+        || lower.contains("/testdata/")
+    {
+        return false;
+    }
+
+    // helpers/lib/validators subdirs: only if CLI hint present (checked before .sh shortcut)
     if lower.contains("/helpers/") || lower.contains("/lib/") || lower.contains("/validators/") {
         return has_cli_hint(content);
     }
-    // schemas/templates/fixtures/examples/testdata: skip
-    for skip in &[
-        "/schemas/",
-        "/templates/",
-        "/fixtures/",
-        "/examples/",
-        "/testdata/",
-    ] {
-        if lower.contains(skip) {
-            return false;
-        }
+
+    // Shell scripts are always CLI scripts
+    if matches!(ext, "sh" | "bash" | "zsh") {
+        return true;
     }
-    // depth ≤ 2 (e.g. scripts/run.sh) → CLI
+
+    // depth ≤ 2 (e.g. scripts/run.sh) → CLI; deeper files need a CLI hint
     let depth = path.split('/').count();
     depth <= 2 || has_cli_hint(content)
 }
@@ -3256,9 +3297,77 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
     // ── Evals quality check ──────────────────────────────────────────────────
 
     if has_evals {
-        let eval_json_found = EVAL_JSON_CANDIDATES
+        let eval_json_content = EVAL_JSON_CANDIDATES
             .iter()
-            .any(|&candidate| text_files.contains_key(candidate));
+            .find_map(|&candidate| text_files.get(candidate));
+
+        let eval_json_found = eval_json_content.is_some();
+
+        if let Some(json_str) = eval_json_content {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let evals = val.get("evals")
+                    .or_else(|| val.get("tests"))
+                    .or_else(|| val.get("test_cases"))
+                    .or_else(|| val.get("scenarios"))
+                    .or_else(|| val.get("cases"))
+                    .or_else(|| val.get("examples"))
+                    .and_then(|v| v.as_array())
+                    .or_else(|| val.as_array());
+
+                if let Some(cases) = evals.filter(|a| !a.is_empty()) {
+                    let count = cases.len();
+                    findings.push(f!(
+                        RULE_EVALS_TEST_CASE_COUNT,
+                        FindingCategory::Evals,
+                        Severity::Info,
+                        "Test cases defined",
+                        format!("{count} test case(s) found in evals JSON")
+                    ));
+
+                    let has_assertions = cases.iter().any(|e| {
+                        (e.get("assertions").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
+                        || (e.get("criteria").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
+                        || (e.get("pass_criteria").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
+                        || e.get("expected").and_then(|v| v.as_str()).is_some()
+                        || e.get("expected_output").and_then(|v| v.as_str()).is_some()
+                        || e.get("golden_answer").and_then(|v| v.as_str()).is_some()
+                        || e.get("rubric").and_then(|v| v.as_str()).is_some()
+                    });
+                    findings.push(if has_assertions {
+                        f!(
+                            RULE_EVALS_ASSERTIONS,
+                            FindingCategory::Evals,
+                            Severity::Info,
+                            "Assertions defined for test cases",
+                            "Verifiable assertions or expected outputs enable automated grading of skill outputs"
+                                .to_string()
+                        )
+                    } else {
+                        f!(
+                            RULE_EVALS_ASSERTIONS,
+                            FindingCategory::Evals,
+                            Severity::Info,
+                            "No assertions in test cases",
+                            "Add verifiable assertions, expected outputs, or criteria to each test case"
+                                .to_string()
+                        )
+                    });
+
+                    if count < EVALS_MIN_TEST_CASES {
+                        findings.push(f!(
+                            RULE_EVALS_MIN_COUNT,
+                            FindingCategory::Evals,
+                            Severity::Info,
+                            "Few test cases",
+                            format!(
+                                "Consider adding at least {EVALS_MIN_TEST_CASES} test cases \
+                                 covering varied prompts and edge cases"
+                            )
+                        ));
+                    }
+                }
+            }
+        }
 
         if !eval_json_found {
             // No standard JSON eval file — count non-trivial eval files
