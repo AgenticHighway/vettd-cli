@@ -2337,7 +2337,7 @@ fn strip_quotes(s: &str) -> &str {
 /// Returns an error message if the name is invalid, or `None` if valid.
 /// Mirrors `validateName` in skill-analyzer.ts.
 fn validate_name(name: &str) -> Option<&'static str> {
-    if name.is_empty() || name == "unknown" {
+    if name.is_empty() {
         return Some("name field is missing");
     }
     if name.len() > SKILL_NAME_MAX_LENGTH {
