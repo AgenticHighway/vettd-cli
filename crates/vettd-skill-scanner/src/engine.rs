@@ -1274,8 +1274,8 @@ fn scan_hidden_unicode(text_files: &HashMap<String, String>, findings: &mut Vec<
     let behavioral_patterns = get_behavioral_patterns();
 
     static OBFUSC_URL_RE: OnceLock<Regex> = OnceLock::new();
-    let obfusc_url_re =
-        OBFUSC_URL_RE.get_or_init(|| Regex::new(r#"(?i)https?://[^\s)>\]"']+"#).expect("bad url re"));
+    let obfusc_url_re = OBFUSC_URL_RE
+        .get_or_init(|| Regex::new(r#"(?i)https?://[^\s)>\]"']+"#).expect("bad url re"));
 
     let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
     sorted_files.sort_by_key(|(p, _)| p.as_str());
@@ -1298,13 +1298,15 @@ fn scan_hidden_unicode(text_files: &HashMap<String, String>, findings: &mut Vec<
             // Strip invisible chars and check for dangerous patterns
             let cleaned: String = line
                 .chars()
-                .filter(|&c| !matches!(c,
-                    '\u{200B}'..='\u{200F}'
-                    | '\u{202A}'..='\u{202E}'
-                    | '\u{2060}'..='\u{206F}'
-                    | '\u{FEFF}'
-                    | '\u{E0000}'..='\u{E007F}'
-                ))
+                .filter(|&c| {
+                    !matches!(c,
+                        '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2060}'..='\u{206F}'
+                        | '\u{FEFF}'
+                        | '\u{E0000}'..='\u{E007F}'
+                    )
+                })
                 .collect();
 
             // Check sensitive patterns
@@ -2340,7 +2342,8 @@ fn parse_skill_md(content: &str) -> ParsedSkillMd {
                 block.push(child);
                 idx += 1;
             }
-            block.iter()
+            block
+                .iter()
                 .filter(|l| !l.trim().is_empty())
                 .map(|l| l.trim())
                 .collect::<Vec<_>>()
@@ -2564,7 +2567,12 @@ fn is_likely_cli_script(path: &str, content: &str) -> bool {
     let lower = path.to_lowercase();
     let basename = lower.rsplit('/').next().unwrap_or("");
     const NON_CLI_BASENAMES: &[&str] = &[
-        "__init__.py", "utils.py", "helper.py", "helpers.py", "base.py", "constants.py",
+        "__init__.py",
+        "utils.py",
+        "helper.py",
+        "helpers.py",
+        "base.py",
+        "constants.py",
     ];
     if NON_CLI_BASENAMES.contains(&basename) {
         return false;
@@ -2787,12 +2795,33 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
 
         // Name collision check (VTD-0100)
         const WELL_KNOWN_SKILL_NAMES: &[&str] = &[
-            "frontend-design", "pdf", "web-perf", "web-design-guidelines", "find-skills",
-            "agent-browser", "agent-customization", "cloudflare", "durable-objects",
-            "workers-best-practices", "wrangler", "sandbox-sdk", "next-best-practices",
-            "vercel-react-best-practices", "rust-best-practices", "postgresql-optimization",
-            "prisma-postgres", "aws-skills", "powershell-windows", "cosmosdb-best-practices",
-            "excel", "word", "powerpoint", "git", "docker", "kubernetes", "terraform",
+            "frontend-design",
+            "pdf",
+            "web-perf",
+            "web-design-guidelines",
+            "find-skills",
+            "agent-browser",
+            "agent-customization",
+            "cloudflare",
+            "durable-objects",
+            "workers-best-practices",
+            "wrangler",
+            "sandbox-sdk",
+            "next-best-practices",
+            "vercel-react-best-practices",
+            "rust-best-practices",
+            "postgresql-optimization",
+            "prisma-postgres",
+            "aws-skills",
+            "powershell-windows",
+            "cosmosdb-best-practices",
+            "excel",
+            "word",
+            "powerpoint",
+            "git",
+            "docker",
+            "kubernetes",
+            "terraform",
             "ansible",
         ];
         if WELL_KNOWN_SKILL_NAMES.contains(&parsed.name.as_str()) {
@@ -3305,7 +3334,8 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
 
         if let Some(json_str) = eval_json_content {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let evals = val.get("evals")
+                let evals = val
+                    .get("evals")
                     .or_else(|| val.get("tests"))
                     .or_else(|| val.get("test_cases"))
                     .or_else(|| val.get("scenarios"))
@@ -3325,13 +3355,24 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                     ));
 
                     let has_assertions = cases.iter().any(|e| {
-                        (e.get("assertions").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
-                        || (e.get("criteria").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
-                        || (e.get("pass_criteria").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
-                        || e.get("expected").and_then(|v| v.as_str()).is_some()
-                        || e.get("expected_output").and_then(|v| v.as_str()).is_some()
-                        || e.get("golden_answer").and_then(|v| v.as_str()).is_some()
-                        || e.get("rubric").and_then(|v| v.as_str()).is_some()
+                        (e.get("assertions")
+                            .and_then(|v| v.as_array())
+                            .map(|a| !a.is_empty())
+                            .unwrap_or(false))
+                            || (e
+                                .get("criteria")
+                                .and_then(|v| v.as_array())
+                                .map(|a| !a.is_empty())
+                                .unwrap_or(false))
+                            || (e
+                                .get("pass_criteria")
+                                .and_then(|v| v.as_array())
+                                .map(|a| !a.is_empty())
+                                .unwrap_or(false))
+                            || e.get("expected").and_then(|v| v.as_str()).is_some()
+                            || e.get("expected_output").and_then(|v| v.as_str()).is_some()
+                            || e.get("golden_answer").and_then(|v| v.as_str()).is_some()
+                            || e.get("rubric").and_then(|v| v.as_str()).is_some()
                     });
                     findings.push(if has_assertions {
                         f!(

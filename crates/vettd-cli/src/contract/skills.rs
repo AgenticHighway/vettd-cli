@@ -3,7 +3,9 @@
 use crate::models::ArtifactReport;
 
 use super::helpers::{declared_tools, first_path, make_id, qualified_name, read_artifact_head};
-use super::types::{Agent, Skill, SkillConsumer, SkillDependencies, SkillPermission};
+use super::types::{
+    Agent, ExternalScannerResult, Skill, SkillConsumer, SkillDependencies, SkillPermission,
+};
 
 pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill> {
     let mut seen = std::collections::HashSet::new();
@@ -44,12 +46,16 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
 
+    let scanner_result = super::skill_scan::run_skill_scanner(artifact);
+    let overall_grade = grade_from_scanner_result(scanner_result.as_ref()).to_string();
+    let trust_level = trust_level_from_grade(&overall_grade).to_string();
+
     Skill {
         id,
         name,
         skill_type: "Local Function".to_string(),
-        trust_level: trust_level(artifact).to_string(),
-        overall_grade: overall_grade(artifact).to_string(),
+        trust_level,
+        overall_grade,
         execution_environment: "Local Process".to_string(),
         description: skill_artifact_description(artifact),
         permissions,
@@ -59,26 +65,55 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
             apis: skill_artifact_apis(&capabilities),
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
-        external_scanner_results: super::skill_scan::run_skill_scanner(artifact).map(|r| vec![r]),
+        external_scanner_results: scanner_result.map(|r| vec![r]),
     }
 }
 
-fn overall_grade(artifact: &ArtifactReport) -> &'static str {
-    match artifact.verification_status.as_str() {
-        "critical" => "F",
-        "high" => "C",
-        "medium" => "B",
-        _ => "A",
-    }
-}
+/// Compute the overall grade from skill scanner findings.
+///
+/// Thresholds (worst wins):
+/// - F: any critical, OR ≥ 3 highs
+/// - C: any high (< 3), OR ≥ 3 mediums
+/// - B: any medium (< 3), OR ≥ 4 lows
+/// - A: < 4 lows, no mediums/highs/criticals
+fn grade_from_scanner_result(result: Option<&ExternalScannerResult>) -> &'static str {
+    let findings = match result.and_then(|r| r.findings.as_deref()) {
+        Some(f) if !f.is_empty() => f,
+        _ => return "A",
+    };
 
-fn trust_level(artifact: &ArtifactReport) -> &'static str {
-    if artifact.risk_score >= 70 {
-        "Untrusted"
-    } else if artifact.risk_score >= 40 {
-        "Conditional"
+    let mut critical = 0u32;
+    let mut high = 0u32;
+    let mut medium = 0u32;
+    let mut low = 0u32;
+
+    for f in findings {
+        match f.severity.as_str() {
+            "critical" => critical += 1,
+            "high" => high += 1,
+            "medium" => medium += 1,
+            "low" => low += 1,
+            _ => {}
+        }
+    }
+
+    if critical > 0 || high >= 3 {
+        "F"
+    } else if high > 0 || medium >= 3 {
+        "C"
+    } else if medium > 0 || low >= 4 {
+        "B"
     } else {
-        "Trusted"
+        "A"
+    }
+}
+
+fn trust_level_from_grade(grade: &str) -> &'static str {
+    match grade {
+        "A" => "Trusted",
+        "B" => "Conditional",
+        "C" | "F" => "Untrusted",
+        _ => "Conditional", // "pending" or unknown
     }
 }
 
@@ -225,7 +260,7 @@ fn extract_mcp_command_skills(
     }
 }
 
-fn tool_to_skill(tool_name: &str, artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
+fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let (skill_type, exec_env) = match tool_name {
         "shell" | "bash" => ("CLI Tool", "Local Process"),
         "browser" => ("HTTP Integration", "Remote API"),
@@ -250,7 +285,7 @@ fn tool_to_skill(tool_name: &str, artifact: &ArtifactReport, agents: &[Agent]) -
         id: tool_name.to_string(),
         name: tool_name.to_string(),
         skill_type: skill_type.to_string(),
-        trust_level: trust_level(artifact).to_string(),
+        trust_level: trust_level_from_grade("pending").to_string(),
         overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
@@ -464,19 +499,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_to_skill_trust_level_by_risk() {
-        let mut a = ArtifactReport::new("agents_md", 0.8);
-        a.risk_score = 80;
-        let skill = tool_to_skill("shell", &a, &[]);
-        assert_eq!(skill.trust_level, "Untrusted");
-
-        a.risk_score = 50;
+    fn tool_to_skill_trust_level_is_conditional() {
+        // tool_to_skill has no scanner result → grade is "pending" → trust_level "Conditional"
+        let a = ArtifactReport::new("agents_md", 0.8);
         let skill = tool_to_skill("shell", &a, &[]);
         assert_eq!(skill.trust_level, "Conditional");
-
-        a.risk_score = 10;
-        let skill = tool_to_skill("shell", &a, &[]);
-        assert_eq!(skill.trust_level, "Trusted");
     }
 
     #[test]
@@ -487,38 +514,113 @@ mod tests {
     }
 
     #[test]
-    fn overall_grade_maps_verification_status() {
-        let cases = [
-            ("critical", "F"),
-            ("high", "C"),
-            ("medium", "B"),
-            ("low", "A"),
-            ("info", "A"),
-            ("pending", "A"),
-        ];
-        for (status, expected_grade) in cases {
-            let mut a = ArtifactReport::new("skill", 0.9);
-            a.verification_status = status.to_string();
-            assert_eq!(
-                overall_grade(&a),
-                expected_grade,
-                "verification_status={status}"
-            );
-        }
+    fn grade_from_scanner_result_thresholds() {
+        use crate::contract::types::ExternalScannerFinding;
+
+        let finding = |severity: &str| ExternalScannerFinding {
+            rule_id: "VTD-0001".to_string(),
+            category: "security".to_string(),
+            severity: severity.to_string(),
+            label: "test".to_string(),
+            detail: None,
+        };
+
+        // No findings → A
+        assert_eq!(grade_from_scanner_result(None), "A");
+
+        // Any critical → F
+        let r = ExternalScannerResult {
+            source: "vettd".to_string(),
+            version: None,
+            status: "success".to_string(),
+            verdict: None,
+            raw_report: None,
+            findings: Some(vec![finding("critical")]),
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+
+        // 3 highs → F
+        let r = ExternalScannerResult {
+            findings: Some(vec![finding("high"), finding("high"), finding("high")]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+
+        // 2 highs → C
+        let r = ExternalScannerResult {
+            findings: Some(vec![finding("high"), finding("high")]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+
+        // 3 mediums → C
+        let r = ExternalScannerResult {
+            findings: Some(vec![
+                finding("medium"),
+                finding("medium"),
+                finding("medium"),
+            ]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+
+        // 2 mediums → B
+        let r = ExternalScannerResult {
+            findings: Some(vec![finding("medium"), finding("medium")]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+
+        // 4 lows → B
+        let r = ExternalScannerResult {
+            findings: Some(vec![
+                finding("low"),
+                finding("low"),
+                finding("low"),
+                finding("low"),
+            ]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+
+        // 3 lows → A
+        let r = ExternalScannerResult {
+            findings: Some(vec![finding("low"), finding("low"), finding("low")]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
+
+        // info only → A
+        let r = ExternalScannerResult {
+            findings: Some(vec![finding("info"), finding("info")]),
+            ..r.clone()
+        };
+        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
     }
 
     #[test]
-    fn artifact_to_skill_overall_grade_from_verification_status() {
+    fn trust_level_from_grade_mapping() {
+        assert_eq!(trust_level_from_grade("A"), "Trusted");
+        assert_eq!(trust_level_from_grade("B"), "Conditional");
+        assert_eq!(trust_level_from_grade("C"), "Untrusted");
+        assert_eq!(trust_level_from_grade("F"), "Untrusted");
+        assert_eq!(trust_level_from_grade("pending"), "Conditional");
+    }
+
+    #[test]
+    fn artifact_to_skill_grade_from_scanner() {
+        // A skill artifact with no files on disk gets a critical "Missing SKILL.md"
+        // finding → grade F, trust_level Untrusted.
         let mut a = ArtifactReport::new("skill", 0.9);
         a.metadata.insert(
             "paths".to_string(),
-            serde_json::json!(["/repo/skills/release-notes/SKILL.md"]),
+            serde_json::json!(["/nonexistent/release-notes/SKILL.md"]),
         );
-        a.verification_status = "high".to_string();
         a.compute_hash();
 
         let skills = build_skills(&[a], &[]);
-        assert_eq!(skills[0].overall_grade, "C");
+        assert_eq!(skills[0].overall_grade, "F");
+        assert_eq!(skills[0].trust_level, "Untrusted");
     }
 
     #[test]
