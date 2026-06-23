@@ -83,13 +83,29 @@ const RULE_POWERSHELL_ENCODED_COMMAND: &str = "VTD-0060";
 const RULE_POWERSHELL_IEX_CRADLE: &str = "VTD-0061";
 const RULE_POWERSHELL_EXECUTION_POLICY_BYPASS: &str = "VTD-0062";
 const RULE_POWERSHELL_HIDDEN_WINDOW: &str = "VTD-0063";
+// Security — behavioral patterns
+const RULE_PROMPT_INSTRUCTION_OVERRIDE: &str = "VTD-0064";
+const RULE_SYSTEM_PROMPT_REPLACEMENT: &str = "VTD-0065";
+const RULE_SYSTEM_PROMPT_OVERRIDE: &str = "VTD-0066";
+const RULE_CONTEXT_INVALIDATION: &str = "VTD-0067";
+const RULE_JAILBREAK_PERSONA: &str = "VTD-0068";
+const RULE_SAFETY_SYSTEM_BYPASS: &str = "VTD-0069";
+const RULE_UNRESTRICTED_OPERATION_FRAMING: &str = "VTD-0070";
+const RULE_ETHICAL_BYPASS_FRAMING: &str = "VTD-0071";
+const RULE_ROLEPLAY_BYPASS_FRAMING: &str = "VTD-0072";
+const RULE_CREDENTIAL_SOLICITATION: &str = "VTD-0073";
+const RULE_DECEPTIVE_CREDENTIAL_EXTRACTION: &str = "VTD-0074";
+const RULE_PROMPT_TEMPLATE_MARKER: &str = "VTD-0075";
+const RULE_CHAT_TEMPLATE_SPECIAL_TOKEN: &str = "VTD-0076";
 // Security — obfuscation / base64 / typosquat / chain
 const RULE_OBFUSCATED_DANGEROUS_CODE: &str = "VTD-0077";
+const RULE_HIDDEN_UNICODE_CHARACTER: &str = "VTD-0081";
 const RULE_OBFUSCATED_NETWORK_CALL: &str = "VTD-0078";
 const RULE_OBFUSCATED_EXTERNAL_URL: &str = "VTD-0079";
 const RULE_BASE64_IN_MARKDOWN: &str = "VTD-0080";
 const RULE_POSSIBLE_TYPOSQUATTING: &str = "VTD-0082";
 const RULE_NO_REPOSITORY_LINK: &str = "VTD-0083";
+const RULE_SYSTEM_PROMPT_LEAKAGE: &str = "VTD-0085";
 const RULE_DESCRIPTION_BEHAVIOR_MISMATCH: &str = "VTD-0087";
 const RULE_EXTERNAL_URL_REFERENCE: &str = "VTD-0088";
 const RULE_CREDENTIAL_EXFILTRATION_CHAIN: &str = "VTD-0089";
@@ -97,6 +113,7 @@ const RULE_MALICIOUS_ACTIVITY_CHAIN: &str = "VTD-0090";
 const RULE_NO_SECRETS_DETECTED: &str = "VTD-0091";
 const RULE_NO_BEHAVIORAL_SIGNALS: &str = "VTD-0092";
 const RULE_NO_EXTERNAL_URLS: &str = "VTD-0093";
+const RULE_BEHAVIORAL_SCAN_TRUNCATED: &str = "VTD-0094";
 
 // Structure
 const RULE_SKILL_MD: &str = "VTD-0095";
@@ -104,10 +121,13 @@ const RULE_SCRIPTS_DIRECTORY: &str = "VTD-0096";
 const RULE_REFERENCES_DIRECTORY: &str = "VTD-0097";
 const RULE_ASSETS_DIRECTORY: &str = "VTD-0098";
 const RULE_SKILL_NAME_VALIDITY: &str = "VTD-0099";
+const RULE_SKILL_NAME_COLLISION: &str = "VTD-0100";
 
 // Best practices
 const RULE_SKILL_MD_BODY_LENGTH: &str = "VTD-0101";
+const RULE_GOTCHAS_SECTION: &str = "VTD-0102";
 const RULE_EXAMPLES_PRESENT: &str = "VTD-0103";
+const RULE_CHECKLIST_PRESENT: &str = "VTD-0104";
 const RULE_VALIDATION_LOOP: &str = "VTD-0105";
 const RULE_WORKFLOW_STRUCTURE: &str = "VTD-0106";
 const RULE_PROGRESSIVE_DISCLOSURE: &str = "VTD-0107";
@@ -117,11 +137,14 @@ const RULE_GENERIC_INSTRUCTION: &str = "VTD-0108";
 const RULE_DESCRIPTION_PRESENT: &str = "VTD-0109";
 const RULE_DESCRIPTION_LENGTH: &str = "VTD-0110";
 const RULE_DESCRIPTION_CONTEXT: &str = "VTD-0111";
+const RULE_DESCRIPTION_BREVITY: &str = "VTD-0112";
+const RULE_DESCRIPTION_SCOPE: &str = "VTD-0113";
 
 // Scripts
 const RULE_SCRIPT_CLI_HELP: &str = "VTD-0114";
 const RULE_SCRIPT_INTERACTIVE_PROMPTS: &str = "VTD-0115";
 const RULE_SCRIPT_STRUCTURED_OUTPUT: &str = "VTD-0116";
+const RULE_SCRIPT_DEPENDENCY_PINNING: &str = "VTD-0117";
 
 // Evals
 const RULE_EVALS_PRESENT: &str = "VTD-0118";
@@ -827,7 +850,9 @@ fn scan_sensitive_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding
     let mut findings: Vec<Finding> = Vec::new();
     let regexes = get_sensitive_regexes();
 
-    for (path, content) in text_files {
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+    for (path, content) in sorted_files {
         let is_doc = path.to_lowercase().ends_with(".md");
         let lines: Vec<&str> = content.split('\n').collect();
 
@@ -900,13 +925,525 @@ static SUSPICIOUS_SECRET_KEY_STR: &str = r"(?i)(?:^|[-_.])(?:api[-_.]?key|access
 static ASSIGNMENT_QUOTED_VALUE_RE: OnceLock<Regex> = OnceLock::new();
 static SUSPICIOUS_SECRET_KEY_RE: OnceLock<Regex> = OnceLock::new();
 
+// ── Behavioral scan ───────────────────────────────────────────────────────────
+
+const NEGATION_LOOKBACK_CHARS: usize = 40;
+
+struct BehavioralPatternRaw {
+    rule_id: &'static str,
+    pattern_str: &'static str,
+    label: &'static str,
+    severity: &'static str,
+    respect_negation: bool,
+}
+
+static BEHAVIORAL_PATTERN_DEFS: &[BehavioralPatternRaw] = &[
+    // PROMPT_INJECTION_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_INSTRUCTION_OVERRIDE,
+        pattern_str: r"(?i)\b(?:ignore|disregard|forget|discard|skip)\s+(?:all\s+|every\s+|the\s+|any\s+|your\s+|my\s+|these\s+|those\s+)*(?:previous|prior|above|earlier|preceding|original|initial|former)\s+(?:instructions?|rules?|directives?|commands?|guidelines?|prompts?|messages?|context|system\s+prompts?|system\s+messages?)\b",
+        label: "Instruction override language detected",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_INSTRUCTION_OVERRIDE,
+        pattern_str: r"(?i)\bignore\s+everything\s+(?:above|before|prior|earlier|written\s+above|that\s+(?:came|was)\s+(?:before|earlier|prior))\b",
+        label: "Instruction override language detected",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SYSTEM_PROMPT_REPLACEMENT,
+        pattern_str: r"(?i)\byour\s+(?:new|real|actual|true|secret|hidden|primary|updated)\s+(?:instructions?|task|job|purpose|mission|directive|goal|objective|role)\s+(?:is|are|will\s+be|shall\s+be)\b",
+        label: "System prompt replacement attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SYSTEM_PROMPT_OVERRIDE,
+        pattern_str: r"(?i)\b(?:override|replace|substitute|supersede|overwrite)\s+(?:your|the\s+)?(?:system\s+)?(?:prompt|instructions?|programming|training)\b",
+        label: "System prompt override attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_CONTEXT_INVALIDATION,
+        pattern_str: r"(?i)\b(?:the\s+(?:above|previous|prior)|previous\s+(?:messages?|instructions?|context)|prior\s+context)\s+(?:is|are|was|were)\s+(?:fake|false|a\s+test|just\s+a\s+test|incorrect|wrong|outdated|invalid)\b",
+        label: "Context invalidation attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    // JAILBREAK_FRAMING_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_JAILBREAK_PERSONA,
+        pattern_str: r"(?i)\b(?:you\s+are|act\s+as|pretend\s+(?:to\s+be|you(?:'re|\s+are))|roleplay\s+as)\s+(?:now\s+)?(?:DAN|STAN|DUDE|AIM|do\s+anything\s+now)\b",
+        label: "Named jailbreak persona invocation",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SAFETY_SYSTEM_BYPASS,
+        pattern_str: r"(?i)\b(?:disable|deactivate|turn\s+off|switch\s+off)\s+(?:your|the|all)?\s*(?:safety|security|ethical|moral|content)\s+(?:filters?|guidelines?|guards?|protocols?|checks?)\b",
+        label: "Safety system bypass instruction",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_UNRESTRICTED_OPERATION_FRAMING,
+        pattern_str: r"(?i)\b(?:have|with|under|operating\s+with|acting\s+with|free\s+from|without)\s+(?:absolutely\s+)?no\s+(?:restrictions?|limitations?|constraints?|safeguards?|boundaries|inhibitions)\b",
+        label: "Unrestricted operation framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ETHICAL_BYPASS_FRAMING,
+        pattern_str: r"(?i)\b(?:without|with\s+no|free\s+from|unbound\s+by|not\s+bound\s+by)\s+(?:any\s+)?(?:ethical|safety|moral|legal|content)\s+(?:restrictions?|guidelines?|constraints?|considerations?|filters?|principles?|policies?)\b",
+        label: "Ethical-bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ETHICAL_BYPASS_FRAMING,
+        pattern_str: r"(?i)\bno\s+(?:ethical|moral|safety|legal)\s+(?:considerations?|guidelines?|constraints?|principles?|concerns?|limitations?|rules?)\s+(?:apply|exist|are\s+(?:needed|required|necessary)|matter)\b",
+        label: "Ethical-bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ROLEPLAY_BYPASS_FRAMING,
+        pattern_str: r"(?i)\b(?:in\s+this\s+(?:roleplay|scenario|game|simulation)|for\s+the\s+purposes?\s+of\s+this\s+(?:roleplay|scenario|game|simulation))\b[^.!?]{0,60}?\b(?:can|may|will|must|should|are\s+allowed\s+to)\s+(?:ignore|bypass|disregard|skip|forget|disable)\b",
+        label: "Roleplay-scoped bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    // CREDENTIAL_SOLICITATION_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_CREDENTIAL_SOLICITATION,
+        pattern_str: r"(?i)\b(?:ask|request|prompt|query|have|get|obtain|collect|gather|solicit|elicit|tell|instruct|direct|require)\s+(?:the\s+|each\s+|every\s+)?users?\s+(?:to\s+(?:provide|give|enter|share|input|reveal|disclose|type|paste|submit)|for(?:\s+(?:their|a|an|the))?)\s*(?:their\s+|the\s+|a\s+|an\s+)?(?:passwords?|api[-\s_]?keys?|access[-\s_]?tokens?|secret[-\s_]?keys?|secrets?|credentials?|private[-\s_]?keys?|auth(?:entication)?[-\s_]?tokens?|session[-\s_]?tokens?|bearer[-\s_]?tokens?|2fa[-\s_]?(?:codes?|tokens?)?|otps?|pins?|ssns?|seed[-\s_]?phrases?|recovery[-\s_]?(?:keys?|phrases?))\b",
+        label: "Instruction to solicit user credentials",
+        severity: "high",
+        respect_negation: true,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_DECEPTIVE_CREDENTIAL_EXTRACTION,
+        pattern_str: r"(?i)\b(?:convince|persuade|trick|manipulate|coerce|deceive|fool)\s+(?:the\s+|each\s+)?users?\s+(?:into\s+|to\s+)(?:provide|give|enter|share|reveal|disclose|hand\s+over)[^.!?]{0,60}(?:passwords?|api[-\s_]?keys?|tokens?|secrets?|credentials?|private[-\s_]?keys?|pins?)\b",
+        label: "Deceptive credential extraction",
+        severity: "critical",
+        respect_negation: false,
+    },
+    // INJECTION_MARKER_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_TEMPLATE_MARKER,
+        pattern_str: r"(?i)\[(?:SYSTEM|SYS|SYSTEM[\s_-]+(?:PROMPT|MESSAGE|MSG|INSTRUCTION|INST)|INST|/INST|INSTRUCTION|HUMAN|ASSISTANT)\]",
+        label: "Embedded prompt-template marker",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_TEMPLATE_MARKER,
+        pattern_str: r"(?i)</?(?:system|system_prompt|system_message|instruction|inst|sys|im_start|im_end)(?:\s[^>]*)?>",
+        label: "Embedded prompt-template marker",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_CHAT_TEMPLATE_SPECIAL_TOKEN,
+        pattern_str: r"(?i)<\|(?:system|user|assistant|im_start|im_end|endoftext|end_of_text|begin_of_text|eot_id|start_header_id|end_header_id)\|>",
+        label: "Embedded chat-template special token",
+        severity: "medium",
+        respect_negation: false,
+    },
+];
+
+struct CompiledBehavioralPattern {
+    rule_id: &'static str,
+    regex: Regex,
+    label: &'static str,
+    severity: &'static str,
+    respect_negation: bool,
+}
+
+static BEHAVIORAL_REGEXES: OnceLock<Vec<CompiledBehavioralPattern>> = OnceLock::new();
+static NEGATION_PRECEDENTS_RE: OnceLock<Regex> = OnceLock::new();
+
+fn get_behavioral_patterns() -> &'static Vec<CompiledBehavioralPattern> {
+    BEHAVIORAL_REGEXES.get_or_init(|| {
+        BEHAVIORAL_PATTERN_DEFS
+            .iter()
+            .map(|def| CompiledBehavioralPattern {
+                rule_id: def.rule_id,
+                regex: Regex::new(def.pattern_str).expect("invalid behavioral pattern"),
+                label: def.label,
+                severity: def.severity,
+                respect_negation: def.respect_negation,
+            })
+            .collect()
+    })
+}
+
+fn normalize_for_behavioral_scan(content: &str) -> String {
+    static HWS_RE: OnceLock<Regex> = OnceLock::new();
+    let hws_re = HWS_RE.get_or_init(|| Regex::new(r"[ \t]+").expect("bad hws re"));
+    let lower = content.to_lowercase();
+    lower
+        .split('\n')
+        .map(|line| hws_re.replace_all(line, " ").trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_markdown_example_content(content: &str) -> String {
+    static FENCE_RE: OnceLock<Regex> = OnceLock::new();
+    static HEADING_RE: OnceLock<Regex> = OnceLock::new();
+    static EXAMPLE_HEADING_RE: OnceLock<Regex> = OnceLock::new();
+    static BLOCKQUOTE_RE: OnceLock<Regex> = OnceLock::new();
+    let fence_re = FENCE_RE.get_or_init(|| Regex::new(r"^(\s*)(```|~~~)").expect("bad fence re"));
+    let heading_re = HEADING_RE.get_or_init(|| Regex::new(r"^(#{1,6})\s").expect("bad heading re"));
+    let example_heading_re = EXAMPLE_HEADING_RE.get_or_init(|| {
+        Regex::new(r"(?i)^#{1,4}\s+(?:examples?|test\s+cases?|negative\s+examples?|sample\s+(?:attacks?|injections?|payloads?)|what\s+(?:not\s+to\s+do|to\s+look\s+for|to\s+watch\s+for)|detection\s+(?:examples?|patterns?|rules?)|known\s+(?:attacks?|patterns?|techniques?)|red[\s-]team)").expect("bad example heading re")
+    });
+    let blockquote_re =
+        BLOCKQUOTE_RE.get_or_init(|| Regex::new(r"^\s*>").expect("bad blockquote re"));
+
+    let mut output: Vec<&str> = Vec::new();
+    let mut in_fenced_block = false;
+    let mut fence_is_backtick = false;
+    let mut in_example_section = false;
+    let mut example_section_level = 0usize;
+
+    for line in content.split('\n') {
+        if let Some(cap) = fence_re.captures(line) {
+            let marker = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+            if !in_fenced_block {
+                in_fenced_block = true;
+                fence_is_backtick = marker.starts_with('`');
+                output.push("");
+                continue;
+            } else {
+                let expected = if fence_is_backtick { "```" } else { "~~~" };
+                if line.trim().starts_with(expected) {
+                    in_fenced_block = false;
+                    output.push("");
+                    continue;
+                }
+            }
+        }
+        if in_fenced_block {
+            output.push("");
+            continue;
+        }
+        if blockquote_re.is_match(line) {
+            output.push("");
+            continue;
+        }
+        if let Some(cap) = heading_re.captures(line) {
+            let level = cap.get(1).map(|m| m.len()).unwrap_or(0);
+            if in_example_section && level <= example_section_level {
+                in_example_section = false;
+            }
+            if !in_example_section && example_heading_re.is_match(line) {
+                in_example_section = true;
+                example_section_level = level;
+                output.push("");
+                continue;
+            }
+        }
+        if in_example_section {
+            output.push("");
+            continue;
+        }
+        output.push(line);
+    }
+    output.join("\n")
+}
+
+/// Scan all text files for behavioral injection patterns (BEHAVIORAL_PATTERNS).
+/// Returns (findings, behavioral_check_failed) — mirrors vettd's inline behavioral scan.
+fn scan_behavioral_patterns(text_files: &HashMap<String, String>) -> (Vec<Finding>, bool) {
+    let patterns = get_behavioral_patterns();
+    let negation_re = NEGATION_PRECEDENTS_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:never|don'?t|do\s+not|avoid|prevent|stop|warn|forbid|disallow|refuse|cannot|can'?t|won'?t|would\s+not|should\s+not|shouldn'?t|must\s+not|mustn'?t)\b[^.!?]{0,30}$",
+        )
+        .expect("bad negation precedents re")
+    });
+
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut behavioral_check_failed = false;
+    const BEHAVIORAL_SCAN_MAX_BYTES: usize = 100 * 1024;
+
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+    for (path, content) in sorted_files {
+        let is_oversized = content.len() > BEHAVIORAL_SCAN_MAX_BYTES;
+        let scan_content: &str = if is_oversized {
+            let mut end = BEHAVIORAL_SCAN_MAX_BYTES;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            &content[..end]
+        } else {
+            content.as_str()
+        };
+        if is_oversized {
+            findings.push(Finding {
+                rule_id: RULE_BEHAVIORAL_SCAN_TRUNCATED.to_string(),
+                category: FindingCategory::Security,
+                severity: Severity::Info,
+                label: "Behavioral scan truncated".to_string(),
+                detail: format!(
+                    "{path} exceeds {}KB — content past that limit was not scanned for behavioral signals",
+                    BEHAVIORAL_SCAN_MAX_BYTES / 1024
+                ),
+                filepath: Some(path.clone()),
+                owasp_llm_category: None,
+                chain_id: None,
+                intent: None,
+                source: DEFAULT_SOURCE.to_string(),
+            });
+        }
+
+        let is_markdown = path.to_lowercase().ends_with(".md");
+        let stripped: String;
+        let normalized = if is_markdown {
+            stripped = strip_markdown_example_content(scan_content);
+            normalize_for_behavioral_scan(&stripped)
+        } else {
+            normalize_for_behavioral_scan(scan_content)
+        };
+        let normalized_lines: Vec<&str> = normalized.split('\n').collect();
+
+        for bp in patterns {
+            let mut match_count = 0usize;
+            let mut first_match_line: Option<usize> = None;
+            let mut first_match_snippet = String::new();
+
+            for (i, line) in normalized_lines.iter().enumerate() {
+                for m in bp.regex.find_iter(line) {
+                    if bp.respect_negation {
+                        let pre_start = m.start().saturating_sub(NEGATION_LOOKBACK_CHARS);
+                        let pre = &line[pre_start..m.start()];
+                        if negation_re.is_match(pre) {
+                            continue;
+                        }
+                    }
+                    match_count += 1;
+                    if first_match_line.is_none() {
+                        first_match_line = Some(i + 1);
+                        first_match_snippet = line.trim().chars().take(120).collect();
+                    }
+                }
+            }
+
+            if match_count > 0 {
+                if let Some(line_num) = first_match_line {
+                    let count_note = if match_count > 1 {
+                        format!(" ({match_count} matches)")
+                    } else {
+                        String::new()
+                    };
+                    let snippet = if !first_match_snippet.is_empty() {
+                        format!(" — `{first_match_snippet}`")
+                    } else {
+                        String::new()
+                    };
+                    let severity = match bp.severity {
+                        "critical" => Severity::Critical,
+                        "high" => Severity::High,
+                        "medium" => Severity::Medium,
+                        "low" => Severity::Low,
+                        _ => Severity::Info,
+                    };
+                    if matches!(severity, Severity::Critical | Severity::High) {
+                        behavioral_check_failed = true;
+                    }
+                    findings.push(Finding {
+                        rule_id: bp.rule_id.to_string(),
+                        category: FindingCategory::Security,
+                        severity,
+                        label: bp.label.to_string(),
+                        detail: format!("Detected in {path}:{line_num}{count_note}{snippet}"),
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: None,
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    (findings, behavioral_check_failed)
+}
+
+/// Scan for hidden Unicode / invisible characters (VTD-0081) — mirrors vettd's inline scan.
+/// When invisible chars are present but conceal no dangerous payload, emits VTD-0081.
+/// Dangerous-payload cases (obfuscated code/behavioral/network) are already covered by
+/// check_base64_payloads and scan_sensitive_patterns; this function handles the benign case.
+fn scan_hidden_unicode(text_files: &HashMap<String, String>, findings: &mut Vec<Finding>) {
+    // Unicode invisible/control character ranges (same as vettd's INVISIBLE_CHAR_TEST /u regex):
+    // U+200B–U+200F, U+202A–U+202E, U+2060–U+206F, U+FEFF, U+E0000–U+E007F
+    fn has_invisible(s: &str) -> bool {
+        s.chars().any(|c| {
+            matches!(c,
+                '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{E0000}'..='\u{E007F}'
+            )
+        })
+    }
+
+    let sensitive_regexes = get_sensitive_regexes();
+    let behavioral_patterns = get_behavioral_patterns();
+
+    static OBFUSC_URL_RE: OnceLock<Regex> = OnceLock::new();
+    let obfusc_url_re =
+        OBFUSC_URL_RE.get_or_init(|| Regex::new(r#"(?i)https?://[^\s)>\]"']+"#).expect("bad url re"));
+
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+
+    let mut obfusc_chain_count: u32 = 0;
+
+    for (path, content) in sorted_files {
+        let lines: Vec<&str> = content.split('\n').collect();
+        let mut found_dangerous = false;
+        let mut first_invisible_line: Option<usize> = None;
+
+        'lines: for (i, line) in lines.iter().enumerate() {
+            if !has_invisible(line) {
+                continue;
+            }
+            if first_invisible_line.is_none() {
+                first_invisible_line = Some(i);
+            }
+
+            // Strip invisible chars and check for dangerous patterns
+            let cleaned: String = line
+                .chars()
+                .filter(|&c| !matches!(c,
+                    '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{206F}'
+                    | '\u{FEFF}'
+                    | '\u{E0000}'..='\u{E007F}'
+                ))
+                .collect();
+
+            // Check sensitive patterns
+            for (i_pat, pat) in SENSITIVE_PATTERNS.iter().enumerate() {
+                if sensitive_regexes[i_pat].is_match(&cleaned) {
+                    findings.push(Finding {
+                        rule_id: RULE_OBFUSCATED_DANGEROUS_CODE.to_string(),
+                        category: FindingCategory::Security,
+                        severity: Severity::Critical,
+                        label: "Obfuscated dangerous code".to_string(),
+                        detail: format!(
+                            "Hidden Unicode in {path}:{} concealed a dangerous pattern: {}",
+                            i + 1,
+                            pat.label
+                        ),
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: Some(Intent::Malicious),
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                    found_dangerous = true;
+                    break 'lines;
+                }
+            }
+
+            // Check behavioral patterns
+            {
+                let normalized = normalize_for_behavioral_scan(&cleaned);
+                for bp in behavioral_patterns {
+                    if bp.regex.is_match(&normalized) {
+                        findings.push(Finding {
+                            rule_id: RULE_OBFUSCATED_DANGEROUS_CODE.to_string(),
+                            category: FindingCategory::Security,
+                            severity: Severity::Critical,
+                            label: "Obfuscated dangerous code".to_string(),
+                            detail: format!(
+                                "Hidden Unicode in {path}:{} concealed a behavioral signal: {}",
+                                i + 1,
+                                bp.label
+                            ),
+                            filepath: Some(path.clone()),
+                            owasp_llm_category: None,
+                            chain_id: None,
+                            intent: Some(Intent::Malicious),
+                            source: DEFAULT_SOURCE.to_string(),
+                        });
+                        found_dangerous = true;
+                        break 'lines;
+                    }
+                }
+            }
+
+            // Check for obfuscated external URL (dead-drop)
+            if !found_dangerous && obfusc_url_re.is_match(&cleaned) {
+                findings.push(Finding {
+                    rule_id: RULE_OBFUSCATED_EXTERNAL_URL.to_string(),
+                    category: FindingCategory::Security,
+                    severity: Severity::Critical,
+                    label: "Obfuscated external URL (dead-drop)".to_string(),
+                    detail: format!(
+                        "Hidden Unicode in {path}:{} concealed an external URL",
+                        i + 1
+                    ),
+                    filepath: Some(path.clone()),
+                    owasp_llm_category: None,
+                    chain_id: Some(format!("obfusc-uni-{obfusc_chain_count}")),
+                    intent: Some(Intent::Malicious),
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+                obfusc_chain_count += 1;
+                found_dangerous = true;
+            }
+
+            if found_dangerous {
+                break 'lines;
+            }
+        }
+
+        // Invisible chars present but no dangerous payload — emit presence warning
+        if let Some(line_idx) = first_invisible_line {
+            if !found_dangerous {
+                findings.push(Finding {
+                    rule_id: RULE_HIDDEN_UNICODE_CHARACTER.to_string(),
+                    category: FindingCategory::Security,
+                    severity: Severity::Medium,
+                    label: "Hidden Unicode character detected".to_string(),
+                    detail: format!(
+                        "Invisible formatting/control character in {path}:{}. \
+                        May conceal prompt injection content.",
+                        line_idx + 1
+                    ),
+                    filepath: Some(path.clone()),
+                    owasp_llm_category: None,
+                    chain_id: None,
+                    intent: None,
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+            }
+        }
+    }
+}
+
 fn scan_entropy(text_files: &HashMap<String, String>, findings: &mut Vec<Finding>) {
     let assign_re = ASSIGNMENT_QUOTED_VALUE_RE
         .get_or_init(|| Regex::new(ASSIGNMENT_QUOTED_VALUE_STR).expect("bad entropy regex"));
     let key_re = SUSPICIOUS_SECRET_KEY_RE
         .get_or_init(|| Regex::new(SUSPICIOUS_SECRET_KEY_STR).expect("bad key regex"));
 
-    for (path, content) in text_files {
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+    for (path, content) in sorted_files {
         if path.to_lowercase().ends_with(".md") {
             continue;
         }
@@ -946,7 +1483,9 @@ fn scan_env_files(text_files: &HashMap<String, String>, findings: &mut Vec<Findi
     static ENV_FILE_RE: OnceLock<Regex> = OnceLock::new();
     let re =
         ENV_FILE_RE.get_or_init(|| Regex::new(r"(?:^|/)\.env($|\.)").expect("bad env file regex"));
-    for path in text_files.keys() {
+    let mut sorted_paths: Vec<&String> = text_files.keys().collect();
+    sorted_paths.sort();
+    for path in sorted_paths {
         if re.is_match(path) {
             findings.push(Finding {
                 rule_id: RULE_ENV_FILE_IN_PACKAGE.to_string(),
@@ -1183,8 +1722,12 @@ fn detect_exfiltration_chains(findings: &mut Vec<Finding>, text_files: &HashMap<
     let mut chain_index: u32 = 0;
 
     // Collect (filepath, source_indices, chain_id) for files that have both sources and sinks.
+    // Sort by file path to match vettd's deterministic (Map insertion / alphabetical) order.
+    let mut sorted_sources: Vec<(&String, &Vec<usize>)> = sources_by_file.iter().collect();
+    sorted_sources.sort_by_key(|(p, _)| p.as_str());
+
     let mut chains: Vec<(String, Vec<usize>, String)> = Vec::new();
-    for (file_path, source_indices) in &sources_by_file {
+    for (file_path, source_indices) in sorted_sources {
         if let Some(content) = text_files.get(file_path.as_str()) {
             if sinks.iter().any(|re| re.is_match(content)) {
                 chains.push((
@@ -1379,7 +1922,9 @@ fn check_base64_payloads(
     let behavioral_failed = false;
     let mut obfusc_count: u32 = 0;
 
-    for (path, content) in text_files {
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+    for (path, content) in sorted_files {
         // Skip reference/eval directories.
         if path.starts_with("evals/") || path.starts_with("references/") {
             continue;
@@ -1769,7 +2314,7 @@ fn parse_skill_md(content: &str) -> ParsedSkillMd {
 
     let raw = &rest[..close_pos];
     let body = if let Some(stripped) = trimmed_after.strip_prefix('\n') {
-        stripped.to_string()
+        stripped.trim_start_matches('\n').to_string()
     } else {
         String::new()
     };
@@ -1874,6 +2419,26 @@ fn has_examples(body: &str) -> bool {
         || lower.contains("**bad**")
 }
 
+// Mirrors vettd's hasGotchas: /##?\s*gotcha/i || /##?\s*common\s+mistakes/i
+fn has_gotchas(body: &str) -> bool {
+    static GOTCHAS_RE: OnceLock<Regex> = OnceLock::new();
+    let re = GOTCHAS_RE.get_or_init(|| {
+        Regex::new(r"(?i)##?\s*(?:gotcha|common\s+mistakes)").expect("bad gotchas re")
+    });
+    re.is_match(body)
+}
+
+// Mirrors vettd's hasChecklist: /- \[ \]/ || /##?\s*checklist/i
+fn has_checklist(body: &str) -> bool {
+    if body.contains("- [ ]") {
+        return true;
+    }
+    static CHECKLIST_RE: OnceLock<Regex> = OnceLock::new();
+    let re = CHECKLIST_RE
+        .get_or_init(|| Regex::new(r"(?im)^##?\s*checklist").expect("bad checklist re"));
+    re.is_match(body)
+}
+
 // Mirrors vettd's hasValidation: /validat/i.test(body) || /##?\s*verification/i.
 // Note: matches "invalidation" and similar — this is a vettd bug reproduced as-is.
 fn has_validation(body: &str) -> bool {
@@ -1920,17 +2485,18 @@ fn has_workflow(body: &str) -> bool {
             return true;
         }
     }
-    // Numbered list: line starting with "1. " etc.
+    // Numbered list: line starting with digit at column 0 (mirrors vettd's /^\d+\.\s/m).
+    // Do NOT trim — indented numbers (e.g. inside code blocks) must not match.
     for line in body.lines() {
-        let t = line.trim_start();
-        if t.starts_with(|c: char| c.is_ascii_digit()) {
-            let rest = t.trim_start_matches(|c: char| c.is_ascii_digit());
+        if line.starts_with(|c: char| c.is_ascii_digit()) {
+            let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
             if rest.starts_with(". ") {
                 return true;
             }
         }
-        // **Step ... bullet
-        if line.to_lowercase().contains("**step") {
+        // **Step bullet: vettd allows leading whitespace (^\s*[-*]\s+\*\*Step\b)
+        let t = line.trim_start();
+        if (t.starts_with("- ") || t.starts_with("* ")) && t.to_lowercase().contains("**step") {
             return true;
         }
     }
@@ -1986,6 +2552,13 @@ fn is_likely_cli_script(path: &str, content: &str) -> bool {
         return false;
     }
     let lower = path.to_lowercase();
+    let basename = lower.rsplit('/').next().unwrap_or("");
+    const NON_CLI_BASENAMES: &[&str] = &[
+        "__init__.py", "utils.py", "helper.py", "helpers.py", "base.py", "constants.py",
+    ];
+    if NON_CLI_BASENAMES.contains(&basename) {
+        return false;
+    }
     let ext = lower.rsplit('.').next().unwrap_or("");
 
     if matches!(ext, "sh" | "bash" | "zsh") {
@@ -1993,31 +2566,7 @@ fn is_likely_cli_script(path: &str, content: &str) -> bool {
     }
 
     const NON_CLI_EXTS: &[&str] = &[
-        "json",
-        "xml",
-        "xsd",
-        "wsdl",
-        "yaml",
-        "yml",
-        "toml",
-        "ini",
-        "cfg",
-        "conf",
-        "properties",
-        "csv",
-        "tsv",
-        "txt",
-        "md",
-        "rst",
-        "html",
-        "htm",
-        "css",
-        "lock",
-        "sum",
-        "mod",
-        "gitignore",
-        "dockerignore",
-        "env",
+        "json", "xml", "xsd", "yaml", "yml", "toml", "txt", "md", "csv", "tsv",
     ];
     if NON_CLI_EXTS.contains(&ext) {
         return false;
@@ -2226,6 +2775,29 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
             ));
         }
 
+        // Name collision check (VTD-0100)
+        const WELL_KNOWN_SKILL_NAMES: &[&str] = &[
+            "frontend-design", "pdf", "web-perf", "web-design-guidelines", "find-skills",
+            "agent-browser", "agent-customization", "cloudflare", "durable-objects",
+            "workers-best-practices", "wrangler", "sandbox-sdk", "next-best-practices",
+            "vercel-react-best-practices", "rust-best-practices", "postgresql-optimization",
+            "prisma-postgres", "aws-skills", "powershell-windows", "cosmosdb-best-practices",
+            "excel", "word", "powerpoint", "git", "docker", "kubernetes", "terraform",
+            "ansible",
+        ];
+        if WELL_KNOWN_SKILL_NAMES.contains(&parsed.name.as_str()) {
+            findings.push(f!(
+                RULE_SKILL_NAME_COLLISION,
+                FindingCategory::BestPractices,
+                Severity::Medium,
+                "Skill name collides with well-known skill",
+                format!(
+                    "{:?} matches a well-known skill name — may cause unintended invocation",
+                    parsed.name
+                )
+            ));
+        }
+
         // Repository link check (VTD-0083)
         if parsed.repository.is_empty() {
             findings.push(Finding {
@@ -2242,6 +2814,31 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                 intent: Some(Intent::Negligent),
                 source: DEFAULT_SOURCE.to_string(),
             });
+        }
+
+        // System prompt leakage check (VTD-0085)
+        {
+            static PROMPT_LEAK_RE: OnceLock<Regex> = OnceLock::new();
+            let prompt_leak_re = PROMPT_LEAK_RE.get_or_init(|| {
+                Regex::new(r"(?i)\b(?:print|log|echo|output|return|display|show|reveal|dump)\s+(?:the\s+|your\s+|my\s+)?(?:system\s+)?(?:prompt|instructions?|system\s+message|internal\s+(?:prompt|instructions?))\b")
+                    .expect("bad prompt leak re")
+            });
+            let skill_md_raw = text_files.get(skill_key).map(|s| s.as_str()).unwrap_or("");
+            if prompt_leak_re.is_match(skill_md_raw) {
+                findings.push(Finding {
+                    rule_id: RULE_SYSTEM_PROMPT_LEAKAGE.to_string(),
+                    category: FindingCategory::Security,
+                    severity: Severity::Medium,
+                    label: "System prompt leakage risk".to_string(),
+                    detail: "Skill instructs agent to output or reveal system prompt/instructions"
+                        .to_string(),
+                    filepath: None,
+                    owasp_llm_category: None,
+                    chain_id: None,
+                    intent: None,
+                    source: DEFAULT_SOURCE.to_string(),
+                });
+            }
         }
 
         // Description checks (VTD-0109, VTD-0110, VTD-0111)
@@ -2296,12 +2893,44 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                         .to_string()
                 )
             });
+
+            // VTD-0112 — description too brief (< 5 words, no negative case)
+            if parsed.description.split_whitespace().count() < 5 {
+                findings.push(f!(
+                    RULE_DESCRIPTION_BREVITY,
+                    FindingCategory::Description,
+                    Severity::Info,
+                    "Description too brief",
+                    "A few sentences covering scope and trigger conditions improves \
+                    activation accuracy"
+                        .to_string()
+                ));
+            }
+
+            // VTD-0113 — description overclaims scope
+            {
+                static OVERCLAIM_RE: OnceLock<Regex> = OnceLock::new();
+                let overclaim_re = OVERCLAIM_RE.get_or_init(|| {
+                    Regex::new(r"(?i)\b(?:anything|everything|all\s+(?:files?|data|tasks?|requests?|inputs?|things?)|any\s+(?:file|task|request|input|thing)|whatever)\b")
+                        .expect("bad overclaim re")
+                });
+                if overclaim_re.is_match(&parsed.description) {
+                    findings.push(f!(
+                        RULE_DESCRIPTION_SCOPE,
+                        FindingCategory::Description,
+                        Severity::Low,
+                        "Description overclaims scope",
+                        "Broad trigger words (anything, everything, all files, etc.) widen attack surface — narrow to specific use cases"
+                            .to_string()
+                    ));
+                }
+            }
         }
 
         // Body quality checks — only when body has content
         if !parsed.body.trim().is_empty() {
             // .lines() excludes a trailing newline, matching JS regex $-before-trailing-\n
-            let body_lines = parsed.body.lines().count();
+            let body_lines = parsed.body.split('\n').count();
 
             findings.push(if body_lines > SKILL_MD_BODY_MAX_LINES {
                 f!(RULE_SKILL_MD_BODY_LENGTH, FindingCategory::BestPractices, Severity::Info,
@@ -2312,6 +2941,17 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                    "SKILL.md body length is reasonable",
                    format!("{body_lines} lines (recommended: under 500)"))
             });
+
+            // VTD-0102 — gotchas section (only fires when present)
+            if has_gotchas(&parsed.body) {
+                findings.push(f!(
+                    RULE_GOTCHAS_SECTION,
+                    FindingCategory::BestPractices,
+                    Severity::Info,
+                    "Gotchas section found",
+                    "Documents environment-specific facts and common pitfalls".to_string()
+                ));
+            }
 
             findings.push(if has_examples(&parsed.body) {
                 f!(
@@ -2334,6 +2974,18 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                         .to_string()
                 )
             });
+
+            // VTD-0104 — checklist pattern (only fires when present)
+            if has_checklist(&parsed.body) {
+                findings.push(f!(
+                    RULE_CHECKLIST_PRESENT,
+                    FindingCategory::BestPractices,
+                    Severity::Info,
+                    "Checklist pattern found",
+                    "Explicit checklists help agents track progress in multi-step workflows"
+                        .to_string()
+                ));
+            }
 
             findings.push(if has_workflow(&parsed.body) {
                 f!(
@@ -2428,12 +3080,15 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         static INTERACTIVE_RE: OnceLock<Regex> = OnceLock::new();
         static STRUCTURED_RE: OnceLock<Regex> = OnceLock::new();
         let interactive_re = INTERACTIVE_RE.get_or_init(|| {
-            Regex::new(r"(?i)input\s*\(|readline|prompt\s*\(|inquirer")
-                .expect("bad interactive re")
+            Regex::new(r"(?i)input\s*\(|readline|prompt\s*\(|inquirer").expect("bad interactive re")
         });
         let structured_re = STRUCTURED_RE.get_or_init(|| {
             Regex::new(r"(?i)json\.dumps|JSON\.stringify|\.to_json|\.to_csv|csv\.writer")
                 .expect("bad structured re")
+        });
+        static DEP_RE: OnceLock<Regex> = OnceLock::new();
+        let dep_re = DEP_RE.get_or_init(|| {
+            Regex::new(r"(?i)dependencies\s*=\s*\[|require\(|import\s").expect("bad dep re")
         });
 
         for (path, content) in script_files {
@@ -2494,6 +3149,28 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                     source: DEFAULT_SOURCE.to_string(),
                 });
             }
+
+            // VTD-0117 — unpinned dependency versions
+            {
+                let has_pinned_deps = dep_re.is_match(content);
+                if has_pinned_deps && content.contains(">=") && !content.contains('<') {
+                    findings.push(Finding {
+                        rule_id: RULE_SCRIPT_DEPENDENCY_PINNING.to_string(),
+                        category: FindingCategory::Scripts,
+                        severity: Severity::Low,
+                        label: "Unpinned dependency versions".to_string(),
+                        detail: format!(
+                            "{path}: Pin dependency versions for reproducibility \
+                            (e.g., >=4.12,<5 instead of >=4.12)"
+                        ),
+                        filepath: Some(path.to_string()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: None,
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                }
+            }
         }
     }
 
@@ -2503,10 +3180,10 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
     //   2. Entropy scan (high-entropy assignment values)
     //   3. .env file detection
     //   4. Capture secretsCheckFailed (before behavioral scan)
-    //   5. Behavioral scan (not implemented — VTD-0092 fires unconditionally)
+    //   5. Behavioral scan (BEHAVIORAL_PATTERNS on all files)
     //   6. Base64 obfuscation scan
     //   7. VTD-0091 conditional (suppressed if secrets or base64 secrets found)
-    //   8. VTD-0092 unconditional (known limitation: behavioral scan not implemented)
+    //   8. VTD-0092 conditional (suppressed if behavioral or base64-behavioral findings found)
 
     let (sensitive_findings, secrets_check_failed_pat) = scan_sensitive_patterns(text_files);
     findings.extend(sensitive_findings);
@@ -2520,7 +3197,7 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
                 && matches!(f.severity, Severity::Critical | Severity::High)
         });
 
-    let (base64_secrets_failed, _base64_behavioral_failed) =
+    let (base64_secrets_failed, base64_behavioral_failed) =
         check_base64_payloads(text_files, &mut findings);
 
     // VTD-0091: only emit when no critical/high secrets/code-risk findings found.
@@ -2536,32 +3213,45 @@ pub fn scan_skill(text_files: &HashMap<String, String>, all_paths: &[String]) ->
         ));
     }
 
-    findings.push(f!(
-        RULE_NO_BEHAVIORAL_SIGNALS,
-        FindingCategory::Security,
-        Severity::Info,
-        "No prompt injection or jailbreak signals detected",
-        "Scanned text content for instruction override, jailbreak framing, credential \
-         solicitation, and embedded injection markers"
-            .to_string()
-    ));
+    // Behavioral scan — mirrors vettd's inline scan over all text files.
+    let (behavioral_findings, behavioral_check_failed) = scan_behavioral_patterns(text_files);
+    findings.extend(behavioral_findings);
+
+    // VTD-0092: only emit when no critical/high behavioral findings were found.
+    if !behavioral_check_failed && !base64_behavioral_failed {
+        findings.push(f!(
+            RULE_NO_BEHAVIORAL_SIGNALS,
+            FindingCategory::Security,
+            Severity::Info,
+            "No prompt injection or jailbreak signals detected",
+            "Scanned text content for instruction override, jailbreak framing, credential \
+             solicitation, and embedded injection markers"
+                .to_string()
+        ));
+    }
+
+    // Hidden Unicode detection (VTD-0081) — mirrors vettd's invisible-char scan in checkSecurity.
+    scan_hidden_unicode(text_files, &mut findings);
 
     // External URL check — mirrors vettd's urlTargetFiles scan.
     // VTD-0088 fires on the first URL-containing SKILL.md or references/ file;
     // VTD-0093 (clean signal) fires only when no URL was found.
     let url_target_files: Vec<(&str, &str)> = {
-        // Preserve SKILL.md-first order to match vettd's Map insertion order.
+        // SKILL.md first, then references/ sorted alphabetically to match the
+        // sorted insertion order that the Python loader produces (vettd Map preserves it).
         let mut targets: Vec<(&str, &str)> = Vec::new();
         for name in &["SKILL.md", "skill.md"] {
             if let Some(c) = text_files.get(*name) {
                 targets.push((name, c.as_str()));
             }
         }
-        for (p, c) in text_files {
-            if p.to_lowercase().starts_with("references/") {
-                targets.push((p.as_str(), c.as_str()));
-            }
-        }
+        let mut refs: Vec<(&str, &str)> = text_files
+            .iter()
+            .filter(|(p, _)| p.to_lowercase().starts_with("references/"))
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+        refs.sort_by_key(|(p, _)| *p);
+        targets.extend(refs);
         targets
     };
 
