@@ -122,10 +122,56 @@ fn trust_level_from_grade(grade: &str) -> &'static str {
 
 fn skill_artifact_description(artifact: &ArtifactReport) -> String {
     let path = first_path(artifact);
-    if path == "unknown" {
-        "Reusable agent skill instructions".to_string()
+    if path != "unknown" {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(desc) = extract_frontmatter_description(&content) {
+                return desc;
+            }
+        }
+    }
+    "Reusable agent skill instructions".to_string()
+}
+
+/// Extract the `description` field from SKILL.md YAML frontmatter.
+///
+/// Handles inline (`description: text`) and block-scalar values.
+/// Returns `None` if the frontmatter is missing or the field is absent/empty.
+fn extract_frontmatter_description(content: &str) -> Option<String> {
+    let rest = content.strip_prefix("---\n")?;
+    let close = rest.find("\n---")?;
+    let raw = &rest[..close];
+
+    let mut description = String::new();
+    let mut collecting_block = false;
+
+    for line in raw.lines() {
+        if collecting_block {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                if !description.is_empty() {
+                    description.push(' ');
+                }
+                description.push_str(line.trim());
+                continue;
+            }
+            collecting_block = false;
+        }
+
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("description:") {
+            let inline = rest.trim().trim_matches('"').trim_matches('\'');
+            if inline.is_empty() {
+                collecting_block = true;
+            } else {
+                description = inline.to_string();
+                break;
+            }
+        }
+    }
+
+    if description.is_empty() {
+        None
     } else {
-        format!("Reusable agent skill instructions from {path}")
+        Some(description)
     }
 }
 
@@ -387,6 +433,45 @@ mod tests {
     use super::*;
     use crate::contract::types::AgentTool;
     use crate::models::ArtifactReport;
+
+    #[test]
+    fn extract_frontmatter_description_inline() {
+        let content = "---\nname: my-skill\ndescription: Does something useful\n---\nBody text\n";
+        assert_eq!(
+            extract_frontmatter_description(content),
+            Some("Does something useful".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_frontmatter_description_quoted() {
+        let content = "---\ndescription: \"Quoted description here\"\n---\n";
+        assert_eq!(
+            extract_frontmatter_description(content),
+            Some("Quoted description here".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_frontmatter_description_block_scalar() {
+        let content = "---\ndescription:\n  Multi-line\n  block value\n---\n";
+        assert_eq!(
+            extract_frontmatter_description(content),
+            Some("Multi-line block value".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_frontmatter_description_missing() {
+        let content = "---\nname: my-skill\nauthor: me\n---\nBody\n";
+        assert_eq!(extract_frontmatter_description(content), None);
+    }
+
+    #[test]
+    fn extract_frontmatter_description_no_frontmatter() {
+        let content = "Just a plain markdown file with no frontmatter.";
+        assert_eq!(extract_frontmatter_description(content), None);
+    }
 
     fn make_agent(name: &str, tools: Vec<&str>) -> Agent {
         Agent {
