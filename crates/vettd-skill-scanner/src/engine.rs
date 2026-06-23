@@ -113,7 +113,6 @@ const RULE_MALICIOUS_ACTIVITY_CHAIN: &str = "VTD-0090";
 const RULE_NO_SECRETS_DETECTED: &str = "VTD-0091";
 const RULE_NO_BEHAVIORAL_SIGNALS: &str = "VTD-0092";
 const RULE_NO_EXTERNAL_URLS: &str = "VTD-0093";
-const RULE_BEHAVIORAL_SCAN_TRUNCATED: &str = "VTD-0094";
 
 // Structure
 const RULE_SKILL_MD: &str = "VTD-0095";
@@ -1171,46 +1170,16 @@ fn scan_behavioral_patterns(text_files: &HashMap<String, String>) -> (Vec<Findin
 
     let mut findings: Vec<Finding> = Vec::new();
     let mut behavioral_check_failed = false;
-    const BEHAVIORAL_SCAN_MAX_BYTES: usize = 100 * 1024;
-
     let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
     sorted_files.sort_by_key(|(p, _)| p.as_str());
     for (path, content) in sorted_files {
-        let is_oversized = content.len() > BEHAVIORAL_SCAN_MAX_BYTES;
-        let scan_content: &str = if is_oversized {
-            let mut end = BEHAVIORAL_SCAN_MAX_BYTES;
-            while end > 0 && !content.is_char_boundary(end) {
-                end -= 1;
-            }
-            &content[..end]
-        } else {
-            content.as_str()
-        };
-        if is_oversized {
-            findings.push(Finding {
-                rule_id: RULE_BEHAVIORAL_SCAN_TRUNCATED.to_string(),
-                category: FindingCategory::Security,
-                severity: Severity::Info,
-                label: "Behavioral scan truncated".to_string(),
-                detail: format!(
-                    "{path} exceeds {}KB — content past that limit was not scanned for behavioral signals",
-                    BEHAVIORAL_SCAN_MAX_BYTES / 1024
-                ),
-                filepath: Some(path.clone()),
-                owasp_llm_category: None,
-                chain_id: None,
-                intent: None,
-                source: DEFAULT_SOURCE.to_string(),
-            });
-        }
-
         let is_markdown = path.to_lowercase().ends_with(".md");
         let stripped: String;
         let normalized = if is_markdown {
-            stripped = strip_markdown_example_content(scan_content);
+            stripped = strip_markdown_example_content(content);
             normalize_for_behavioral_scan(&stripped)
         } else {
-            normalize_for_behavioral_scan(scan_content)
+            normalize_for_behavioral_scan(content)
         };
         let normalized_lines: Vec<&str> = normalized.split('\n').collect();
 
