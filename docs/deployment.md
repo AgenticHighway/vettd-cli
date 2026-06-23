@@ -10,7 +10,7 @@ Before releasing, make sure:
 - [ ] You have access to the [GitHub Actions](https://github.com/AgenticHighway/vettd-cli/actions) dashboard to monitor builds
 - [ ] All CI checks on `main` are green
 - [ ] You've tested the changes locally with `cargo test` and `cargo clippy --all-targets -- -D warnings`
-- [ ] GitHub repo variable `VETTD_UPDATE_PUBLIC_KEY_DER_B64` is set to the official KMS public key (base64-encoded DER/SPKI blob)
+- [ ] GitHub repo variable `PROOV_UPDATE_PUBLIC_KEY_DER_B64` is set to the official KMS public key (base64-encoded DER/SPKI blob)
 - [ ] The `SCANNER_RELEASE_ROLE_ARN` OIDC role can call `kms:Sign` on the Vettd release signing key
 - [ ] GitHub repo secret `HOMEBREW_TAP_TOKEN` is set if releases should auto-refresh `AgenticHighway/homebrew-tap`
 
@@ -85,9 +85,9 @@ Go to [GitHub Actions](https://github.com/AgenticHighway/vettd-cli/actions) and 
 
 2. **release** — Downloads all 5 artifacts and creates a GitHub Release with auto-generated release notes
 
-3. **upload-s3** — Uploads binaries to `s3://vettd-releases/vX.Y.Z/`, generates SHA-256 checksums, writes `latest.json`, asks AWS KMS to sign it, and uploads both `latest.json` and `latest.signature.json`
+3. **upload-s3** — Uploads binaries to `s3://ah-scanner-releases/vX.Y.Z/`, generates SHA-256 checksums, writes `latest.json`, asks AWS KMS to sign it, and uploads both `latest.json` and `latest.signature.json`
 
-4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/vettd.rb` update to `AgenticHighway/homebrew-tap`
+4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/proov.rb` update to `AgenticHighway/homebrew-tap`
 
 ### 7. Verify the release
 
@@ -98,7 +98,7 @@ After the workflow completes:
 open https://github.com/AgenticHighway/vettd-cli/releases/tag/vX.Y.Z
 
 # Check the Homebrew tap formula was refreshed
-open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/vettd.rb
+open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/proov.rb
 
 # Check the public hosted manifest and detached signature
 curl -s https://vettd.agentichighway.ai/api/scanner/latest | python3 -m json.tool
@@ -155,7 +155,7 @@ Tag push (v*)
 □ cargo audit                                no known vulnerabilities
 □ Version bumped in workspace Cargo.toml
 □ COMPILED_CONTRACT_VERSION correct (if schema changed)
-□ VETTD_UPDATE_PUBLIC_KEY_DER_B64 repo variable configured
+□ PROOV_UPDATE_PUBLIC_KEY_DER_B64 repo variable configured
 □ Release OIDC role allowed to call kms:Sign
 □ All changes committed, working tree clean
 □ CI green on main
@@ -332,8 +332,8 @@ If a release is broken and users are affected:
 1. **Immediate:** Re-upload the previous version's manifest and detached signature envelope so `vettd update` trusts the previous release again:
 
     ```bash
-    aws s3 cp s3://vettd-releases/manifests/vPREVIOUS/latest.json s3://vettd-releases/latest.json
-    aws s3 cp s3://vettd-releases/manifests/vPREVIOUS/latest.signature.json s3://vettd-releases/latest.signature.json
+    aws s3 cp s3://ah-scanner-releases/manifests/vPREVIOUS/latest.json s3://ah-scanner-releases/latest.json
+    aws s3 cp s3://ah-scanner-releases/manifests/vPREVIOUS/latest.signature.json s3://ah-scanner-releases/latest.signature.json
     ```
 
 2. **Thorough:** Follow the "re-release" steps above to publish a fixed version.

@@ -34,7 +34,7 @@ const MANIFEST_URL: &str = "https://vettd.agentichighway.ai/api/scanner/latest";
 const MANIFEST_SIGNATURE_URL: &str = "https://vettd.agentichighway.ai/api/scanner/latest/signature";
 
 /// Build-time SPKI DER public key used to verify official update manifests.
-const UPDATE_PUBLIC_KEY_DER_B64: Option<&str> = option_env!("VETTD_UPDATE_PUBLIC_KEY_DER_B64");
+const UPDATE_PUBLIC_KEY_DER_B64: Option<&str> = option_env!("PROOV_UPDATE_PUBLIC_KEY_DER_B64");
 
 /// Signing algorithm emitted by the AWS KMS release signer.
 const KMS_SIGNATURE_ALGORITHM: &str = "ECDSA_SHA_256";
@@ -156,7 +156,7 @@ fn update_public_key_der_b64() -> Result<&'static str, String> {
         .ok_or_else(|| {
             "This build does not include an embedded Vettd update verification \
              key. Self-update is only available in official signed builds. \
-             Rebuild with VETTD_UPDATE_PUBLIC_KEY_DER_B64 set or install an official \
+             Rebuild with PROOV_UPDATE_PUBLIC_KEY_DER_B64 set or install an official \
              release."
                 .to_string()
         })
@@ -579,7 +579,7 @@ mod tests {
             BASE64_STANDARD.encode(public_key_der.as_ref()),
             ManifestSignatureEnvelope {
                 algorithm: KMS_SIGNATURE_ALGORITHM.to_string(),
-                key_id: Some("alias/vettd-release-signing".to_string()),
+                key_id: Some("alias/proov-release-signing".to_string()),
                 signature: BASE64_STANDARD.encode(signature.to_der().as_bytes()),
             },
         )

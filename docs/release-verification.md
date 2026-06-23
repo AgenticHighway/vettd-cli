@@ -7,7 +7,7 @@ platform binaries:
 |---|---|
 | `checksums.txt` | SHA-256 hash for each release asset (standard `sha256sum` format) |
 | `checksums.txt.sig` | AWS KMS ECDSA-SHA256 signature over `checksums.txt` (JSON envelope) |
-| *(embedded in binary)* | The ECDSA public key baked in at compile time via `VETTD_UPDATE_PUBLIC_KEY_DER_B64` |
+| *(embedded in binary)* | The ECDSA public key baked in at compile time via `PROOV_UPDATE_PUBLIC_KEY_DER_B64` |
 
 The KMS key used to sign `checksums.txt` is the same key used by `vettd update`
 to verify the self-update manifest, so both flows share a single root of trust.
@@ -56,7 +56,7 @@ page published with each GitHub Release.
 ### 2. Decode and prepare the key
 
 ```bash
-# Replace <BASE64_KEY> with the value of VETTD_UPDATE_PUBLIC_KEY_DER_B64
+# Replace <BASE64_KEY> with the value of PROOV_UPDATE_PUBLIC_KEY_DER_B64
 echo "<BASE64_KEY>" | base64 -d > pubkey.der
 openssl ec -inform DER -pubin -in pubkey.der -pubout -out pubkey.pem
 ```
@@ -99,7 +99,7 @@ signature before trusting any artifact URL or hash. The manual verification
 flow described here uses the same KMS key and the same signature algorithm
 (ECDSA-SHA256), so both flows reduce to the same root of trust.
 
-Source builds (without `VETTD_UPDATE_PUBLIC_KEY_DER_B64` set at compile time)
+Source builds (without `PROOV_UPDATE_PUBLIC_KEY_DER_B64` set at compile time)
 will not embed a public key. In that case only the SHA-256 checksum step is
 available for manual verification; the signature step requires an official
 release binary.

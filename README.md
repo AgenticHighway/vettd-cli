@@ -265,7 +265,7 @@ Official release binaries verify a detached AWS KMS-backed ECDSA signature on
 the update manifest before trusting artifact URLs or hashes.
 
 Source builds remain fully functional, but `vettd update` will fail explicitly
-unless the binary was built with `VETTD_UPDATE_PUBLIC_KEY_DER_B64` set at
+unless the binary was built with `PROOV_UPDATE_PUBLIC_KEY_DER_B64` set at
 compile time.
 
 ## Privacy

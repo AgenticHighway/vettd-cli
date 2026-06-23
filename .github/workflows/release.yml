@@ -40,8 +40,8 @@ env:
     CARGO_TERM_COLOR: always
     BINARY_NAME: vettd
     UPDATE_HOST: https://vettd.agentichighway.ai
-    UPDATE_SIGNING_KEY_ID: alias/vettd-release-signing
-    VETTD_UPDATE_PUBLIC_KEY_DER_B64: ${{ vars.VETTD_UPDATE_PUBLIC_KEY_DER_B64 }}
+    UPDATE_SIGNING_KEY_ID: alias/proov-release-signing
+    PROOV_UPDATE_PUBLIC_KEY_DER_B64: ${{ vars.PROOV_UPDATE_PUBLIC_KEY_DER_B64 }}
 
 jobs:
     # ── Build ────────────────────────────────────────────────────────
@@ -75,8 +75,8 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  if [ -z "${VETTD_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
-                    echo "::error::Missing repo variable VETTD_UPDATE_PUBLIC_KEY_DER_B64. Official releases must embed the KMS public verification key."
+                  if [ -z "${PROOV_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
+                    echo "::error::Missing repo variable PROOV_UPDATE_PUBLIC_KEY_DER_B64. Official releases must embed the KMS public verification key."
                     exit 1
                   fi
 
@@ -207,8 +207,8 @@ jobs:
             - name: Validate signing configuration
               run: |
                   set -euo pipefail
-                  if [ -z "${VETTD_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
-                    echo "::error::Missing repo variable VETTD_UPDATE_PUBLIC_KEY_DER_B64."
+                  if [ -z "${PROOV_UPDATE_PUBLIC_KEY_DER_B64:-}" ]; then
+                    echo "::error::Missing repo variable PROOV_UPDATE_PUBLIC_KEY_DER_B64."
                     exit 1
                   fi
                   if [ -z "${UPDATE_SIGNING_KEY_ID:-}" ]; then
@@ -221,8 +221,8 @@ jobs:
                     --query 'PublicKey' \
                     --output text)
 
-                  if [ "${KMS_PUBLIC_KEY_DER_B64}" != "${VETTD_UPDATE_PUBLIC_KEY_DER_B64}" ]; then
-                    echo "::error::VETTD_UPDATE_PUBLIC_KEY_DER_B64 does not match the current KMS public key for ${UPDATE_SIGNING_KEY_ID}."
+                  if [ "${KMS_PUBLIC_KEY_DER_B64}" != "${PROOV_UPDATE_PUBLIC_KEY_DER_B64}" ]; then
+                    echo "::error::PROOV_UPDATE_PUBLIC_KEY_DER_B64 does not match the current KMS public key for ${UPDATE_SIGNING_KEY_ID}."
                     exit 1
                   fi
 
@@ -235,8 +235,8 @@ jobs:
                   TAG="${{ steps.tag.outputs.TAG }}"
                   for file in release/vettd-*; do
                     name=$(basename "$file")
-                    echo "Uploading $name → s3://vettd-releases/${TAG}/${name}"
-                    aws s3 cp "$file" "s3://vettd-releases/${TAG}/${name}"
+                    echo "Uploading $name → s3://ah-scanner-releases/${TAG}/${name}"
+                    aws s3 cp "$file" "s3://ah-scanner-releases/${TAG}/${name}"
                   done
 
             # Per-artifact SHA-256 checksums are embedded in latest.json so
@@ -319,13 +319,13 @@ jobs:
                   }
                   EOF
 
-                  aws s3 cp /tmp/latest.json s3://vettd-releases/latest.json \
+                  aws s3 cp /tmp/latest.json s3://ah-scanner-releases/latest.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.signature.json s3://vettd-releases/latest.signature.json \
+                  aws s3 cp /tmp/latest.signature.json s3://ah-scanner-releases/latest.signature.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.json s3://vettd-releases/manifests/${TAG}/latest.json \
+                  aws s3 cp /tmp/latest.json s3://ah-scanner-releases/manifests/${TAG}/latest.json \
                       --content-type application/json
-                  aws s3 cp /tmp/latest.signature.json s3://vettd-releases/manifests/${TAG}/latest.signature.json \
+                  aws s3 cp /tmp/latest.signature.json s3://ah-scanner-releases/manifests/${TAG}/latest.signature.json \
                       --content-type application/json
 
             # Sign the plain-text checksums file with the same KMS key used for
@@ -355,10 +355,10 @@ jobs:
               run: |
                   TAG="${{ steps.tag.outputs.TAG }}"
                   aws s3 cp release/checksums.txt \
-                      "s3://vettd-releases/${TAG}/checksums.txt" \
+                      "s3://ah-scanner-releases/${TAG}/checksums.txt" \
                       --content-type text/plain
                   aws s3 cp release/checksums.txt.sig \
-                      "s3://vettd-releases/${TAG}/checksums.txt.sig" \
+                      "s3://ah-scanner-releases/${TAG}/checksums.txt.sig" \
                       --content-type application/json
 
             # Attach the signed checksums to the GitHub Release so users who
@@ -424,7 +424,7 @@ jobs:
                   token: ${{ env.HOMEBREW_TAP_TOKEN }}
                   path: homebrew-tap
 
-            - name: Update Formula/vettd.rb
+            - name: Update Formula/proov.rb
               if: env.HOMEBREW_TAP_TOKEN != ''
               working-directory: homebrew-tap
               env:
@@ -437,7 +437,7 @@ jobs:
                   export LINUX_AMD64_SHA=$(sha256sum ../release/vettd-linux-amd64.tar.gz | awk '{print $1}')
 
                   ruby <<'RUBY'
-                  path = "Formula/vettd.rb"
+                  path = "Formula/proov.rb"
                   text = File.read(path)
 
                   replacements = {
@@ -457,7 +457,7 @@ jobs:
                   File.write(path, text)
                   RUBY
 
-                  git --no-pager diff -- Formula/vettd.rb
+                  git --no-pager diff -- Formula/proov.rb
 
             - name: Commit and push formula
               if: env.HOMEBREW_TAP_TOKEN != ''
@@ -466,13 +466,13 @@ jobs:
                   VERSION: ${{ steps.release_meta.outputs.VERSION }}
               run: |
                   set -euo pipefail
-                  if git diff --quiet -- Formula/vettd.rb; then
+                  if git diff --quiet -- Formula/proov.rb; then
                     echo "Formula already up to date."
                     exit 0
                   fi
 
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                  git add Formula/vettd.rb
-                  git commit -m "vettd ${VERSION}"
+                  git add Formula/proov.rb
+                  git commit -m "proov ${VERSION}"
                   git push origin HEAD:main
