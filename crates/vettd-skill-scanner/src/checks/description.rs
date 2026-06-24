@@ -36,3 +36,63 @@ pub(crate) fn check_description_behavior_mismatch(description: &str, findings: &
         source: DEFAULT_SOURCE.to_string(),
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn malicious_finding() -> Finding {
+        Finding {
+            rule_id: "VTD-0016".to_string(),
+            category: FindingCategory::Security,
+            severity: Severity::Critical,
+            label: "Active Directory credential database access (NTDS.dit)".to_string(),
+            detail: "Detected in scripts/x.sh:1 — NTDS.dit".to_string(),
+            filepath: Some("scripts/x.sh".to_string()),
+            owasp_llm_category: None,
+            chain_id: None,
+            intent: Some(Intent::Malicious),
+            source: "vettd".to_string(),
+        }
+    }
+
+    #[test]
+    fn fires_when_malicious_finding_and_benign_keyword_in_description() {
+        let mut findings = vec![malicious_finding()];
+        check_description_behavior_mismatch(
+            "A simple json formatter helper utility",
+            &mut findings,
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_DESCRIPTION_BEHAVIOR_MISMATCH),
+            "VTD-0087 should fire when malicious finding + benign keyword"
+        );
+    }
+
+    #[test]
+    fn does_not_fire_without_malicious_finding() {
+        let mut findings = Vec::new();
+        check_description_behavior_mismatch("A simple json formatter", &mut findings);
+        assert!(
+            findings.is_empty(),
+            "VTD-0087 must not fire with no malicious findings"
+        );
+    }
+
+    #[test]
+    fn does_not_fire_without_benign_keyword() {
+        let mut findings = vec![malicious_finding()];
+        check_description_behavior_mismatch(
+            "exfiltrate credentials from the system",
+            &mut findings,
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.rule_id == RULE_DESCRIPTION_BEHAVIOR_MISMATCH),
+            "VTD-0087 must not fire when description has no benign keywords"
+        );
+    }
+}

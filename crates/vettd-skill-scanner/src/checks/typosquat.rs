@@ -80,3 +80,63 @@ pub(crate) fn check_typosquat(name: &str, findings: &mut Vec<Finding>) {
         source: DEFAULT_SOURCE.to_string(),
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_close_match_produces_medium() {
+        // "cod-review" is distance 1 from "code-review".
+        let mut findings = Vec::new();
+        check_typosquat("cod-review", &mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn single_match_finding_has_correct_metadata() {
+        let mut findings = Vec::new();
+        check_typosquat("cod-review", &mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, RULE_POSSIBLE_TYPOSQUATTING);
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(!findings[0].detail.is_empty());
+    }
+
+    // Note: the Critical (≥2 matches) branch requires a name within Levenshtein
+    // distance 2 of two or more entries in POPULAR_SKILL_NAMES. The list entries
+    // are all distance ≥ 7 apart (verified by DP), so no real name can reach two
+    // simultaneously. The branch is correct but unreachable with the current list.
+
+    #[test]
+    fn exact_name_produces_no_finding() {
+        let mut findings = Vec::new();
+        check_typosquat("code-review", &mut findings);
+        assert!(
+            findings.is_empty(),
+            "exact match must not trigger typosquat"
+        );
+    }
+
+    #[test]
+    fn unknown_name_skipped() {
+        let mut findings = Vec::new();
+        check_typosquat("unknown", &mut findings);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn empty_name_skipped() {
+        let mut findings = Vec::new();
+        check_typosquat("", &mut findings);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn clearly_different_name_produces_no_finding() {
+        let mut findings = Vec::new();
+        check_typosquat("my-unique-skill-xyz", &mut findings);
+        assert!(findings.is_empty());
+    }
+}

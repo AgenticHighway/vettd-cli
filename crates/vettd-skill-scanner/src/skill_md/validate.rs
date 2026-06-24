@@ -33,3 +33,49 @@ pub(crate) fn validate_name(name: &str) -> Option<&'static str> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_name_is_invalid() {
+        assert!(validate_name("").is_some());
+    }
+
+    #[test]
+    fn name_over_64_chars_is_invalid() {
+        let long = "a".repeat(65);
+        assert!(validate_name(&long).is_some());
+    }
+
+    #[test]
+    fn leading_hyphen_is_invalid() {
+        assert!(validate_name("-my-skill").is_some());
+    }
+
+    #[test]
+    fn trailing_hyphen_is_invalid() {
+        assert!(validate_name("my-skill-").is_some());
+    }
+
+    #[test]
+    fn consecutive_hyphens_invalid() {
+        assert!(validate_name("my--skill").is_some());
+    }
+
+    #[test]
+    fn invalid_char_rejected() {
+        assert!(validate_name("my_skill").is_some());
+        assert!(validate_name("my skill").is_some());
+        assert!(validate_name("my.skill").is_some());
+    }
+
+    #[test]
+    fn valid_names_accepted() {
+        assert!(validate_name("my-skill").is_none());
+        assert!(validate_name("skill123").is_none());
+        assert!(validate_name("a").is_none());
+        assert!(validate_name("abc-def-123").is_none());
+    }
+}

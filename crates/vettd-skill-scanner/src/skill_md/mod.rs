@@ -129,3 +129,61 @@ fn strip_quotes(s: &str) -> &str {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_basic_frontmatter_fields() {
+        let input = "---\nname: my-skill\ndescription: Does a thing.\nrepository: https://github.com/x/y\n---\n# Body\nSome content.";
+        let parsed = parse_skill_md(input);
+        assert_eq!(parsed.name, "my-skill");
+        assert_eq!(parsed.description, "Does a thing.");
+        assert_eq!(parsed.repository, "https://github.com/x/y");
+        assert!(parsed.body.contains("Body"));
+    }
+
+    #[test]
+    fn no_frontmatter_returns_unknown_name() {
+        let input = "# Just a plain document\nNo frontmatter here.";
+        let parsed = parse_skill_md(input);
+        assert_eq!(parsed.name, "unknown");
+        assert!(parsed.description.is_empty());
+        assert_eq!(parsed.body, input);
+    }
+
+    #[test]
+    fn strips_leading_blank_lines_from_body() {
+        let input = "---\nname: test\n---\n\n\n# Start";
+        let parsed = parse_skill_md(input);
+        assert!(
+            !parsed.body.starts_with('\n'),
+            "leading blank lines should be stripped"
+        );
+    }
+
+    #[test]
+    fn quoted_values_are_unquoted() {
+        let input = "---\nname: \"my-skill\"\ndescription: 'does stuff'\n---\n";
+        let parsed = parse_skill_md(input);
+        assert_eq!(parsed.name, "my-skill");
+        assert_eq!(parsed.description, "does stuff");
+    }
+
+    #[test]
+    fn block_scalar_description_joined() {
+        let input = "---\nname: test\ndescription:\n  A longer\n  description here.\n---\n";
+        let parsed = parse_skill_md(input);
+        assert!(parsed.description.contains("A longer"));
+        assert!(parsed.description.contains("description here."));
+    }
+
+    #[test]
+    fn malformed_close_fence_returns_unknown() {
+        // "---x" inline with other chars is not a valid close fence.
+        let input = "---\nname: test\n---x\n# body";
+        let parsed = parse_skill_md(input);
+        assert_eq!(parsed.name, "unknown");
+    }
+}

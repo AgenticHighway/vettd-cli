@@ -200,3 +200,134 @@ pub(crate) fn is_likely_cli_script(path: &str, content: &str) -> bool {
     let depth = path.split('/').count();
     depth <= 2 || has_cli_hint(content)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- has_examples ---
+    #[test]
+    fn has_examples_detects_code_fence() {
+        assert!(has_examples("some text\n```bash\necho hi\n```"));
+    }
+    #[test]
+    fn has_examples_detects_example_heading() {
+        assert!(has_examples("## Example\nsome content"));
+    }
+    #[test]
+    fn has_examples_false_when_absent() {
+        assert!(!has_examples("Just a plain description."));
+    }
+
+    // --- has_gotchas ---
+    #[test]
+    fn has_gotchas_detects_heading() {
+        assert!(has_gotchas("## Gotchas\nWatch out for X."));
+        assert!(has_gotchas("# Common Mistakes\n- Do not do Y."));
+    }
+    #[test]
+    fn has_gotchas_false_when_absent() {
+        assert!(!has_gotchas("No gotchas here."));
+    }
+
+    // --- has_checklist ---
+    #[test]
+    fn has_checklist_detects_task_item() {
+        assert!(has_checklist("- [ ] step one\n- [ ] step two"));
+    }
+    #[test]
+    fn has_checklist_detects_heading() {
+        assert!(has_checklist("## Checklist\nDo the thing."));
+    }
+    #[test]
+    fn has_checklist_false_when_absent() {
+        assert!(!has_checklist("No checklist here."));
+    }
+
+    // --- has_validation ---
+    #[test]
+    fn has_validation_detects_validat_substring() {
+        assert!(has_validation("Run the validator to check."));
+    }
+    #[test]
+    fn has_validation_parity_bug_matches_invalidation() {
+        // Intentional parity with vettd hasValidation bug — do not fix.
+        assert!(has_validation("This step handles cache invalidation."));
+    }
+    #[test]
+    fn has_validation_detects_verification_heading() {
+        assert!(has_validation("## Verification\nCheck the output."));
+    }
+    #[test]
+    fn has_validation_false_when_absent() {
+        assert!(!has_validation("No checks here."));
+    }
+
+    // --- has_workflow ---
+    #[test]
+    fn has_workflow_detects_numbered_list() {
+        assert!(has_workflow("1. First step\n2. Second step"));
+    }
+    #[test]
+    fn has_workflow_detects_heading() {
+        assert!(has_workflow("## Steps\nDo this first."));
+    }
+    #[test]
+    fn has_workflow_false_when_absent() {
+        assert!(!has_workflow("Just a short note."));
+    }
+
+    // --- has_usage_context ---
+    #[test]
+    fn has_usage_context_detects_use_this() {
+        assert!(has_usage_context(
+            "Use this skill when you need to format JSON."
+        ));
+    }
+    #[test]
+    fn has_usage_context_detects_when_need() {
+        assert!(has_usage_context("when you need a quick summary"));
+    }
+    #[test]
+    fn has_usage_context_false_when_absent() {
+        assert!(!has_usage_context("Formats and sorts data."));
+    }
+
+    // --- has_external_url ---
+    #[test]
+    fn has_external_url_detects_https() {
+        assert!(has_external_url("See https://example.com for more."));
+    }
+    #[test]
+    fn has_external_url_false_when_absent() {
+        assert!(!has_external_url("No links here."));
+    }
+
+    // --- is_likely_cli_script ---
+    #[test]
+    fn shell_script_directly_under_scripts_is_cli() {
+        assert!(is_likely_cli_script("scripts/run.sh", "#!/bin/bash"));
+    }
+    #[test]
+    fn non_scripts_path_is_not_cli() {
+        assert!(!is_likely_cli_script("src/main.py", "import sys"));
+    }
+    #[test]
+    fn data_file_in_scripts_is_not_cli() {
+        assert!(!is_likely_cli_script("scripts/config.json", "{}"));
+    }
+    #[test]
+    fn helper_subdir_without_cli_hint_is_not_cli() {
+        assert!(!is_likely_cli_script(
+            "scripts/helpers/util.py",
+            "def helper(): pass"
+        ));
+    }
+    #[test]
+    fn helper_subdir_with_cli_hint_is_cli() {
+        assert!(is_likely_cli_script(
+            "scripts/helpers/main.py",
+            "import argparse\nparser = argparse.ArgumentParser()"
+        ));
+    }
+}

