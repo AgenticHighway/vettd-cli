@@ -128,8 +128,14 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
             }
             Ok(())
         }
-        Err(contract_sync::SyncError::Unreachable(_))
-        | Err(contract_sync::SyncError::ServerError(_)) => Ok(()),
+        Err(contract_sync::SyncError::Unreachable(msg)) => Err(format!(
+            "Cannot reach contract endpoint to verify compatibility: {msg}\n\
+             Refusing to submit credentials to an unverified endpoint."
+        )),
+        Err(contract_sync::SyncError::ServerError(msg)) => Err(format!(
+            "Contract endpoint returned an error: {msg}\n\
+             Refusing to submit credentials until the endpoint can be verified."
+        )),
     }
 }
 

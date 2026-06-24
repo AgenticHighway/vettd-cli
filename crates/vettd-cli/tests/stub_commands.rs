@@ -1,11 +1,18 @@
-//! Fail-loud assertions for the web-facing command stubs scaffolded in #149.
+//! Fail-loud assertions for web-facing command stubs that remain unimplemented.
 //!
 //! `not_implemented` calls `std::process::exit`, so it cannot be exercised
 //! in-process. These tests launch the real `vettd` binary and assert that each
-//! representative stub: exits with code 2, keeps stdout (the machine channel)
+//! remaining stub: exits with code 2, keeps stdout (the machine channel)
 //! empty, and prints the not-implemented notice to stderr. If a stub ever
 //! silently exits 0, stops printing the notice, or collapses onto exit(1),
 //! these tests fail.
+//!
+//! Commands removed from this file are now fully implemented:
+//!   auth status, contract status, directory search, directory list,
+//!   directory view, directory findings, directory compare.
+//!
+//! Remaining stubs (blocked on vettd#631 backend work):
+//!   directory trending, directory random.
 
 use std::process::Command;
 
@@ -36,26 +43,6 @@ fn assert_stub(args: &[&str]) {
 }
 
 #[test]
-fn auth_status_is_not_implemented() {
-    assert_stub(&["auth", "status"]);
-}
-
-#[test]
-fn contract_status_is_not_implemented() {
-    assert_stub(&["contract", "status"]);
-}
-
-#[test]
-fn directory_search_is_not_implemented() {
-    assert_stub(&["directory", "search", "query"]);
-}
-
-#[test]
-fn directory_list_is_not_implemented() {
-    assert_stub(&["directory", "list"]);
-}
-
-#[test]
 fn directory_trending_is_not_implemented() {
     assert_stub(&["directory", "trending"]);
 }
@@ -63,19 +50,4 @@ fn directory_trending_is_not_implemented() {
 #[test]
 fn directory_random_is_not_implemented() {
     assert_stub(&["directory", "random"]);
-}
-
-#[test]
-fn directory_view_is_not_implemented() {
-    assert_stub(&["directory", "view", "some-slug"]);
-}
-
-#[test]
-fn directory_findings_is_not_implemented() {
-    assert_stub(&["directory", "findings", "some-slug"]);
-}
-
-#[test]
-fn directory_compare_is_not_implemented() {
-    assert_stub(&["directory", "compare", "slug-a", "slug-b"]);
 }

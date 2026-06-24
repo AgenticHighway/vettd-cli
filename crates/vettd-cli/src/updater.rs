@@ -107,24 +107,10 @@ pub fn platform_key() -> Result<&'static str, String> {
 // Version comparison (simple semver: major.minor.patch)
 // ---------------------------------------------------------------------------
 
-fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
-    let v = v.strip_prefix('v').unwrap_or(v);
-    let parts: Vec<&str> = v.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    Some((
-        parts[0].parse().ok()?,
-        parts[1].parse().ok()?,
-        parts[2].parse().ok()?,
-    ))
-}
-
 fn is_version_newer(current: &str, latest: &str) -> bool {
-    match (parse_semver(current), parse_semver(latest)) {
-        (Some(c), Some(l)) => l > c,
-        _ => false,
-    }
+    crate::semver::cmp(current, latest)
+        .map(|ord| ord == std::cmp::Ordering::Less)
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -587,17 +573,17 @@ mod tests {
 
     #[test]
     fn test_parse_semver_basic() {
-        assert_eq!(parse_semver("0.3.0"), Some((0, 3, 0)));
-        assert_eq!(parse_semver("v1.2.3"), Some((1, 2, 3)));
-        assert_eq!(parse_semver("10.20.30"), Some((10, 20, 30)));
+        assert_eq!(crate::semver::parse("0.3.0"), Some((0, 3, 0)));
+        assert_eq!(crate::semver::parse("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(crate::semver::parse("10.20.30"), Some((10, 20, 30)));
     }
 
     #[test]
     fn test_parse_semver_invalid() {
-        assert_eq!(parse_semver(""), None);
-        assert_eq!(parse_semver("1.2"), None);
-        assert_eq!(parse_semver("not-a-version"), None);
-        assert_eq!(parse_semver("1.2.x"), None);
+        assert_eq!(crate::semver::parse(""), None);
+        assert_eq!(crate::semver::parse("1.2"), None);
+        assert_eq!(crate::semver::parse("not-a-version"), None);
+        assert_eq!(crate::semver::parse("1.2.x"), None);
     }
 
     #[test]

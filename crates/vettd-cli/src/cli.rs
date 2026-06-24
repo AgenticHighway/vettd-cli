@@ -413,9 +413,123 @@ fn apply_access_gate(report: ScanReport, access: &AccessConfig) -> ScanReport {
 
 /// Print a clear not-implemented notice to stderr and exit non-zero.
 ///
-/// Used by web-facing command stubs (auth status, contract status, directory)
-/// scaffolded ahead of their backend logic. Exit code 2 marks the
-/// recognized-but-unimplemented class distinctly from runtime errors (exit 1).
+/// Implement `vettd auth status`.
+///
+/// Exit codes: 0 = configured and reachable, 3 = not configured, 5 = unreachable.
+fn handle_auth_status() -> i32 {
+    let config = crate::submit::load_auth_config();
+
+    // Local half — always print what we know.
+    match &config {
+        None => {
+            println!("Not configured. Run `vettd auth` to set up credentials.");
+        }
+        Some(cfg) => {
+            let host = crate::network::endpoint_display_host(&cfg.endpoint);
+            println!("Endpoint:  {host}");
+            println!("API key:   set");
+        }
+    }
+
+    // Scanner identity files (read-only — do not generate if absent).
+    let scanner_uuid = crate::identity::default_scanner_uuid_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let account_uuid = crate::identity::default_scanner_account_uuid_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    println!(
+        "Scanner UUID:  {}",
+        scanner_uuid.as_deref().unwrap_or("not set")
+    );
+    println!(
+        "Account UUID:  {}",
+        account_uuid.as_deref().unwrap_or("not set")
+    );
+
+    if config.is_none() {
+        return 3;
+    }
+
+    // Reachability probe via the public contract endpoint (no auth header).
+    let endpoint = config.unwrap().endpoint;
+    let contract_url = format!(
+        "{}?version=true",
+        crate::network::derive_api_url(&endpoint, "contract")
+    );
+    match crate::read_client::fetch_raw(&contract_url) {
+        Ok(_) => {
+            println!("Reachability: ok");
+            0
+        }
+        Err(crate::read_client::ReadError::Unreachable(msg)) => {
+            println!("Reachability: unreachable ({msg})");
+            5
+        }
+        Err(_) => {
+            // Any HTTP response (even an error status) means the server was reached.
+            println!("Reachability: ok");
+            0
+        }
+    }
+}
+
+/// Implement `vettd contract status`.
+///
+/// Exit codes: 0 = match, 3 = behind (server ahead), 4 = ahead (CLI forked),
+/// 5 = unreachable or unparseable server version.
+fn handle_contract_status() -> i32 {
+    let endpoint = crate::submit::load_auth_config()
+        .map(|c| c.endpoint)
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
+
+    let local = crate::contract_sync::COMPILED_CONTRACT_VERSION;
+
+    match crate::contract_sync::fetch_server_contract_version(&endpoint) {
+        Ok(server) => match crate::semver::cmp(local, &server) {
+            Some(std::cmp::Ordering::Equal) => {
+                println!("Contract: up to date (v{local})");
+                0
+            }
+            Some(std::cmp::Ordering::Less) => {
+                println!(
+                    "Contract: behind — compiled v{local}, server v{server}. \
+                     Run `vettd update` to upgrade."
+                );
+                3
+            }
+            Some(std::cmp::Ordering::Greater) => {
+                println!(
+                    "Contract: ahead — compiled v{local}, server v{server}. \
+                     This build produces a newer contract than the server expects."
+                );
+                4
+            }
+            None => {
+                eprintln!("Error: could not parse server contract version '{server}' as semver.");
+                5
+            }
+        },
+        Err(crate::contract_sync::SyncError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach contract endpoint: {msg}");
+            5
+        }
+        Err(crate::contract_sync::SyncError::ServerError(msg)) => {
+            eprintln!("Error: contract endpoint error: {msg}");
+            5
+        }
+    }
+}
+
+/// Exit with code 2 for commands that are scaffolded but not yet implemented.
+///
+/// Exit code 2 distinguishes recognized-but-unimplemented from runtime errors
+/// (exit 1) and allows scripts to detect this specific state.
 fn not_implemented(command: &str) -> ! {
     eprintln!("Error: `vettd {command}` is not yet implemented.");
     std::process::exit(2);
@@ -487,7 +601,7 @@ pub fn run() {
     } = &cmd
     {
         if let Some(AuthSubcommand::Status) = action {
-            not_implemented("auth status");
+            std::process::exit(handle_auth_status());
         }
         let api_key = match key {
             Some(value) => value.clone(),
@@ -538,29 +652,28 @@ pub fn run() {
         return;
     }
 
-    // Handle contract command (stub — vettd#631 owns real logic)
+    // Handle contract command
     if let Commands::Contract { action } = &cmd {
         match action {
-            ContractSubcommand::Status => not_implemented("contract status"),
+            ContractSubcommand::Status => std::process::exit(handle_contract_status()),
         }
-        // Unreachable while all arms diverge; guards fallthrough when real arms land.
-        #[allow(unreachable_code)]
-        return;
     }
 
-    // Handle directory command (stub — vettd#631 owns real logic)
+    // Handle directory commands
     if let Commands::Directory { action } = &cmd {
         match action {
-            DirectorySubcommand::Search { .. } => not_implemented("directory search"),
-            DirectorySubcommand::List => not_implemented("directory list"),
+            DirectorySubcommand::Search { query } => crate::directory::handle_search(query),
+            DirectorySubcommand::List => crate::directory::handle_list(),
             DirectorySubcommand::Trending => not_implemented("directory trending"),
             DirectorySubcommand::Random => not_implemented("directory random"),
-            DirectorySubcommand::View { .. } => not_implemented("directory view"),
-            DirectorySubcommand::Findings { .. } => not_implemented("directory findings"),
-            DirectorySubcommand::Compare { .. } => not_implemented("directory compare"),
+            DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
+            DirectorySubcommand::Findings { slug, min_severity } => {
+                crate::directory::handle_findings(slug, min_severity)
+            }
+            DirectorySubcommand::Compare { slug_a, slug_b } => {
+                crate::directory::handle_compare(slug_a, slug_b)
+            }
         }
-        // Unreachable while all arms diverge; guards fallthrough when real arms land.
-        #[allow(unreachable_code)]
         return;
     }
 

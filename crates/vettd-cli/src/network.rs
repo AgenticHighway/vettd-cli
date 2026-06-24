@@ -77,6 +77,15 @@ pub fn ensure_endpoint_allowed(endpoint: &str, allow_public: bool) -> Result<(),
         return Err(format!("No hostname found in endpoint: {endpoint}"));
     }
 
+    // Require HTTPS for public hosts. Local/private hosts may use plain HTTP
+    // (dev servers, self-hosted VPC deployments with an internal TLS terminator).
+    if scheme == "http" && !is_local_or_private_host(hostname) {
+        return Err(format!(
+            "Endpoint '{endpoint}' uses HTTP with a public host. \
+             Use HTTPS to protect credentials in transit."
+        ));
+    }
+
     if !allow_public && !is_local_or_private_host(hostname) {
         return Err(format!(
             "Endpoint host '{hostname}' is not a local/private address. \
@@ -85,6 +94,30 @@ pub fn ensure_endpoint_allowed(endpoint: &str, allow_public: bool) -> Result<(),
     }
 
     Ok(())
+}
+
+/// Derive a sibling API URL from an ingest endpoint.
+///
+/// Strips the ingest-specific path segments and appends `resource`.
+///
+/// ```
+/// # use vettd::network::derive_api_url;
+/// assert_eq!(
+///     derive_api_url("https://vettd.agentichighway.ai/api/scans/ingest", "directory"),
+///     "https://vettd.agentichighway.ai/api/directory"
+/// );
+/// ```
+pub fn derive_api_url(ingest_endpoint: &str, resource: &str) -> String {
+    if let Some(base) = ingest_endpoint.strip_suffix("/scans/ingest") {
+        format!("{base}/{resource}")
+    } else if let Some(base) = ingest_endpoint.strip_suffix("/ingest") {
+        format!("{base}/../{resource}").replace("/../", "/")
+    } else {
+        match ingest_endpoint.rfind("/api/") {
+            Some(idx) => format!("{}/{resource}", &ingest_endpoint[..idx + 4]),
+            None => format!("{}/api/{resource}", ingest_endpoint.trim_end_matches('/')),
+        }
+    }
 }
 
 /// Extract the `host` (and optional `:port`) portion of an endpoint URL for
@@ -214,5 +247,55 @@ mod tests {
     #[test]
     fn display_host_no_scheme() {
         assert_eq!(endpoint_display_host("localhost:3000"), "localhost:3000");
+    }
+
+    // ---- HTTPS enforcement ----
+
+    #[test]
+    fn public_http_rejected() {
+        // Public host with plain HTTP must be rejected regardless of allow_public.
+        assert!(ensure_endpoint_allowed("http://example.com/api", true).is_err());
+        assert!(ensure_endpoint_allowed("http://8.8.8.8/api", true).is_err());
+    }
+
+    #[test]
+    fn local_http_allowed() {
+        // Local/private hosts may use HTTP (dev servers, VPC deployments).
+        assert!(ensure_endpoint_allowed("http://localhost:8080/api", true).is_ok());
+        assert!(ensure_endpoint_allowed("http://192.168.1.1/api", true).is_ok());
+        assert!(ensure_endpoint_allowed("http://10.0.0.1/api", true).is_ok());
+    }
+
+    #[test]
+    fn public_https_allowed_with_flag() {
+        assert!(ensure_endpoint_allowed("https://example.com/api", true).is_ok());
+    }
+
+    // ---- derive_api_url ----
+
+    #[test]
+    fn derive_url_from_standard_ingest_endpoint() {
+        assert_eq!(
+            derive_api_url(
+                "https://vettd.agentichighway.ai/api/scans/ingest",
+                "directory"
+            ),
+            "https://vettd.agentichighway.ai/api/directory"
+        );
+        assert_eq!(
+            derive_api_url(
+                "https://vettd.agentichighway.ai/api/scans/ingest",
+                "contract"
+            ),
+            "https://vettd.agentichighway.ai/api/contract"
+        );
+    }
+
+    #[test]
+    fn derive_url_from_localhost() {
+        assert_eq!(
+            derive_api_url("http://localhost:3000/api/scans/ingest", "directory"),
+            "http://localhost:3000/api/directory"
+        );
     }
 }
