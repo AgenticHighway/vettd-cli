@@ -103,6 +103,9 @@ vettd repo <path>          # Deep-scan a git repository
 vettd setup                # Interactive connected-mode setup (API key + endpoint)
 vettd auth                 # Prompt securely for an API key and save it
 vettd auth --key <key>     # Save API credentials directly (useful for automation)
+vettd auth status          # Show auth/identity status (coming soon)
+vettd contract status      # Show local vs. server contract status (coming soon)
+vettd directory <cmd>      # Browse the public directory: search|list|trending|random|view|findings|compare (coming soon)
 vettd update               # Check for and install updates
 vettd rules list           # List installed custom detection rules
 vettd rules add <file>     # Install a TOML rule file
