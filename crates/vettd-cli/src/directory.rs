@@ -53,7 +53,6 @@ pub struct DirectorySkillDetail {
     pub badge_status: Option<String>,
     pub overall_grade: Option<String>,
     pub download_count: Option<i64>,
-    pub verdict_rationale: Option<String>,
     pub findings: Vec<DirectoryFinding>,
     pub scanner_runs: Vec<ScannerRun>,
 }
@@ -282,10 +281,6 @@ pub fn handle_view(slug: &str) {
         fmt_severity_breakdown(c, h, m, l, i)
     );
     println!("  External scanners: {ext_scanners}");
-    if let Some(rationale) = &detail.verdict_rationale {
-        println!();
-        println!("  Verdict: {rationale}");
-    }
 }
 
 pub fn handle_findings(slug: &str, min_severity: &str) {
