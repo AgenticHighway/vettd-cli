@@ -424,7 +424,7 @@ jobs:
                   token: ${{ env.HOMEBREW_TAP_TOKEN }}
                   path: homebrew-tap
 
-            - name: Update Formula/proov.rb
+            - name: Update Formula/vettd.rb
               if: env.HOMEBREW_TAP_TOKEN != ''
               working-directory: homebrew-tap
               env:
@@ -437,7 +437,7 @@ jobs:
                   export LINUX_AMD64_SHA=$(sha256sum ../release/vettd-linux-amd64.tar.gz | awk '{print $1}')
 
                   ruby <<'RUBY'
-                  path = "Formula/proov.rb"
+                  path = "Formula/vettd.rb"
                   text = File.read(path)
 
                   replacements = {
@@ -457,7 +457,7 @@ jobs:
                   File.write(path, text)
                   RUBY
 
-                  git --no-pager diff -- Formula/proov.rb
+                  git --no-pager diff -- Formula/vettd.rb
 
             - name: Commit and push formula
               if: env.HOMEBREW_TAP_TOKEN != ''
@@ -466,13 +466,13 @@ jobs:
                   VERSION: ${{ steps.release_meta.outputs.VERSION }}
               run: |
                   set -euo pipefail
-                  if git diff --quiet -- Formula/proov.rb; then
+                  if git diff --quiet -- Formula/vettd.rb; then
                     echo "Formula already up to date."
                     exit 0
                   fi
 
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                  git add Formula/proov.rb
-                  git commit -m "proov ${VERSION}"
+                  git add Formula/vettd.rb
+                  git commit -m "vettd ${VERSION}"
                   git push origin HEAD:main
