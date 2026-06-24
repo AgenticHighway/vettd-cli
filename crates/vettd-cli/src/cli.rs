@@ -416,6 +416,25 @@ fn apply_access_gate(report: ScanReport, access: &AccessConfig) -> ScanReport {
 /// Implement `vettd auth status`.
 ///
 /// Exit codes: 0 = configured and reachable, 3 = not configured, 5 = unreachable.
+#[derive(serde::Deserialize)]
+struct WhoamiUser {
+    name: Option<String>,
+    email: Option<String>,
+    role: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhoamiApiKeyInfo {
+    name: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhoamiResponse {
+    user: WhoamiUser,
+    #[serde(rename = "apiKey")]
+    api_key: WhoamiApiKeyInfo,
+}
+
 fn handle_auth_status() -> i32 {
     let config = crate::submit::load_auth_config();
 
@@ -456,24 +475,66 @@ fn handle_auth_status() -> i32 {
         return 3;
     }
 
+    let cfg_inner = config.unwrap();
+    let endpoint = cfg_inner.endpoint;
+    let api_key = cfg_inner.api_key;
+
     // Reachability probe via the public contract endpoint (no auth header).
-    let endpoint = config.unwrap().endpoint;
     let contract_url = format!(
         "{}?version=true",
         crate::network::derive_api_url(&endpoint, "contract")
     );
     match crate::read_client::fetch_raw(&contract_url) {
-        Ok(_) => {
-            println!("Reachability: ok");
-            0
-        }
         Err(crate::read_client::ReadError::Unreachable(msg)) => {
             println!("Reachability: unreachable ({msg})");
-            5
+            return 5;
         }
-        Err(_) => {
+        _ => {
             // Any HTTP response (even an error status) means the server was reached.
             println!("Reachability: ok");
+        }
+    }
+
+    // Whoami — authenticated GET to confirm the key is valid and fetch identity.
+    let whoami_url = crate::network::derive_api_url(&endpoint, "auth/whoami");
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    match agent
+        .get(&whoami_url)
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("User-Agent", &crate::updater::user_agent_string())
+        .call()
+    {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            if status == 401 || status == 403 {
+                println!("Identity:  API key invalid or revoked");
+                return 3;
+            }
+            if status == 200 {
+                if let Ok(whoami) = response.body_mut().read_json::<WhoamiResponse>() {
+                    if let Some(name) = &whoami.user.name {
+                        println!("Account:   {name}");
+                    }
+                    if let Some(email) = &whoami.user.email {
+                        println!("Email:     {email}");
+                    }
+                    if let Some(role) = &whoami.user.role {
+                        println!("Role:      {role}");
+                    }
+                    if let Some(key_name) = &whoami.api_key.name {
+                        println!("Key name:  {key_name}");
+                    }
+                }
+            }
+            0
+        }
+        Err(_) => {
+            // Server was reachable (confirmed above) but whoami failed at the
+            // transport layer — treat as a transient error, don't change exit code.
             0
         }
     }
@@ -664,8 +725,8 @@ pub fn run() {
         match action {
             DirectorySubcommand::Search { query } => crate::directory::handle_search(query),
             DirectorySubcommand::List => crate::directory::handle_list(),
-            DirectorySubcommand::Trending => not_implemented("directory trending"),
-            DirectorySubcommand::Random => not_implemented("directory random"),
+            DirectorySubcommand::Trending => crate::directory::handle_trending(),
+            DirectorySubcommand::Random => crate::directory::handle_random(),
             DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
             DirectorySubcommand::Findings { slug, min_severity } => {
                 crate::directory::handle_findings(slug, min_severity)

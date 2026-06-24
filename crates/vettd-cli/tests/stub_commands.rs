@@ -9,45 +9,7 @@
 //!
 //! Commands removed from this file are now fully implemented:
 //!   auth status, contract status, directory search, directory list,
-//!   directory view, directory findings, directory compare.
-//!
-//! Remaining stubs (blocked on vettd#631 backend work):
+//!   directory view, directory findings, directory compare,
 //!   directory trending, directory random.
-
-use std::process::Command;
-
-fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_vettd"))
-        .args(args)
-        .output()
-        .expect("failed to launch vettd binary")
-}
-
-fn assert_stub(args: &[&str]) {
-    let out = run(args);
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "expected exit code 2 for {args:?}"
-    );
-    assert!(
-        out.stdout.is_empty(),
-        "stub must not write to stdout for {args:?}, got: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("not yet implemented"),
-        "stub must print not-implemented notice to stderr for {args:?}, got: {stderr}"
-    );
-}
-
-#[test]
-fn directory_trending_is_not_implemented() {
-    assert_stub(&["directory", "trending"]);
-}
-
-#[test]
-fn directory_random_is_not_implemented() {
-    assert_stub(&["directory", "random"]);
-}
+//!
+//! No stubs remain (all #631-blocked items are now implemented).

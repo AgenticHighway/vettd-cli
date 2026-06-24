@@ -67,6 +67,7 @@ pub struct DirectoryFinding {
     pub label: String,
     pub detail: Option<String>,
     pub source: Option<String>,
+    pub filepath: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -373,6 +374,55 @@ pub fn handle_compare(slug_a: &str, slug_b: &str) {
     println!("  Scanners: {scanners_a_s:<36}  {scanners_b_s}");
 }
 
+pub fn handle_trending() {
+    let url = format!("{}?sort=downloads", directory_base_url());
+    match read_client::fetch_json::<DirectoryListResponse>(&url) {
+        Ok(resp) => {
+            println!(
+                "Trending by downloads ({} skills, page {}/{}):\n",
+                resp.total, resp.page, resp.total_pages
+            );
+            for card in &resp.skills {
+                print_card(card);
+            }
+        }
+        Err(ReadError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach the vettd directory: {msg}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RandomSkillResponse {
+    pub skill: Option<DirectoryCard>,
+}
+
+pub fn handle_random() {
+    let endpoint = crate::submit::load_auth_config()
+        .map(|c| c.endpoint)
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
+    let url = crate::network::derive_api_url(&endpoint, "directory/random");
+    match read_client::fetch_json::<RandomSkillResponse>(&url) {
+        Ok(resp) => match resp.skill {
+            Some(card) => print_card(&card),
+            None => println!("No public skills available."),
+        },
+        Err(ReadError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach the vettd directory: {msg}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Card display helper
 // ---------------------------------------------------------------------------
@@ -436,6 +486,7 @@ mod tests {
                 label: "a".to_string(),
                 detail: None,
                 source: None,
+                filepath: None,
             },
             DirectoryFinding {
                 severity: "high".to_string(),
@@ -444,6 +495,7 @@ mod tests {
                 label: "b".to_string(),
                 detail: None,
                 source: None,
+                filepath: None,
             },
             DirectoryFinding {
                 severity: "info".to_string(),
@@ -452,6 +504,7 @@ mod tests {
                 label: "c".to_string(),
                 detail: None,
                 source: None,
+                filepath: None,
             },
         ];
         let (c, h, m, l, i) = count_by_severity(&findings);
