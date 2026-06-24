@@ -43,6 +43,19 @@ pub enum Commands {
         /// Allow saving a public (non-local/private) endpoint
         #[arg(long)]
         allow_public_endpoint: bool,
+        /// Optional auth subcommand (e.g. `status`)
+        #[command(subcommand)]
+        action: Option<AuthSubcommand>,
+    },
+    /// Inspect the scanner data contract
+    Contract {
+        #[command(subcommand)]
+        action: ContractSubcommand,
+    },
+    /// Browse the public vettd directory
+    Directory {
+        #[command(subcommand)]
+        action: DirectorySubcommand,
     },
     /// Check for updates and self-update the scanner binary
     Update {
@@ -121,6 +134,53 @@ pub enum RuleAction {
     Validate {
         /// Path to the .toml rule file
         path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuthSubcommand {
+    /// Show current auth/identity status (not yet implemented)
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum ContractSubcommand {
+    /// Show local vs. server contract status (not yet implemented)
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum DirectorySubcommand {
+    /// Search the directory (not yet implemented)
+    Search {
+        /// Search query
+        query: String,
+    },
+    /// List directory entries (not yet implemented)
+    List,
+    /// Show trending entries (not yet implemented)
+    Trending,
+    /// Show a random entry (not yet implemented)
+    Random,
+    /// View a directory entry by slug (not yet implemented)
+    View {
+        /// Entry slug
+        slug: String,
+    },
+    /// Show findings for an entry (not yet implemented)
+    Findings {
+        /// Entry slug
+        slug: String,
+        /// Minimum severity: critical|high|medium|low|info
+        #[arg(long, default_value = "info")]
+        min_severity: String,
+    },
+    /// Compare two directory entries (not yet implemented)
+    Compare {
+        /// First entry slug
+        slug_a: String,
+        /// Second entry slug
+        slug_b: String,
     },
 }
 
@@ -348,6 +408,20 @@ fn apply_access_gate(report: ScanReport, access: &AccessConfig) -> ScanReport {
 }
 
 // ---------------------------------------------------------------------------
+// Not-yet-implemented stubs
+// ---------------------------------------------------------------------------
+
+/// Print a clear not-implemented notice to stderr and exit non-zero.
+///
+/// Used by web-facing command stubs (auth status, contract status, directory)
+/// scaffolded ahead of their backend logic. Exit code 2 marks the
+/// recognized-but-unimplemented class distinctly from runtime errors (exit 1).
+fn not_implemented(command: &str) -> ! {
+    eprintln!("Error: `vettd {command}` is not yet implemented.");
+    std::process::exit(2);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -409,8 +483,12 @@ pub fn run() {
         key,
         endpoint,
         allow_public_endpoint,
+        action,
     } = &cmd
     {
+        if let Some(AuthSubcommand::Status) = action {
+            not_implemented("auth status");
+        }
         let api_key = match key {
             Some(value) => value.clone(),
             None => crate::wizard::ask_secret("API key"),
@@ -458,6 +536,26 @@ pub fn run() {
             }
         }
         return;
+    }
+
+    // Handle contract command (stub — vettd#631 owns real logic)
+    if let Commands::Contract { action } = &cmd {
+        match action {
+            ContractSubcommand::Status => not_implemented("contract status"),
+        }
+    }
+
+    // Handle directory command (stub — vettd#631 owns real logic)
+    if let Commands::Directory { action } = &cmd {
+        match action {
+            DirectorySubcommand::Search { .. } => not_implemented("directory search"),
+            DirectorySubcommand::List => not_implemented("directory list"),
+            DirectorySubcommand::Trending => not_implemented("directory trending"),
+            DirectorySubcommand::Random => not_implemented("directory random"),
+            DirectorySubcommand::View { .. } => not_implemented("directory view"),
+            DirectorySubcommand::Findings { .. } => not_implemented("directory findings"),
+            DirectorySubcommand::Compare { .. } => not_implemented("directory compare"),
+        }
     }
 
     // Remaining command must be Scan
@@ -954,10 +1052,13 @@ mod tests {
                 key,
                 endpoint,
                 allow_public_endpoint,
+                action,
             }) => {
                 assert_eq!(key.as_deref(), Some("ah_test123"));
                 assert!(endpoint.is_none());
                 assert!(!allow_public_endpoint);
+                // Bare connect flow: no subcommand routes to credential save.
+                assert!(action.is_none());
             }
             _ => panic!("Expected Auth command"),
         }
@@ -978,10 +1079,12 @@ mod tests {
                 key,
                 endpoint,
                 allow_public_endpoint,
+                action,
             }) => {
                 assert_eq!(key.as_deref(), Some("ah_test"));
                 assert_eq!(endpoint.unwrap(), "https://example.com/api");
                 assert!(!allow_public_endpoint);
+                assert!(action.is_none());
             }
             _ => panic!("Expected Auth command"),
         }
@@ -1003,10 +1106,12 @@ mod tests {
                 key,
                 endpoint,
                 allow_public_endpoint,
+                action,
             }) => {
                 assert_eq!(key.as_deref(), Some("ah_test"));
                 assert_eq!(endpoint.as_deref(), Some("https://example.com/api"));
                 assert!(allow_public_endpoint);
+                assert!(action.is_none());
             }
             _ => panic!("Expected Auth command"),
         }
@@ -1020,13 +1125,178 @@ mod tests {
                 key,
                 endpoint,
                 allow_public_endpoint,
+                action,
             }) => {
                 assert!(key.is_none());
                 assert!(endpoint.is_none());
                 assert!(!allow_public_endpoint);
+                assert!(action.is_none());
             }
             _ => panic!("Expected Auth command"),
         }
+    }
+
+    #[test]
+    fn parse_cli_auth_status() {
+        let cli = Cli::parse_from(["vettd", "auth", "status"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth {
+                action: Some(AuthSubcommand::Status),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_auth_key_and_status() {
+        // Parent flags must precede the subcommand token; both must parse.
+        let cli = Cli::parse_from(["vettd", "auth", "--key", "K", "status"]);
+        match cli.command {
+            Some(Commands::Auth { key, action, .. }) => {
+                assert_eq!(key.as_deref(), Some("K"));
+                assert!(matches!(action, Some(AuthSubcommand::Status)));
+            }
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_contract_status() {
+        let cli = Cli::parse_from(["vettd", "contract", "status"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Contract {
+                action: ContractSubcommand::Status
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_search() {
+        let cli = Cli::parse_from(["vettd", "directory", "search", "foo"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Search { query },
+            }) => assert_eq!(query, "foo"),
+            _ => panic!("Expected directory search command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_list() {
+        let cli = Cli::parse_from(["vettd", "directory", "list"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Directory {
+                action: DirectorySubcommand::List
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_trending() {
+        let cli = Cli::parse_from(["vettd", "directory", "trending"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Trending
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_random() {
+        let cli = Cli::parse_from(["vettd", "directory", "random"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Random
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_view() {
+        let cli = Cli::parse_from(["vettd", "directory", "view", "alpha"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::View { slug },
+            }) => assert_eq!(slug, "alpha"),
+            _ => panic!("Expected directory view command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_findings_default_severity() {
+        let cli = Cli::parse_from(["vettd", "directory", "findings", "alpha"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Findings { slug, min_severity },
+            }) => {
+                assert_eq!(slug, "alpha");
+                assert_eq!(min_severity, "info");
+            }
+            _ => panic!("Expected directory findings command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_findings_min_severity() {
+        let cli = Cli::parse_from([
+            "vettd",
+            "directory",
+            "findings",
+            "alpha",
+            "--min-severity",
+            "high",
+        ]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Findings { slug, min_severity },
+            }) => {
+                assert_eq!(slug, "alpha");
+                assert_eq!(min_severity, "high");
+            }
+            _ => panic!("Expected directory findings command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_compare() {
+        let cli = Cli::parse_from(["vettd", "directory", "compare", "a", "b"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Compare { slug_a, slug_b },
+            }) => {
+                // Positional order: first token -> slug_a, second -> slug_b.
+                assert_eq!(slug_a, "a");
+                assert_eq!(slug_b, "b");
+            }
+            _ => panic!("Expected directory compare command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_search_requires_query() {
+        assert!(Cli::try_parse_from(["vettd", "directory", "search"]).is_err());
+    }
+
+    #[test]
+    fn parse_cli_directory_compare_requires_two_slugs() {
+        assert!(Cli::try_parse_from(["vettd", "directory", "compare", "a"]).is_err());
+    }
+
+    #[test]
+    fn parse_cli_policy_not_registered() {
+        // policy is out of scope for #149 (deferred to vettd#631).
+        assert!(Cli::try_parse_from(["vettd", "policy"]).is_err());
+    }
+
+    #[test]
+    fn parse_cli_open_not_registered() {
+        // open is out of scope for #149 (deferred).
+        assert!(Cli::try_parse_from(["vettd", "open"]).is_err());
     }
 
     #[test]

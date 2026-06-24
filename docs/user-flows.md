@@ -13,6 +13,7 @@ flowchart TD
     Choice -->|"setup / auth"| Setup["Save API key + default endpoint"]
     Choice -->|"rules ..."| Rules["List, add, remove,\nvalidate custom rules"]
     Choice -->|"update"| Update["Check or install a signed update"]
+    Choice -->|"auth status / contract status /\ndirectory ..."| Stub["Stub: print notice,\nexit code 2 (vettd#631)"]
 
     Wizard --> Scan
     Scan --> Output["Render local output\nor build submission payload"]
@@ -22,8 +23,15 @@ flowchart TD
     Setup --> End
     Rules --> End
     Update --> End
+    Stub --> End
     Prompt --> End
 ```
+
+The `auth status`, `contract status`, and `directory`
+(`search`/`list`/`trending`/`random`/`view`/`findings`/`compare`) commands are
+registered in the CLI but currently scaffolded as stubs: each prints a
+not-yet-implemented notice to stderr and exits with code 2 until vettd#631
+lands the backend logic.
 
 ## Local-First Scan Journey
 
