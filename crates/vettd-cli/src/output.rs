@@ -105,7 +105,7 @@ pub fn resolve_submit_auth(
         None => match saved.as_ref().map(|c| c.api_key.clone()) {
             Some(k) => k,
             None => return Err(
-                "No API key provided. Pass --api-key for automation or run `vettd auth` / `vettd setup` to save credentials.".to_string(),
+                "No API key provided. Pass --api-key for automation or run `vettd auth` to save credentials.".to_string(),
             ),
         },
     };

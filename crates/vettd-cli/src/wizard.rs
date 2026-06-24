@@ -15,7 +15,7 @@ use crossterm::{
     terminal,
 };
 
-use crate::cli::{Commands, OutputArgs};
+use crate::cli::{OutputArgs, ScanSubcommand};
 
 // ── ANSI constants ──────────────────────────────────────────────────────
 
@@ -245,9 +245,9 @@ fn print_banner() {
 // ── Public entry point ──────────────────────────────────────────────────
 
 /// Show the interactive banner and prompt for a scan mode.
-/// Returns a `Commands` variant with default `OutputArgs` so the main
+/// Returns a `ScanSubcommand` with default `OutputArgs` so the main
 /// pipeline handles output/submit/contract-sync identically.
-pub fn pick_command() -> Commands {
+pub fn pick_scan() -> ScanSubcommand {
     print_banner();
 
     let modes = &[
@@ -262,23 +262,23 @@ pub fn pick_command() -> Commands {
     let output = OutputArgs::default();
 
     match idx {
-        0 => Commands::Scan { output },
-        1 => Commands::Quick { output },
-        2 => Commands::Full { output },
+        0 => ScanSubcommand::Default { output },
+        1 => ScanSubcommand::Quick { output },
+        2 => ScanSubcommand::Full { output },
         3 => {
             let dir = ask("Directory path", ".");
-            Commands::Folder {
+            ScanSubcommand::Folder {
                 path: PathBuf::from(dir),
                 output,
             }
         }
         4 => {
             let path = ask("File path", "");
-            Commands::File {
+            ScanSubcommand::File {
                 path: PathBuf::from(path),
                 output,
             }
         }
-        _ => Commands::Scan { output },
+        _ => ScanSubcommand::Default { output },
     }
 }
