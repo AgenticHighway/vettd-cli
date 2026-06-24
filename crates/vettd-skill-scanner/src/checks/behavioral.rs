@@ -1,0 +1,327 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::consts::{DEFAULT_SOURCE, NEGATION_LOOKBACK_CHARS};
+use crate::finding::{Finding, FindingCategory, Severity};
+use crate::rules::*;
+
+struct BehavioralPatternRaw {
+    rule_id: &'static str,
+    pattern_str: &'static str,
+    label: &'static str,
+    severity: &'static str,
+    respect_negation: bool,
+}
+
+static BEHAVIORAL_PATTERN_DEFS: &[BehavioralPatternRaw] = &[
+    // PROMPT_INJECTION_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_INSTRUCTION_OVERRIDE,
+        pattern_str: r"(?i)\b(?:ignore|disregard|forget|discard|skip)\s+(?:all\s+|every\s+|the\s+|any\s+|your\s+|my\s+|these\s+|those\s+)*(?:previous|prior|above|earlier|preceding|original|initial|former)\s+(?:instructions?|rules?|directives?|commands?|guidelines?|prompts?|messages?|context|system\s+prompts?|system\s+messages?)\b",
+        label: "Instruction override language detected",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_INSTRUCTION_OVERRIDE,
+        pattern_str: r"(?i)\bignore\s+everything\s+(?:above|before|prior|earlier|written\s+above|that\s+(?:came|was)\s+(?:before|earlier|prior))\b",
+        label: "Instruction override language detected",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SYSTEM_PROMPT_REPLACEMENT,
+        pattern_str: r"(?i)\byour\s+(?:new|real|actual|true|secret|hidden|primary|updated)\s+(?:instructions?|task|job|purpose|mission|directive|goal|objective|role)\s+(?:is|are|will\s+be|shall\s+be)\b",
+        label: "System prompt replacement attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SYSTEM_PROMPT_OVERRIDE,
+        pattern_str: r"(?i)\b(?:override|replace|substitute|supersede|overwrite)\s+(?:your|the\s+)?(?:system\s+)?(?:prompt|instructions?|programming|training)\b",
+        label: "System prompt override attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_CONTEXT_INVALIDATION,
+        pattern_str: r"(?i)\b(?:the\s+(?:above|previous|prior)|previous\s+(?:messages?|instructions?|context)|prior\s+context)\s+(?:is|are|was|were)\s+(?:fake|false|a\s+test|just\s+a\s+test|incorrect|wrong|outdated|invalid)\b",
+        label: "Context invalidation attempt",
+        severity: "critical",
+        respect_negation: false,
+    },
+    // JAILBREAK_FRAMING_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_JAILBREAK_PERSONA,
+        pattern_str: r"(?i)\b(?:you\s+are|act\s+as|pretend\s+(?:to\s+be|you(?:'re|\s+are))|roleplay\s+as)\s+(?:now\s+)?(?:DAN|STAN|DUDE|AIM|do\s+anything\s+now)\b",
+        label: "Named jailbreak persona invocation",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_SAFETY_SYSTEM_BYPASS,
+        pattern_str: r"(?i)\b(?:disable|deactivate|turn\s+off|switch\s+off)\s+(?:your|the|all)?\s*(?:safety|security|ethical|moral|content)\s+(?:filters?|guidelines?|guards?|protocols?|checks?)\b",
+        label: "Safety system bypass instruction",
+        severity: "critical",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_UNRESTRICTED_OPERATION_FRAMING,
+        pattern_str: r"(?i)\b(?:have|with|under|operating\s+with|acting\s+with|free\s+from|without)\s+(?:absolutely\s+)?no\s+(?:restrictions?|limitations?|constraints?|safeguards?|boundaries|inhibitions)\b",
+        label: "Unrestricted operation framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ETHICAL_BYPASS_FRAMING,
+        pattern_str: r"(?i)\b(?:without|with\s+no|free\s+from|unbound\s+by|not\s+bound\s+by)\s+(?:any\s+)?(?:ethical|safety|moral|legal|content)\s+(?:restrictions?|guidelines?|constraints?|considerations?|filters?|principles?|policies?)\b",
+        label: "Ethical-bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ETHICAL_BYPASS_FRAMING,
+        pattern_str: r"(?i)\bno\s+(?:ethical|moral|safety|legal)\s+(?:considerations?|guidelines?|constraints?|principles?|concerns?|limitations?|rules?)\s+(?:apply|exist|are\s+(?:needed|required|necessary)|matter)\b",
+        label: "Ethical-bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_ROLEPLAY_BYPASS_FRAMING,
+        pattern_str: r"(?i)\b(?:in\s+this\s+(?:roleplay|scenario|game|simulation)|for\s+the\s+purposes?\s+of\s+this\s+(?:roleplay|scenario|game|simulation))\b[^.!?]{0,60}?\b(?:can|may|will|must|should|are\s+allowed\s+to)\s+(?:ignore|bypass|disregard|skip|forget|disable)\b",
+        label: "Roleplay-scoped bypass framing",
+        severity: "medium",
+        respect_negation: false,
+    },
+    // CREDENTIAL_SOLICITATION_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_CREDENTIAL_SOLICITATION,
+        pattern_str: r"(?i)\b(?:ask|request|prompt|query|have|get|obtain|collect|gather|solicit|elicit|tell|instruct|direct|require)\s+(?:the\s+|each\s+|every\s+)?users?\s+(?:to\s+(?:provide|give|enter|share|input|reveal|disclose|type|paste|submit)|for(?:\s+(?:their|a|an|the))?)\s*(?:their\s+|the\s+|a\s+|an\s+)?(?:passwords?|api[-\s_]?keys?|access[-\s_]?tokens?|secret[-\s_]?keys?|secrets?|credentials?|private[-\s_]?keys?|auth(?:entication)?[-\s_]?tokens?|session[-\s_]?tokens?|bearer[-\s_]?tokens?|2fa[-\s_]?(?:codes?|tokens?)?|otps?|pins?|ssns?|seed[-\s_]?phrases?|recovery[-\s_]?(?:keys?|phrases?))\b",
+        label: "Instruction to solicit user credentials",
+        severity: "high",
+        respect_negation: true,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_DECEPTIVE_CREDENTIAL_EXTRACTION,
+        pattern_str: r"(?i)\b(?:convince|persuade|trick|manipulate|coerce|deceive|fool)\s+(?:the\s+|each\s+)?users?\s+(?:into\s+|to\s+)(?:provide|give|enter|share|reveal|disclose|hand\s+over)[^.!?]{0,60}(?:passwords?|api[-\s_]?keys?|tokens?|secrets?|credentials?|private[-\s_]?keys?|pins?)\b",
+        label: "Deceptive credential extraction",
+        severity: "critical",
+        respect_negation: false,
+    },
+    // INJECTION_MARKER_PATTERNS
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_TEMPLATE_MARKER,
+        pattern_str: r"(?i)\[(?:SYSTEM|SYS|SYSTEM[\s_-]+(?:PROMPT|MESSAGE|MSG|INSTRUCTION|INST)|INST|/INST|INSTRUCTION|HUMAN|ASSISTANT)\]",
+        label: "Embedded prompt-template marker",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_PROMPT_TEMPLATE_MARKER,
+        pattern_str: r"(?i)</?(?:system|system_prompt|system_message|instruction|inst|sys|im_start|im_end)(?:\s[^>]*)?>",
+        label: "Embedded prompt-template marker",
+        severity: "medium",
+        respect_negation: false,
+    },
+    BehavioralPatternRaw {
+        rule_id: RULE_CHAT_TEMPLATE_SPECIAL_TOKEN,
+        pattern_str: r"(?i)<\|(?:system|user|assistant|im_start|im_end|endoftext|end_of_text|begin_of_text|eot_id|start_header_id|end_header_id)\|>",
+        label: "Embedded chat-template special token",
+        severity: "medium",
+        respect_negation: false,
+    },
+];
+
+pub(crate) struct CompiledBehavioralPattern {
+    pub(crate) rule_id: &'static str,
+    pub(crate) regex: Regex,
+    pub(crate) label: &'static str,
+    pub(crate) severity: &'static str,
+    pub(crate) respect_negation: bool,
+}
+
+static BEHAVIORAL_REGEXES: OnceLock<Vec<CompiledBehavioralPattern>> = OnceLock::new();
+static NEGATION_PRECEDENTS_RE: OnceLock<Regex> = OnceLock::new();
+
+pub(crate) fn get_behavioral_patterns() -> &'static Vec<CompiledBehavioralPattern> {
+    BEHAVIORAL_REGEXES.get_or_init(|| {
+        BEHAVIORAL_PATTERN_DEFS
+            .iter()
+            .map(|def| CompiledBehavioralPattern {
+                rule_id: def.rule_id,
+                regex: Regex::new(def.pattern_str).expect("invalid behavioral pattern"),
+                label: def.label,
+                severity: def.severity,
+                respect_negation: def.respect_negation,
+            })
+            .collect()
+    })
+}
+
+pub(crate) fn normalize_for_behavioral_scan(content: &str) -> String {
+    static HWS_RE: OnceLock<Regex> = OnceLock::new();
+    let hws_re = HWS_RE.get_or_init(|| Regex::new(r"[ \t]+").expect("bad hws re"));
+    let lower = content.to_lowercase();
+    lower
+        .split('\n')
+        .map(|line| hws_re.replace_all(line, " ").trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_markdown_example_content(content: &str) -> String {
+    static FENCE_RE: OnceLock<Regex> = OnceLock::new();
+    static HEADING_RE: OnceLock<Regex> = OnceLock::new();
+    static EXAMPLE_HEADING_RE: OnceLock<Regex> = OnceLock::new();
+    static BLOCKQUOTE_RE: OnceLock<Regex> = OnceLock::new();
+    let fence_re = FENCE_RE.get_or_init(|| Regex::new(r"^(\s*)(```|~~~)").expect("bad fence re"));
+    let heading_re = HEADING_RE.get_or_init(|| Regex::new(r"^(#{1,6})\s").expect("bad heading re"));
+    let example_heading_re = EXAMPLE_HEADING_RE.get_or_init(|| {
+        Regex::new(r"(?i)^#{1,4}\s+(?:examples?|test\s+cases?|negative\s+examples?|sample\s+(?:attacks?|injections?|payloads?)|what\s+(?:not\s+to\s+do|to\s+look\s+for|to\s+watch\s+for)|detection\s+(?:examples?|patterns?|rules?)|known\s+(?:attacks?|patterns?|techniques?)|red[\s-]team)").expect("bad example heading re")
+    });
+    let blockquote_re =
+        BLOCKQUOTE_RE.get_or_init(|| Regex::new(r"^\s*>").expect("bad blockquote re"));
+
+    let mut output: Vec<&str> = Vec::new();
+    let mut in_fenced_block = false;
+    let mut fence_is_backtick = false;
+    let mut in_example_section = false;
+    let mut example_section_level = 0usize;
+
+    for line in content.split('\n') {
+        if let Some(cap) = fence_re.captures(line) {
+            let marker = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+            if !in_fenced_block {
+                in_fenced_block = true;
+                fence_is_backtick = marker.starts_with('`');
+                output.push("");
+                continue;
+            } else {
+                let expected = if fence_is_backtick { "```" } else { "~~~" };
+                if line.trim().starts_with(expected) {
+                    in_fenced_block = false;
+                    output.push("");
+                    continue;
+                }
+            }
+        }
+        if in_fenced_block {
+            output.push("");
+            continue;
+        }
+        if blockquote_re.is_match(line) {
+            output.push("");
+            continue;
+        }
+        if let Some(cap) = heading_re.captures(line) {
+            let level = cap.get(1).map(|m| m.len()).unwrap_or(0);
+            if in_example_section && level <= example_section_level {
+                in_example_section = false;
+            }
+            if !in_example_section && example_heading_re.is_match(line) {
+                in_example_section = true;
+                example_section_level = level;
+                output.push("");
+                continue;
+            }
+        }
+        if in_example_section {
+            output.push("");
+            continue;
+        }
+        output.push(line);
+    }
+    output.join("\n")
+}
+
+pub(crate) fn scan_behavioral_patterns(
+    text_files: &HashMap<String, String>,
+) -> (Vec<Finding>, bool) {
+    let patterns = get_behavioral_patterns();
+    let negation_re = NEGATION_PRECEDENTS_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:never|don'?t|do\s+not|avoid|prevent|stop|warn|forbid|disallow|refuse|cannot|can'?t|won'?t|would\s+not|should\s+not|shouldn'?t|must\s+not|mustn'?t)\b[^.!?]{0,30}$",
+        )
+        .expect("bad negation precedents re")
+    });
+
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut behavioral_check_failed = false;
+    let mut sorted_files: Vec<(&String, &String)> = text_files.iter().collect();
+    sorted_files.sort_by_key(|(p, _)| p.as_str());
+    for (path, content) in sorted_files {
+        let is_markdown = path.to_lowercase().ends_with(".md");
+        let stripped: String;
+        let normalized = if is_markdown {
+            stripped = strip_markdown_example_content(content);
+            normalize_for_behavioral_scan(&stripped)
+        } else {
+            normalize_for_behavioral_scan(content)
+        };
+        let normalized_lines: Vec<&str> = normalized.split('\n').collect();
+
+        for bp in patterns {
+            let mut match_count = 0usize;
+            let mut first_match_line: Option<usize> = None;
+            let mut first_match_snippet = String::new();
+
+            for (i, line) in normalized_lines.iter().enumerate() {
+                for m in bp.regex.find_iter(line) {
+                    if bp.respect_negation {
+                        let pre_start = m.start().saturating_sub(NEGATION_LOOKBACK_CHARS);
+                        let pre = &line[pre_start..m.start()];
+                        if negation_re.is_match(pre) {
+                            continue;
+                        }
+                    }
+                    match_count += 1;
+                    if first_match_line.is_none() {
+                        first_match_line = Some(i + 1);
+                        first_match_snippet = line.trim().chars().take(120).collect();
+                    }
+                }
+            }
+
+            if match_count > 0 {
+                if let Some(line_num) = first_match_line {
+                    let count_note = if match_count > 1 {
+                        format!(" ({match_count} matches)")
+                    } else {
+                        String::new()
+                    };
+                    let snippet = if !first_match_snippet.is_empty() {
+                        format!(" — `{first_match_snippet}`")
+                    } else {
+                        String::new()
+                    };
+                    let severity = match bp.severity {
+                        "critical" => Severity::Critical,
+                        "high" => Severity::High,
+                        "medium" => Severity::Medium,
+                        "low" => Severity::Low,
+                        _ => Severity::Info,
+                    };
+                    if matches!(severity, Severity::Critical | Severity::High) {
+                        behavioral_check_failed = true;
+                    }
+                    findings.push(Finding {
+                        rule_id: bp.rule_id.to_string(),
+                        category: FindingCategory::Security,
+                        severity,
+                        label: bp.label.to_string(),
+                        detail: format!("Detected in {path}:{line_num}{count_note}{snippet}"),
+                        filepath: Some(path.clone()),
+                        owasp_llm_category: None,
+                        chain_id: None,
+                        intent: None,
+                        source: DEFAULT_SOURCE.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    (findings, behavioral_check_failed)
+}
