@@ -543,6 +543,9 @@ pub fn run() {
         match action {
             ContractSubcommand::Status => not_implemented("contract status"),
         }
+        // Unreachable while all arms diverge; guards fallthrough when real arms land.
+        #[allow(unreachable_code)]
+        return;
     }
 
     // Handle directory command (stub — vettd#631 owns real logic)
@@ -556,6 +559,9 @@ pub fn run() {
             DirectorySubcommand::Findings { .. } => not_implemented("directory findings"),
             DirectorySubcommand::Compare { .. } => not_implemented("directory compare"),
         }
+        // Unreachable while all arms diverge; guards fallthrough when real arms land.
+        #[allow(unreachable_code)]
+        return;
     }
 
     // Remaining command must be Scan

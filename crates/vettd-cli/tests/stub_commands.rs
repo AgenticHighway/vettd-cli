@@ -46,6 +46,36 @@ fn contract_status_is_not_implemented() {
 }
 
 #[test]
+fn directory_search_is_not_implemented() {
+    assert_stub(&["directory", "search", "query"]);
+}
+
+#[test]
 fn directory_list_is_not_implemented() {
     assert_stub(&["directory", "list"]);
+}
+
+#[test]
+fn directory_trending_is_not_implemented() {
+    assert_stub(&["directory", "trending"]);
+}
+
+#[test]
+fn directory_random_is_not_implemented() {
+    assert_stub(&["directory", "random"]);
+}
+
+#[test]
+fn directory_view_is_not_implemented() {
+    assert_stub(&["directory", "view", "some-slug"]);
+}
+
+#[test]
+fn directory_findings_is_not_implemented() {
+    assert_stub(&["directory", "findings", "some-slug"]);
+}
+
+#[test]
+fn directory_compare_is_not_implemented() {
+    assert_stub(&["directory", "compare", "slug-a", "slug-b"]);
 }
