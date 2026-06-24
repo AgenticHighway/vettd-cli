@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -27,8 +27,44 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Default scan — critical host roots plus bounded user-space/project roots
+    /// Scan for AI execution artifacts
     Scan {
+        #[command(subcommand)]
+        subcommand: Option<ScanSubcommand>,
+    },
+    /// Configure API credentials for scan submission
+    Auth {
+        /// API key (e.g. ah_xxxx). If omitted, vettd prompts securely.
+        #[arg(long)]
+        key: Option<String>,
+        /// Ingest endpoint URL (defaults to production)
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Allow saving a public (non-local/private) endpoint
+        #[arg(long)]
+        allow_public_endpoint: bool,
+    },
+    /// Check for updates and self-update the scanner binary
+    Update {
+        /// Only check for updates — don't download or install
+        #[arg(long)]
+        check: bool,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
+    /// Manage custom detection rules
+    Rules {
+        #[command(subcommand)]
+        action: RuleAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScanSubcommand {
+    /// Default scan — critical host roots plus bounded user-space/project roots
+    #[command(hide = true)]
+    Default {
         #[command(flatten)]
         output: OutputArgs,
     },
@@ -60,33 +96,10 @@ pub enum Commands {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Configure API credentials for scan submission
-    Auth {
-        /// API key (e.g. ah_xxxx). If omitted, vettd prompts securely.
-        #[arg(long)]
-        key: Option<String>,
-        /// Ingest endpoint URL (defaults to production)
-        #[arg(long)]
-        endpoint: Option<String>,
-        /// Allow saving a public (non-local/private) endpoint
-        #[arg(long)]
-        allow_public_endpoint: bool,
-    },
-    /// Run (or re-run) the interactive setup wizard
-    Setup,
-    /// Check for updates and self-update the scanner binary
-    Update {
-        /// Only check for updates — don't download or install
-        #[arg(long)]
-        check: bool,
-        /// Skip the confirmation prompt
-        #[arg(long)]
-        force: bool,
-    },
-    /// Manage custom detection rules
-    Rules {
-        #[command(subcommand)]
-        action: RuleAction,
+    /// Submit a previously saved report file
+    Submit {
+        /// Path to the JSON report file
+        report: PathBuf,
     },
 }
 
@@ -245,82 +258,73 @@ struct ScanParams<'a> {
     deep: bool,
 }
 
-fn resolve_scan_params(cmd: &Commands) -> ScanParams<'_> {
-    match cmd {
-        Commands::Scan { .. } => ScanParams {
+fn resolve_scan_params(sub: &ScanSubcommand) -> ScanParams<'_> {
+    match sub {
+        ScanSubcommand::Default { .. } => ScanParams {
             mode: "scan",
             workdir: None,
             file: None,
             deep: false,
         },
-        Commands::Quick { .. } => ScanParams {
+        ScanSubcommand::Quick { .. } => ScanParams {
             mode: "host",
             workdir: None,
             file: None,
             deep: false,
         },
-        Commands::Full { .. } => ScanParams {
+        ScanSubcommand::Full { .. } => ScanParams {
             mode: "root",
             workdir: None,
             file: None,
             deep: false,
         },
-        Commands::File { path, .. } => ScanParams {
+        ScanSubcommand::File { path, .. } => ScanParams {
             mode: "file",
             workdir: None,
             file: Some(path.as_path()),
             deep: false,
         },
-        Commands::Folder { path, .. } => ScanParams {
+        ScanSubcommand::Folder { path, .. } => ScanParams {
             mode: "workdir",
             workdir: Some(path.as_path()),
             file: None,
             deep: false,
         },
-        Commands::Repo { path, .. } => ScanParams {
+        ScanSubcommand::Repo { path, .. } => ScanParams {
             mode: "workdir",
             workdir: Some(path.as_path()),
             file: None,
             deep: true,
         },
-        Commands::Auth { .. }
-        | Commands::Setup
-        | Commands::Update { .. }
-        | Commands::Rules { .. } => {
+        ScanSubcommand::Submit { .. } => {
             unreachable!("handled before scan dispatch")
         }
     }
 }
 
-fn output_args(cmd: &Commands) -> &OutputArgs {
-    match cmd {
-        Commands::Scan { output, .. }
-        | Commands::Quick { output, .. }
-        | Commands::Full { output, .. }
-        | Commands::File { output, .. }
-        | Commands::Folder { output, .. }
-        | Commands::Repo { output, .. } => output,
-        Commands::Auth { .. }
-        | Commands::Setup
-        | Commands::Update { .. }
-        | Commands::Rules { .. } => {
+fn output_args(sub: &ScanSubcommand) -> &OutputArgs {
+    match sub {
+        ScanSubcommand::Default { output, .. }
+        | ScanSubcommand::Quick { output, .. }
+        | ScanSubcommand::Full { output, .. }
+        | ScanSubcommand::File { output, .. }
+        | ScanSubcommand::Folder { output, .. }
+        | ScanSubcommand::Repo { output, .. } => output,
+        ScanSubcommand::Submit { .. } => {
             unreachable!("handled before output dispatch")
         }
     }
 }
 
-fn command_name(cmd: &Commands) -> &'static str {
-    match cmd {
-        Commands::Scan { .. } => "scan",
-        Commands::Quick { .. } => "quick",
-        Commands::Full { .. } => "full",
-        Commands::File { .. } => "file",
-        Commands::Folder { .. } => "folder",
-        Commands::Repo { .. } => "repo",
-        Commands::Auth { .. }
-        | Commands::Setup
-        | Commands::Update { .. }
-        | Commands::Rules { .. } => {
+fn command_name(sub: &ScanSubcommand) -> &'static str {
+    match sub {
+        ScanSubcommand::Default { .. } => "scan",
+        ScanSubcommand::Quick { .. } => "quick",
+        ScanSubcommand::Full { .. } => "full",
+        ScanSubcommand::File { .. } => "file",
+        ScanSubcommand::Folder { .. } => "folder",
+        ScanSubcommand::Repo { .. } => "repo",
+        ScanSubcommand::Submit { .. } => {
             unreachable!("handled before command_name")
         }
     }
@@ -352,7 +356,11 @@ pub fn run() {
 
     let cmd = match cli.command {
         Some(c) => c,
-        None => crate::wizard::pick_command(),
+        None => {
+            Cli::command().print_help().unwrap();
+            eprintln!();
+            return;
+        }
     };
 
     // Handle rules subcommand
@@ -363,12 +371,6 @@ pub fn run() {
             RuleAction::Remove { name } => crate::rules::cmd_remove(name),
             RuleAction::Validate { path } => crate::rules::cmd_validate(path),
         }
-        return;
-    }
-
-    // Handle setup command
-    if matches!(cmd, Commands::Setup) {
-        crate::setup::run_setup(true);
         return;
     }
 
@@ -458,28 +460,43 @@ pub fn run() {
         return;
     }
 
+    // Remaining command must be Scan
+    let Commands::Scan { subcommand } = cmd else {
+        return;
+    };
+
+    let sub = match subcommand {
+        None => crate::wizard::pick_scan(),
+        Some(s) => s,
+    };
+
+    // Handle submit separately — reads a saved report and submits it
+    if let ScanSubcommand::Submit { report } = &sub {
+        handle_submit_report(report);
+        return;
+    }
+
     // Validate file/folder paths exist before scanning
-    match &cmd {
-        Commands::File { path, .. } => {
+    match &sub {
+        ScanSubcommand::File { path, .. } => {
             if !path.exists() {
                 eprintln!("Error: file not found: {}", path.display());
                 std::process::exit(1);
             }
         }
-        Commands::Folder { path, .. } | Commands::Repo { path, .. } => {
+        ScanSubcommand::Folder { path, .. } | ScanSubcommand::Repo { path, .. } => {
             if !path.exists() {
                 eprintln!("Error: path not found: {}", path.display());
                 std::process::exit(1);
             }
         }
-        Commands::Rules { .. } => unreachable!("handled above"),
         _ => {}
     }
 
     let access = load_access_config();
 
-    let params = resolve_scan_params(&cmd);
-    let out = output_args(&cmd);
+    let params = resolve_scan_params(&sub);
+    let out = output_args(&sub);
     let min_score = min_severity_score(&out.min_severity);
 
     let interactive = is_interactive();
@@ -571,7 +588,7 @@ pub fn run() {
             }
         }
     } else {
-        let cmd_name = command_name(&cmd);
+        let cmd_name = command_name(&sub);
         emit(
             &report,
             scan_duration_ms,
@@ -586,6 +603,31 @@ pub fn run() {
     // Offer interactive follow-up actions for local-only scans.
     if !wants_submit && !out.json && !out.contract && is_interactive() {
         prompt_post_scan_action(&report, scan_duration_ms);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Submit saved report
+// ---------------------------------------------------------------------------
+
+fn handle_submit_report(report: &Path) {
+    let json = match fs::read_to_string(report) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("Error reading {}: {e}", report.display());
+            std::process::exit(1);
+        }
+    };
+    let auth = match resolve_submit_auth(&Some(None), None, false) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = do_submit(&json, &auth) {
+        eprintln!("{e}");
+        std::process::exit(1);
     }
 }
 
@@ -822,53 +864,85 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_scan() {
+    fn parse_cli_scan_no_subcommand() {
         let cli = Cli::parse_from(["vettd", "scan"]);
-        assert!(matches!(cli.command, Some(Commands::Scan { .. })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { subcommand: None })
+        ));
     }
 
     #[test]
-    fn parse_cli_quick() {
-        let cli = Cli::parse_from(["vettd", "quick"]);
-        assert!(matches!(cli.command, Some(Commands::Quick { .. })));
+    fn parse_cli_scan_quick() {
+        let cli = Cli::parse_from(["vettd", "scan", "quick"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { .. })
+            })
+        ));
     }
 
     #[test]
-    fn parse_cli_full() {
-        let cli = Cli::parse_from(["vettd", "full"]);
-        assert!(matches!(cli.command, Some(Commands::Full { .. })));
+    fn parse_cli_scan_full() {
+        let cli = Cli::parse_from(["vettd", "scan", "full"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Full { .. })
+            })
+        ));
     }
 
     #[test]
-    fn parse_cli_file() {
-        let cli = Cli::parse_from(["vettd", "file", "/tmp/test.md"]);
+    fn parse_cli_scan_file() {
+        let cli = Cli::parse_from(["vettd", "scan", "file", "/tmp/test.md"]);
         match cli.command {
-            Some(Commands::File { path, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::File { path, .. }),
+            }) => {
                 assert_eq!(path, PathBuf::from("/tmp/test.md"));
             }
-            _ => panic!("Expected File command"),
+            _ => panic!("Expected scan file command"),
         }
     }
 
     #[test]
-    fn parse_cli_folder() {
-        let cli = Cli::parse_from(["vettd", "folder", "/tmp"]);
+    fn parse_cli_scan_folder() {
+        let cli = Cli::parse_from(["vettd", "scan", "folder", "/tmp"]);
         match cli.command {
-            Some(Commands::Folder { path, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Folder { path, .. }),
+            }) => {
                 assert_eq!(path, PathBuf::from("/tmp"));
             }
-            _ => panic!("Expected Folder command"),
+            _ => panic!("Expected scan folder command"),
         }
     }
 
     #[test]
-    fn parse_cli_repo() {
-        let cli = Cli::parse_from(["vettd", "repo", "."]);
+    fn parse_cli_scan_repo() {
+        let cli = Cli::parse_from(["vettd", "scan", "repo", "."]);
         match cli.command {
-            Some(Commands::Repo { path, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Repo { path, .. }),
+            }) => {
                 assert_eq!(path, PathBuf::from("."));
             }
-            _ => panic!("Expected Repo command"),
+            _ => panic!("Expected scan repo command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_scan_submit() {
+        let cli = Cli::parse_from(["vettd", "scan", "submit", "report.json"]);
+        match cli.command {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Submit { report }),
+            }) => {
+                assert_eq!(report, PathBuf::from("report.json"));
+            }
+            _ => panic!("Expected scan submit command"),
         }
     }
 
@@ -957,23 +1031,33 @@ mod tests {
 
     #[test]
     fn parse_cli_allow_public_endpoint_in_scan() {
-        let cli = Cli::parse_from(["vettd", "scan", "--submit", "--allow-public-endpoint"]);
+        let cli = Cli::parse_from([
+            "vettd",
+            "scan",
+            "quick",
+            "--submit",
+            "--allow-public-endpoint",
+        ]);
         match cli.command {
-            Some(Commands::Scan { output, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
                 assert!(output.allow_public_endpoint);
             }
-            _ => panic!("Expected Scan command"),
+            _ => panic!("Expected scan quick command"),
         }
     }
 
     #[test]
     fn parse_cli_allow_public_endpoint_defaults_false() {
-        let cli = Cli::parse_from(["vettd", "scan"]);
+        let cli = Cli::parse_from(["vettd", "scan", "quick"]);
         match cli.command {
-            Some(Commands::Scan { output, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
                 assert!(!output.allow_public_endpoint);
             }
-            _ => panic!("Expected Scan command"),
+            _ => panic!("Expected scan quick command"),
         }
     }
 
@@ -1002,36 +1086,42 @@ mod tests {
 
     #[test]
     fn parse_cli_output_args_json() {
-        let cli = Cli::parse_from(["vettd", "scan", "--json"]);
+        let cli = Cli::parse_from(["vettd", "scan", "quick", "--json"]);
         match cli.command {
-            Some(Commands::Scan { output, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
                 assert!(output.json);
                 assert!(!output.summary);
                 assert!(!output.full);
             }
-            _ => panic!("Expected Scan command"),
+            _ => panic!("Expected scan quick command"),
         }
     }
 
     #[test]
     fn parse_cli_output_args_summary() {
-        let cli = Cli::parse_from(["vettd", "scan", "--summary"]);
+        let cli = Cli::parse_from(["vettd", "scan", "quick", "--summary"]);
         match cli.command {
-            Some(Commands::Scan { output, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
                 assert!(output.summary);
             }
-            _ => panic!("Expected Scan command"),
+            _ => panic!("Expected scan quick command"),
         }
     }
 
     #[test]
     fn parse_cli_output_args_min_severity() {
-        let cli = Cli::parse_from(["vettd", "scan", "--min-severity", "high"]);
+        let cli = Cli::parse_from(["vettd", "scan", "quick", "--min-severity", "high"]);
         match cli.command {
-            Some(Commands::Scan { output, .. }) => {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
                 assert_eq!(output.min_severity, "high");
             }
-            _ => panic!("Expected Scan command"),
+            _ => panic!("Expected scan quick command"),
         }
     }
 
@@ -1042,21 +1132,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_scan_params_scan() {
-        let cmd = Commands::Scan {
-            output: OutputArgs {
-                full: false,
-                json: false,
-                summary: false,
-                out: None,
-                min_severity: "info".to_string(),
-                contract: false,
-                submit: None,
-                api_key: None,
-                allow_public_endpoint: false,
-            },
+    fn resolve_scan_params_default() {
+        let sub = ScanSubcommand::Default {
+            output: OutputArgs::default(),
         };
-        let params = resolve_scan_params(&cmd);
+        let params = resolve_scan_params(&sub);
         assert_eq!(params.mode, "scan");
         assert!(params.workdir.is_none());
         assert!(!params.deep);
@@ -1064,40 +1144,20 @@ mod tests {
 
     #[test]
     fn resolve_scan_params_quick() {
-        let cmd = Commands::Quick {
-            output: OutputArgs {
-                full: false,
-                json: false,
-                summary: false,
-                out: None,
-                min_severity: "info".to_string(),
-                contract: false,
-                submit: None,
-                api_key: None,
-                allow_public_endpoint: false,
-            },
+        let sub = ScanSubcommand::Quick {
+            output: OutputArgs::default(),
         };
-        let params = resolve_scan_params(&cmd);
+        let params = resolve_scan_params(&sub);
         assert_eq!(params.mode, "host");
     }
 
     #[test]
     fn resolve_scan_params_repo_deep() {
-        let cmd = Commands::Repo {
+        let sub = ScanSubcommand::Repo {
             path: PathBuf::from("/tmp/repo"),
-            output: OutputArgs {
-                full: false,
-                json: false,
-                summary: false,
-                out: None,
-                min_severity: "info".to_string(),
-                contract: false,
-                submit: None,
-                api_key: None,
-                allow_public_endpoint: false,
-            },
+            output: OutputArgs::default(),
         };
-        let params = resolve_scan_params(&cmd);
+        let params = resolve_scan_params(&sub);
         assert_eq!(params.mode, "workdir");
         assert!(params.deep);
         assert_eq!(params.workdir.unwrap(), Path::new("/tmp/repo"));
@@ -1105,21 +1165,11 @@ mod tests {
 
     #[test]
     fn resolve_scan_params_file() {
-        let cmd = Commands::File {
+        let sub = ScanSubcommand::File {
             path: PathBuf::from("/tmp/test.md"),
-            output: OutputArgs {
-                full: false,
-                json: false,
-                summary: false,
-                out: None,
-                min_severity: "info".to_string(),
-                contract: false,
-                submit: None,
-                api_key: None,
-                allow_public_endpoint: false,
-            },
+            output: OutputArgs::default(),
         };
-        let params = resolve_scan_params(&cmd);
+        let params = resolve_scan_params(&sub);
         assert_eq!(params.mode, "file");
         assert_eq!(params.file.unwrap(), Path::new("/tmp/test.md"));
     }
