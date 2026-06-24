@@ -42,6 +42,11 @@ pub(crate) fn has_checklist(body: &str) -> bool {
 
 // Mirrors vettd's hasValidation: /validat/i.test(body) || /##?\s*verification/i.
 // Note: matches "invalidation" and similar — this is a vettd bug reproduced as-is.
+/// returns true if the body appears to describe a validation or verification step.
+///
+/// # Note
+/// matches any substring containing "validat" (e.g. "invalidation") — intentional parity
+/// with a known bug in vettd's `hasValidation` check. do not fix without updating the web app.
 pub(crate) fn has_validation(body: &str) -> bool {
     let lower = body.to_lowercase();
     lower.contains("validat")
@@ -139,6 +144,16 @@ pub(crate) fn has_cli_hint(content: &str) -> bool {
         || content.contains("if __name__ == \"__main__\"")
 }
 
+/// heuristically determines whether a script is a CLI entry point rather than a library or helper.
+///
+/// uses path depth, file extension, basename/subdirectory blocklists, and CLI indicator
+/// detection to distinguish runnable scripts from support files. shell scripts directly under
+/// `scripts/` always return `true`; files in helper subdirectories require a positive
+/// `has_cli_hint` result.
+///
+/// # Parameters
+/// - `path` — normalized relative path within the skill package.
+/// - `content` — decoded file content.
 pub(crate) fn is_likely_cli_script(path: &str, content: &str) -> bool {
     if !path.starts_with("scripts/") {
         return false;

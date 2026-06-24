@@ -57,6 +57,21 @@ fn classify_malicious_bucket(label: &str) -> Option<&'static str> {
     None
 }
 
+/// groups security findings by file and synthesizes a chain finding when malicious-activity
+/// indicators from two or more buckets co-occur in a single file.
+///
+/// classifies each security finding's label into one of five buckets (EVASION, PERSISTENCE,
+/// FETCH, EXECUTION, COVERT_CHANNEL). a chain is triggered for a file that has findings in
+/// at least two distinct buckets, or that has one bucket alongside an unclassified critical/high
+/// malicious finding. when triggered, contributing findings receive a shared `chain_id`, their
+/// `intent` is set to `Malicious`, and their severity is escalated to `Critical`.
+///
+/// # Parameters
+/// - `findings` — scan results to inspect and mutate in place.
+///
+/// # Note
+/// mutates `severity`, `intent`, and `chain_id` on existing entries in `findings`.
+/// must run after all per-file checks are complete.
 pub(crate) fn detect_malicious_activity_chains(findings: &mut Vec<Finding>) {
     let mut buckets_by_file: HashMap<String, Vec<&'static str>> = HashMap::new();
     let mut indices_by_file: HashMap<String, Vec<usize>> = HashMap::new();
@@ -89,6 +104,8 @@ pub(crate) fn detect_malicious_activity_chains(findings: &mut Vec<Finding>) {
     for (file_path, buckets) in &buckets_by_file {
         let file_indices = indices_by_file.get(file_path).cloned().unwrap_or_default();
 
+        // a single-bucket file can still trigger a chain if an unclassified malicious
+        // finding co-occurs — e.g. a named jailbreak persona alongside one FETCH indicator.
         let has_external_malicious = file_indices.iter().any(|&idx| {
             let f = &findings[idx];
             matches!(f.severity, Severity::Critical | Severity::High)
@@ -139,10 +156,28 @@ pub(crate) fn detect_malicious_activity_chains(findings: &mut Vec<Finding>) {
     findings.extend(new_findings);
 }
 
+/// synthesizes a credential-exfiltration chain when a file both reads a credential source
+/// and transmits data over the network.
+///
+/// first pass: collects existing security findings whose label contains a known
+/// credential-source keyword (credential file, API key, `.env`, high-entropy value, etc.).
+/// second pass: for each such file, searches the raw file content for network sink patterns
+/// (fetch/POST, curl/wget, XMLHttpRequest, etc.). a chain finding is created for each file
+/// where both are present; contributing findings have their `chain_id`, `intent`, and
+/// `severity` mutated in place.
+///
+/// # Parameters
+/// - `findings` — scan results to inspect and mutate in place.
+/// - `text_files` — raw file content map used for network sink matching.
+///
+/// # Note
+/// requires that `scan_sensitive_patterns` and `scan_entropy` have already run so that
+/// credential-source findings are present in `findings`. mutates existing findings in place.
 pub(crate) fn detect_exfiltration_chains(
     findings: &mut Vec<Finding>,
     text_files: &HashMap<String, String>,
 ) {
+    // first pass: index existing findings by file for files that have a credential source.
     let mut sources_by_file: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, finding) in findings.iter().enumerate() {
         if finding.category != FindingCategory::Security {
@@ -162,6 +197,7 @@ pub(crate) fn detect_exfiltration_chains(
         }
     }
 
+    // second pass: for each candidate file, check raw content for a network sink.
     let sinks = get_network_sink_regexes();
     let mut chain_index: u32 = 0;
 

@@ -14,6 +14,17 @@ use super::behavioral::{get_behavioral_patterns, normalize_for_behavioral_scan};
 use super::chains::get_network_sink_regexes;
 use super::sensitive::{get_sensitive_regexes, SENSITIVE_PATTERNS};
 
+/// detects invisible Unicode characters and checks whether they conceal dangerous content.
+///
+/// for each line containing invisible formatting or control characters, the characters are
+/// stripped and the cleaned line is re-checked against sensitive patterns, behavioral patterns,
+/// and external URLs — in that priority order. a dangerous match produces a higher-severity
+/// "obfuscated dangerous code" finding in place of the generic "hidden unicode" finding.
+/// processing stops after the first dangerous match per file.
+///
+/// # Parameters
+/// - `text_files` — map of normalized relative paths to decoded UTF-8 file content.
+/// - `findings` — output vec; detected issues are appended.
 pub(crate) fn scan_hidden_unicode(
     text_files: &HashMap<String, String>,
     findings: &mut Vec<Finding>,
@@ -165,6 +176,13 @@ pub(crate) fn scan_hidden_unicode(
     }
 }
 
+/// attempts to decode a base64 string using three strategies in order: standard, padded, and URL-safe.
+///
+/// # Note
+/// tries standard decode first, then re-tries with `=` padding appended, then swaps URL-safe
+/// characters (`-` → `+`, `_` → `/`) and retries with padding. non-UTF-8 bytes in the decoded
+/// output are replaced lossily so that patterns can still match printable content within
+/// otherwise binary payloads. returns `None` only if all three strategies fail.
 fn decode_base64_lenient(s: &str) -> Option<String> {
     use base64::{engine::general_purpose, Engine as _};
     if let Ok(bytes) = general_purpose::STANDARD.decode(s) {
@@ -201,6 +219,11 @@ fn decode_base64_lenient(s: &str) -> Option<String> {
     None
 }
 
+/// scans source text for adjacent quoted base64 segments joined by `+` and concatenates them.
+///
+/// detects patterns like `"aGVsbG8="` + `"d29ybGQ="` where a base64 value is split across
+/// multiple string literals. returns each joined group that spans at least two segments
+/// and totals ≥ 40 characters.
 fn join_concatenated_strings(content: &str) -> Vec<String> {
     let mut results = Vec::new();
     let mut group = String::new();
@@ -260,6 +283,24 @@ fn join_concatenated_strings(content: &str) -> Vec<String> {
     results
 }
 
+/// scans files for base64-encoded payloads that decode to dangerous patterns.
+///
+/// three candidate extraction strategies run per file: raw base64 chunk extraction,
+/// concatenated string literal detection, and shell variable assignment extraction.
+/// each decoded candidate is checked — in priority order — against sensitive patterns,
+/// network sinks, and external URLs. for markdown files, any decodable printable-majority
+/// payload also produces a lower-severity advisory finding.
+///
+/// # Parameters
+/// - `text_files` — map of normalized relative paths to decoded UTF-8 file content.
+/// - `findings` — output vec; detected issues are appended.
+///
+/// # Returns
+/// `(secrets_failed, behavioral_failed)`.
+///
+/// # Note
+/// `behavioral_failed` is always `false` in this implementation — the return slot is
+/// reserved for a future behavioral pass over decoded payloads.
 pub(crate) fn check_base64_payloads(
     text_files: &HashMap<String, String>,
     findings: &mut Vec<Finding>,
@@ -293,6 +334,7 @@ pub(crate) fn check_base64_payloads(
         let is_doc = path.to_lowercase().ends_with(".md");
         let mut warn_emitted = false;
 
+        // three extraction strategies: raw chunks, concatenated literals, shell var assignments.
         let mut candidates: Vec<(String, Option<usize>)> = Vec::new();
         for m in chunk_re.find_iter(content) {
             candidates.push((m.as_str().to_string(), Some(m.start())));

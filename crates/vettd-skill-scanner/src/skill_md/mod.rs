@@ -1,10 +1,15 @@
 pub(crate) mod body;
 pub(crate) mod validate;
 
+/// frontmatter fields and body extracted from a `SKILL.md` file.
 pub(crate) struct ParsedSkillMd {
+    /// value of the `name:` field; `"unknown"` if absent or unparseable.
     pub(crate) name: String,
+    /// value of the `description:` field; empty string if absent.
     pub(crate) description: String,
+    /// value of the `repository:` field; empty string if absent.
     pub(crate) repository: String,
+    /// everything after the closing `---` fence, with leading blank lines stripped.
     pub(crate) body: String,
 }
 

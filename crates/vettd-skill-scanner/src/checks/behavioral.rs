@@ -7,6 +7,7 @@ use crate::consts::{DEFAULT_SOURCE, NEGATION_LOOKBACK_CHARS};
 use crate::finding::{Finding, FindingCategory, Severity};
 use crate::rules::*;
 
+/// raw (uncompiled) definition of a behavioral injection pattern.
 struct BehavioralPatternRaw {
     rule_id: &'static str,
     pattern_str: &'static str,
@@ -134,11 +135,20 @@ static BEHAVIORAL_PATTERN_DEFS: &[BehavioralPatternRaw] = &[
     },
 ];
 
+/// a compiled behavioral injection pattern, ready for regex matching.
+///
+/// produced from `BehavioralPatternRaw` by `get_behavioral_patterns` on first use.
+/// exported to `encoding.rs` for use in Unicode obfuscation and base64 payload checks.
 pub(crate) struct CompiledBehavioralPattern {
+    /// rule ID written to emitted findings.
     pub(crate) rule_id: &'static str,
+    /// compiled regex.
     pub(crate) regex: Regex,
+    /// human-readable label written to emitted findings.
     pub(crate) label: &'static str,
+    /// severity string parsed at match time ("critical", "high", "medium", "low").
     pub(crate) severity: &'static str,
+    /// if true, matches preceded by a denial phrase within `NEGATION_LOOKBACK_CHARS` chars are suppressed.
     pub(crate) respect_negation: bool,
 }
 
@@ -171,6 +181,11 @@ pub(crate) fn normalize_for_behavioral_scan(content: &str) -> String {
         .join("\n")
 }
 
+/// strips fenced code blocks, blockquotes, and example-labelled sections from markdown.
+///
+/// replaced lines are emitted as empty strings to preserve line numbers for downstream
+/// scanners. section suppression begins at a heading that matches "examples", "test cases",
+/// "sample attacks", etc. and ends when a heading of equal or lesser depth appears.
 fn strip_markdown_example_content(content: &str) -> String {
     static FENCE_RE: OnceLock<Regex> = OnceLock::new();
     static HEADING_RE: OnceLock<Regex> = OnceLock::new();
@@ -236,6 +251,23 @@ fn strip_markdown_example_content(content: &str) -> String {
     output.join("\n")
 }
 
+/// scans all text files for known behavioral injection patterns.
+///
+/// markdown files are pre-processed before matching: fenced code blocks, blockquotes, and
+/// headings that label example or test-case sections are replaced with blank lines so that
+/// documented attack samples in skill instructions do not produce false positives. non-markdown
+/// files are scanned after whitespace normalization only.
+///
+/// negation lookback is applied for patterns where `respect_negation` is true: if the text
+/// immediately before a match ends with a denial phrase ("never", "don't", etc.) the match
+/// is suppressed.
+///
+/// # Parameters
+/// - `text_files` — map of normalized relative paths to decoded UTF-8 file content.
+///
+/// # Returns
+/// `(findings, behavioral_check_failed)` — `behavioral_check_failed` is `true` if any
+/// critical or high-severity finding was produced.
 pub(crate) fn scan_behavioral_patterns(
     text_files: &HashMap<String, String>,
 ) -> (Vec<Finding>, bool) {

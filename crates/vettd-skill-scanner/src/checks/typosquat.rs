@@ -24,6 +24,14 @@ fn levenshtein(a: &str, b: &str) -> usize {
     dp[lb]
 }
 
+/// checks whether the skill name is within Levenshtein distance 2 of any well-known skill name.
+///
+/// a single close match produces a medium-severity finding; two or more escalate to critical.
+/// names equal to `"unknown"` or empty are skipped.
+///
+/// # Parameters
+/// - `name` — the skill's `name` field from `SKILL.md` frontmatter.
+/// - `findings` — output vec; a typosquatting finding is appended if matches are found.
 pub(crate) fn check_typosquat(name: &str, findings: &mut Vec<Finding>) {
     if name == "unknown" || name.is_empty() {
         return;

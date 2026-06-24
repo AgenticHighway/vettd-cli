@@ -7,14 +7,23 @@ use crate::consts::DEFAULT_SOURCE;
 use crate::finding::{Finding, FindingCategory, Intent, Severity};
 use crate::rules::*;
 
+/// a single entry in the built-in sensitive-pattern registry.
+///
+/// each entry is paired by index with a regex string in `SENSITIVE_PATTERN_STRS` and a
+/// compiled `Regex` in `SENSITIVE_REGEXES`. the three arrays must stay in lock-step: adding
+/// or removing a pattern requires the same change in all three.
 pub(crate) struct SensitivePattern {
+    /// rule ID written to the emitted finding's `rule_id` field.
     pub(crate) rule_id: &'static str,
+    /// human-readable label written to the emitted finding's `label` field.
     pub(crate) label: &'static str,
+    /// severity used for non-markdown files.
     pub(crate) severity: Severity,
+    /// intent classification; `Malicious` for deliberate exfiltration patterns, `Negligent` for hygiene issues.
     pub(crate) intent: Intent,
-    /// Skip this pattern for .md files (mirrors vettd's CODE_ONLY_LABELS).
+    /// if true, skip this pattern entirely for `.md` files (mirrors vettd's `CODE_ONLY_LABELS`).
     pub(crate) code_only: bool,
-    /// When scanning a .md file, use this severity instead of `severity`.
+    /// if set, overrides `severity` when the matched file is a `.md` file.
     pub(crate) doc_severity: Option<Severity>,
 }
 
@@ -684,6 +693,17 @@ static SUSPICIOUS_SECRET_KEY_STR: &str = r"(?i)(?:^|[-_.])(?:api[-_.]?key|access
 static ASSIGNMENT_QUOTED_VALUE_RE: OnceLock<Regex> = OnceLock::new();
 static SUSPICIOUS_SECRET_KEY_RE: OnceLock<Regex> = OnceLock::new();
 
+/// scans all text files against every pattern in `SENSITIVE_PATTERNS`.
+///
+/// for `.md` files, patterns with `code_only` set are skipped, and `doc_severity`
+/// overrides `severity` when set. only the first matching line per pattern per file is reported.
+///
+/// # Parameters
+/// - `text_files` — map of normalized relative paths to decoded UTF-8 file content.
+///
+/// # Returns
+/// `(findings, secrets_check_failed)` — `secrets_check_failed` is `true` if any
+/// critical or high-severity finding was produced.
 pub(crate) fn scan_sensitive_patterns(
     text_files: &HashMap<String, String>,
 ) -> (Vec<Finding>, bool) {
@@ -760,6 +780,14 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
+/// scans non-markdown files for high-entropy assignment expressions that resemble hardcoded secrets.
+///
+/// matches `key = "value"` and `key: "value"` forms where the key name contains a
+/// secret-related word (token, api_key, password, etc.) and the value has Shannon entropy ≥ 3.5.
+///
+/// # Parameters
+/// - `text_files` — map of normalized relative paths to decoded UTF-8 file content.
+/// - `findings` — output vec; detected high-entropy assignments are appended.
 pub(crate) fn scan_entropy(text_files: &HashMap<String, String>, findings: &mut Vec<Finding>) {
     let assign_re = ASSIGNMENT_QUOTED_VALUE_RE
         .get_or_init(|| Regex::new(ASSIGNMENT_QUOTED_VALUE_STR).expect("bad entropy regex"));
