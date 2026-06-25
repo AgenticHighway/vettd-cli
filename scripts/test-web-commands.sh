@@ -199,15 +199,6 @@ fi
 check_content "directory search (no-results output says No results)" \
     "No results" "$no_results_out"
 
-# ── directory trending ───────────────────────────────────────────────
-trending_out=$("$VETTD_BIN" directory trending 2>&1); t_exit=$?
-if [[ $t_exit -eq 0 ]]; then pass "directory trending"; else
-    fail "directory trending (exit $t_exit)"
-    echo "        output: $(echo "$trending_out" | head -3)"
-fi
-check_content "directory trending output says Trending" \
-    "Trending" "$trending_out"
-
 # ── directory random ─────────────────────────────────────────────────
 random_out=$("$VETTD_BIN" directory random 2>&1); r_exit=$?
 if [[ $r_exit -eq 0 ]]; then pass "directory random"; else

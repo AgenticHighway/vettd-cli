@@ -158,8 +158,6 @@ pub enum DirectorySubcommand {
     },
     /// List directory entries (not yet implemented)
     List,
-    /// Show trending entries (not yet implemented)
-    Trending,
     /// Show a random entry (not yet implemented)
     Random,
     /// View a directory entry by slug (not yet implemented)
@@ -725,7 +723,6 @@ pub fn run() {
         match action {
             DirectorySubcommand::Search { query } => crate::directory::handle_search(query),
             DirectorySubcommand::List => crate::directory::handle_list(),
-            DirectorySubcommand::Trending => crate::directory::handle_trending(),
             DirectorySubcommand::Random => crate::directory::handle_random(),
             DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
             DirectorySubcommand::Findings { slug, min_severity } => {
@@ -1370,17 +1367,6 @@ mod tests {
             cli.command,
             Some(Commands::Directory {
                 action: DirectorySubcommand::List
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_cli_directory_trending() {
-        let cli = Cli::parse_from(["vettd", "directory", "trending"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Directory {
-                action: DirectorySubcommand::Trending
             })
         ));
     }
