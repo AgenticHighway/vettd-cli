@@ -8,30 +8,33 @@ CLI journeys users actually experience.
 ```mermaid
 flowchart TD
     Start["User runs `vettd`"] --> Choice{"Entry path"}
-    Choice -->|"No subcommand"| Wizard["wizard.rs\ninteractive scan mode picker"]
-    Choice -->|"scan / quick / full /\nfile / folder / repo"| Scan["Run scan pipeline"]
-    Choice -->|"setup / auth"| Setup["Save API key + default endpoint"]
+    Choice -->|"No subcommand"| Help["Print help and exit"]
+    Choice -->|"scan (no subcommand)"| Wizard["wizard.rs\ninteractive scan mode picker"]
+    Choice -->|"scan default/quick/full/\nfile/folder/repo/submit"| Scan["Run scan pipeline"]
+    Choice -->|"auth"| Auth["Save API key + endpoint"]
+    Choice -->|"auth status"| AuthStatus["Show identity + reachability"]
+    Choice -->|"contract status"| ContractStatus["Show contract version status"]
+    Choice -->|"directory ..."| Directory["Browse public directory"]
     Choice -->|"rules ..."| Rules["List, add, remove,\nvalidate custom rules"]
     Choice -->|"update"| Update["Check or install a signed update"]
-    Choice -->|"auth status / contract status /\ndirectory ..."| Stub["Stub: print notice,\nexit code 2 (vettd#631)"]
 
     Wizard --> Scan
     Scan --> Output["Render local output\nor build submission payload"]
     Output --> Next{"TTY and no\n--json / --contract / --submit?"}
     Next -->|"Yes"| Prompt["Post-scan next step\nwrite report / submit / do nothing"]
     Next -->|"No"| End["Exit"]
-    Setup --> End
+    Auth --> End
+    AuthStatus --> End
+    ContractStatus --> End
+    Directory --> End
     Rules --> End
     Update --> End
-    Stub --> End
     Prompt --> End
 ```
 
 The `auth status`, `contract status`, and `directory`
-(`search`/`list`/`trending`/`random`/`view`/`findings`/`compare`) commands are
-registered in the CLI but currently scaffolded as stubs: each prints a
-not-yet-implemented notice to stderr and exits with code 2 until vettd#631
-lands the backend logic.
+(`search`/`list`/`random`/`view`/`findings`/`compare`) commands are
+fully implemented and connected to the vettd backend.
 
 ## Local-First Scan Journey
 

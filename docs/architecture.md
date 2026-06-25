@@ -99,7 +99,7 @@ to local output or optional submission:
         ▼
  ┌─────────────┐   Parses arguments, loads .vettd.toml for access tier
  │   cli.rs     │   (lite vs licensed), dispatches to scan, wizard,
- └──────┬───────┘   setup/auth/rules/update, and post-scan actions
+ └──────┬───────┘   auth/rules/update, and post-scan actions
         │
         ▼
  ┌─────────────┐   Picks discovery mode based on subcommand:

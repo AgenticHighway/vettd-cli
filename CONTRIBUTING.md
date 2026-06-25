@@ -30,16 +30,16 @@ This builds the `vettd` binary in debug mode at `target/debug/vettd`.
 cargo run -p vettd-cli
 
 # Quick scan (AI config areas only)
-cargo run -p vettd-cli -- quick
+cargo run -p vettd-cli -- scan quick
 
 # Scan a specific file
-cargo run -p vettd-cli -- file agents.md
+cargo run -p vettd-cli -- scan file agents.md
 
 # Scan current directory
-cargo run -p vettd-cli -- folder .
+cargo run -p vettd-cli -- scan folder .
 
 # Full system scan
-cargo run -p vettd-cli -- full
+cargo run -p vettd-cli -- scan full
 ```
 
 ### Run tests

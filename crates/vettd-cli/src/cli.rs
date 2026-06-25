@@ -76,7 +76,6 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum ScanSubcommand {
     /// Default scan — critical host roots plus bounded user-space/project roots
-    #[command(hide = true)]
     Default {
         #[command(flatten)]
         output: OutputArgs,
@@ -139,34 +138,34 @@ pub enum RuleAction {
 
 #[derive(Subcommand)]
 pub enum AuthSubcommand {
-    /// Show current auth/identity status (not yet implemented)
+    /// Show current auth/identity and reachability status
     Status,
 }
 
 #[derive(Subcommand)]
 pub enum ContractSubcommand {
-    /// Show local vs. server contract status (not yet implemented)
+    /// Show local vs. server contract version status
     Status,
 }
 
 #[derive(Subcommand)]
 pub enum DirectorySubcommand {
-    /// Search the directory (not yet implemented)
+    /// Search the directory
     Search {
         /// Search query (use quotes for multi-word queries)
         #[arg(required = true)]
         query: Vec<String>,
     },
-    /// List directory entries (not yet implemented)
+    /// List directory entries
     List,
-    /// Show a random entry (not yet implemented)
+    /// Show a random entry
     Random,
-    /// View a directory entry by slug (not yet implemented)
+    /// View a directory entry by slug
     View {
         /// Entry slug
         slug: String,
     },
-    /// Show findings for an entry (not yet implemented)
+    /// Show findings for an entry
     Findings {
         /// Entry slug
         slug: String,
@@ -174,7 +173,7 @@ pub enum DirectorySubcommand {
         #[arg(long, default_value = "info")]
         min_severity: String,
     },
-    /// Compare two directory entries (not yet implemented)
+    /// Compare two directory entries
     Compare {
         /// First entry slug
         slug_a: String,
