@@ -153,13 +153,12 @@ pub enum ContractSubcommand {
 pub enum DirectorySubcommand {
     /// Search the directory (not yet implemented)
     Search {
-        /// Search query
-        query: String,
+        /// Search query (use quotes for multi-word queries)
+        #[arg(required = true)]
+        query: Vec<String>,
     },
     /// List directory entries (not yet implemented)
     List,
-    /// Show trending entries (not yet implemented)
-    Trending,
     /// Show a random entry (not yet implemented)
     Random,
     /// View a directory entry by slug (not yet implemented)
@@ -413,9 +412,186 @@ fn apply_access_gate(report: ScanReport, access: &AccessConfig) -> ScanReport {
 
 /// Print a clear not-implemented notice to stderr and exit non-zero.
 ///
-/// Used by web-facing command stubs (auth status, contract status, directory)
-/// scaffolded ahead of their backend logic. Exit code 2 marks the
-/// recognized-but-unimplemented class distinctly from runtime errors (exit 1).
+/// Implement `vettd auth status`.
+///
+/// Exit codes: 0 = configured and reachable, 3 = not configured, 5 = unreachable.
+#[derive(serde::Deserialize)]
+struct WhoamiUser {
+    name: Option<String>,
+    email: Option<String>,
+    role: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhoamiApiKeyInfo {
+    name: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhoamiResponse {
+    user: WhoamiUser,
+    #[serde(rename = "apiKey")]
+    api_key: WhoamiApiKeyInfo,
+}
+
+fn handle_auth_status() -> i32 {
+    let config = crate::submit::load_auth_config();
+
+    // Local half — always print what we know.
+    match &config {
+        None => {
+            println!("Not configured. Run `vettd auth` to set up credentials.");
+        }
+        Some(cfg) => {
+            let host = crate::network::endpoint_display_host(&cfg.endpoint);
+            println!("{:<13}  {host}", "Endpoint:");
+            println!("{:<13}  set", "API key:");
+        }
+    }
+
+    // Scanner identity files (read-only — do not generate if absent).
+    let scanner_uuid = crate::identity::default_scanner_uuid_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let account_uuid = crate::identity::default_scanner_account_uuid_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    println!(
+        "{:<13}  {}",
+        "Scanner UUID:",
+        scanner_uuid.as_deref().unwrap_or("not set")
+    );
+    println!(
+        "{:<13}  {}",
+        "Account UUID:",
+        account_uuid.as_deref().unwrap_or("not set")
+    );
+
+    if config.is_none() {
+        return 3;
+    }
+
+    let cfg_inner = config.unwrap();
+    let endpoint = cfg_inner.endpoint;
+    let api_key = cfg_inner.api_key;
+
+    // Reachability probe via the public contract endpoint (no auth header).
+    let contract_url = format!(
+        "{}?version=true",
+        crate::network::derive_api_url(&endpoint, "contract")
+    );
+    match crate::read_client::fetch_raw(&contract_url) {
+        Err(crate::read_client::ReadError::Unreachable(msg)) => {
+            println!("{:<13}  unreachable ({msg})", "Reachability:");
+            return 5;
+        }
+        _ => {
+            // Any HTTP response (even an error status) means the server was reached.
+            println!("{:<13}  ok", "Reachability:");
+        }
+    }
+
+    // Whoami — authenticated GET to confirm the key is valid and fetch identity.
+    let whoami_url = crate::network::derive_api_url(&endpoint, "auth/whoami");
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    match agent
+        .get(&whoami_url)
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("User-Agent", &crate::updater::user_agent_string())
+        .call()
+    {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            if status == 401 || status == 403 {
+                println!("{:<13}  API key invalid or revoked", "Identity:");
+                return 3;
+            }
+            if status == 200 {
+                if let Ok(whoami) = response.body_mut().read_json::<WhoamiResponse>() {
+                    if let Some(name) = &whoami.user.name {
+                        println!("{:<13}  {name}", "Account:");
+                    }
+                    if let Some(email) = &whoami.user.email {
+                        println!("{:<13}  {email}", "Email:");
+                    }
+                    if let Some(role) = &whoami.user.role {
+                        println!("{:<13}  {role}", "Role:");
+                    }
+                    if let Some(key_name) = &whoami.api_key.name {
+                        println!("{:<13}  {key_name}", "Key name:");
+                    }
+                }
+            }
+            0
+        }
+        Err(_) => {
+            // Server was reachable (confirmed above) but whoami failed at the
+            // transport layer — treat as a transient error, don't change exit code.
+            0
+        }
+    }
+}
+
+/// Implement `vettd contract status`.
+///
+/// Exit codes: 0 = match, 3 = behind (server ahead), 4 = ahead (CLI forked),
+/// 5 = unreachable or unparseable server version.
+fn handle_contract_status() -> i32 {
+    let endpoint = crate::submit::load_auth_config()
+        .map(|c| c.endpoint)
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
+
+    let local = crate::contract_sync::COMPILED_CONTRACT_VERSION;
+
+    match crate::contract_sync::fetch_server_contract_version(&endpoint) {
+        Ok(server) => match crate::semver::cmp(local, &server) {
+            Some(std::cmp::Ordering::Equal) => {
+                println!("Contract: up to date (v{local})");
+                0
+            }
+            Some(std::cmp::Ordering::Less) => {
+                println!(
+                    "Contract: behind — compiled v{local}, server v{server}. \
+                     Run `vettd update` to upgrade."
+                );
+                3
+            }
+            Some(std::cmp::Ordering::Greater) => {
+                println!(
+                    "Contract: ahead — compiled v{local}, server v{server}. \
+                     This build produces a newer contract than the server expects."
+                );
+                4
+            }
+            None => {
+                eprintln!("Error: could not parse server contract version '{server}' as semver.");
+                5
+            }
+        },
+        Err(crate::contract_sync::SyncError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach contract endpoint: {msg}");
+            5
+        }
+        Err(crate::contract_sync::SyncError::ServerError(msg)) => {
+            eprintln!("Error: contract endpoint error: {msg}");
+            5
+        }
+    }
+}
+
+/// Exit with code 2 for commands that are scaffolded but not yet implemented.
+///
+/// Exit code 2 distinguishes recognized-but-unimplemented from runtime errors
+/// (exit 1) and allows scripts to detect this specific state.
 fn not_implemented(command: &str) -> ! {
     eprintln!("Error: `vettd {command}` is not yet implemented.");
     std::process::exit(2);
@@ -487,7 +663,7 @@ pub fn run() {
     } = &cmd
     {
         if let Some(AuthSubcommand::Status) = action {
-            not_implemented("auth status");
+            std::process::exit(handle_auth_status());
         }
         let api_key = match key {
             Some(value) => value.clone(),
@@ -538,29 +714,36 @@ pub fn run() {
         return;
     }
 
-    // Handle contract command (stub — vettd#631 owns real logic)
+    // Handle contract command
     if let Commands::Contract { action } = &cmd {
         match action {
-            ContractSubcommand::Status => not_implemented("contract status"),
+            ContractSubcommand::Status => std::process::exit(handle_contract_status()),
         }
-        // Unreachable while all arms diverge; guards fallthrough when real arms land.
-        #[allow(unreachable_code)]
-        return;
     }
 
-    // Handle directory command (stub — vettd#631 owns real logic)
+    // Handle directory commands
     if let Commands::Directory { action } = &cmd {
         match action {
-            DirectorySubcommand::Search { .. } => not_implemented("directory search"),
-            DirectorySubcommand::List => not_implemented("directory list"),
-            DirectorySubcommand::Trending => not_implemented("directory trending"),
-            DirectorySubcommand::Random => not_implemented("directory random"),
-            DirectorySubcommand::View { .. } => not_implemented("directory view"),
-            DirectorySubcommand::Findings { .. } => not_implemented("directory findings"),
-            DirectorySubcommand::Compare { .. } => not_implemented("directory compare"),
+            DirectorySubcommand::Search { query } => {
+                if query.len() > 1 {
+                    eprintln!(
+                        "Error: use quotes for multi-word queries: vettd directory search '{}'",
+                        query.join(" ")
+                    );
+                    std::process::exit(1);
+                }
+                crate::directory::handle_search(&query[0])
+            }
+            DirectorySubcommand::List => crate::directory::handle_list(),
+            DirectorySubcommand::Random => crate::directory::handle_random(),
+            DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
+            DirectorySubcommand::Findings { slug, min_severity } => {
+                crate::directory::handle_findings(slug, min_severity)
+            }
+            DirectorySubcommand::Compare { slug_a, slug_b } => {
+                crate::directory::handle_compare(slug_a, slug_b)
+            }
         }
-        // Unreachable while all arms diverge; guards fallthrough when real arms land.
-        #[allow(unreachable_code)]
         return;
     }
 
@@ -1184,7 +1367,7 @@ mod tests {
         match cli.command {
             Some(Commands::Directory {
                 action: DirectorySubcommand::Search { query },
-            }) => assert_eq!(query, "foo"),
+            }) => assert_eq!(query, vec!["foo"]),
             _ => panic!("Expected directory search command"),
         }
     }
@@ -1196,17 +1379,6 @@ mod tests {
             cli.command,
             Some(Commands::Directory {
                 action: DirectorySubcommand::List
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_cli_directory_trending() {
-        let cli = Cli::parse_from(["vettd", "directory", "trending"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Directory {
-                action: DirectorySubcommand::Trending
             })
         ));
     }

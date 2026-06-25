@@ -168,6 +168,37 @@ pub struct SyncResult {
     pub compiled_matches: bool,
 }
 
+/// Fetch the server's contract version via the `X-Contract-Version` response
+/// header without writing to the local cache.
+///
+/// Used by `contract status` to get a lightweight read of the server version
+/// while avoiding the `~/.vettd/contract/` write side-effect of `sync_contract`.
+pub fn fetch_server_contract_version(ingest_endpoint: &str) -> Result<String, SyncError> {
+    let contract_url = derive_contract_url(ingest_endpoint);
+    let url = format!("{contract_url}?version=true");
+    let response = ureq::get(&url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .build()
+        .header("User-Agent", &crate::updater::user_agent_string())
+        .call()
+        .map_err(|e| match &e {
+            ureq::Error::StatusCode(code) => {
+                SyncError::ServerError(format!("contract endpoint returned {code}"))
+            }
+            _ => SyncError::Unreachable(format!("{e}")),
+        })?;
+
+    response
+        .headers()
+        .get("x-contract-version")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            SyncError::ServerError("server response missing x-contract-version header".to_string())
+        })
+}
+
 /// Check the server contract version and update the local cache if stale.
 ///
 /// Returns the remote version and whether the cache was refreshed.
