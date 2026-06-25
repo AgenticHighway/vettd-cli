@@ -196,7 +196,7 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     println!();
     println!("  {BOLD}SAVE & SHARE{RESET}");
     println!("  {DIM}{}{RESET}", "─".repeat(w - 2));
-    println!("  {DIM}vettd {cmd_name} --json{RESET}          {DIM}→{RESET} JSON to stdout");
+    println!("  {DIM}vettd {cmd_name} --stdout{RESET}        {DIM}→{RESET} JSON to stdout");
     println!(
         "  {DIM}vettd {cmd_name} --out{RESET}           {DIM}→{RESET} write vettd-report.json"
     );

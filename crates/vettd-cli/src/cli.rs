@@ -208,7 +208,7 @@ pub struct OutputArgs {
     pub full: bool,
     /// Output JSON to stdout
     #[arg(long)]
-    pub json: bool,
+    pub stdout: bool,
     /// Print compact summary only
     #[arg(long)]
     pub summary: bool,
@@ -236,7 +236,7 @@ impl Default for OutputArgs {
     fn default() -> Self {
         Self {
             full: false,
-            json: false,
+            stdout: false,
             summary: false,
             out: None,
             min_severity: "info".to_string(),
@@ -914,7 +914,7 @@ pub fn run() {
         emit(
             &report,
             scan_duration_ms,
-            out.json,
+            out.stdout,
             &out.out,
             out.summary,
             out.full,
@@ -923,7 +923,7 @@ pub fn run() {
     }
 
     // Offer interactive follow-up actions for local-only scans.
-    if !wants_submit && !out.json && !out.contract && is_interactive() {
+    if !wants_submit && !out.stdout && !out.contract && is_interactive() {
         prompt_post_scan_action(&report, scan_duration_ms);
     }
 }
@@ -1733,12 +1733,12 @@ mod tests {
 
     #[test]
     fn parse_cli_output_args_json() {
-        let cli = Cli::parse_from(["vettd", "scan", "quick", "--json"]);
+        let cli = Cli::parse_from(["vettd", "scan", "quick", "--stdout"]);
         match cli.command {
             Some(Commands::Scan {
                 subcommand: Some(ScanSubcommand::Quick { output, .. }),
             }) => {
-                assert!(output.json);
+                assert!(output.stdout);
                 assert!(!output.summary);
                 assert!(!output.full);
             }
