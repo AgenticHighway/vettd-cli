@@ -262,8 +262,22 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-pub fn handle_list(page: u32) {
-    let url = format!("{}?sort=newest&page={page}", directory_base_url());
+fn api_sort_params(sort: &str, reverse: bool) -> String {
+    let s = match sort {
+        "rating" => "verdict",
+        other => other,
+    };
+    let default_asc = sort == "alpha";
+    let dir = if default_asc ^ reverse { "asc" } else { "desc" };
+    format!("sort={s}&dir={dir}")
+}
+
+pub fn handle_list(page: u32, sort: &str, reverse: bool) {
+    let url = format!(
+        "{}?{}&page={page}",
+        directory_base_url(),
+        api_sort_params(sort, reverse)
+    );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
             print_cards(&resp.skills);
@@ -290,11 +304,12 @@ pub fn handle_list(page: u32) {
     }
 }
 
-pub fn handle_search(query: &str, page: u32) {
+pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool) {
     let url = format!(
-        "{}?search={}&sort=newest&page={page}",
+        "{}?search={}&{}&page={page}",
         directory_base_url(),
-        percent_encode(query)
+        percent_encode(query),
+        api_sort_params(sort, reverse),
     );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
