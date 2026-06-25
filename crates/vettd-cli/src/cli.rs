@@ -153,8 +153,9 @@ pub enum ContractSubcommand {
 pub enum DirectorySubcommand {
     /// Search the directory (not yet implemented)
     Search {
-        /// Search query
-        query: String,
+        /// Search query (use quotes for multi-word queries)
+        #[arg(required = true)]
+        query: Vec<String>,
     },
     /// List directory entries (not yet implemented)
     List,
@@ -443,8 +444,8 @@ fn handle_auth_status() -> i32 {
         }
         Some(cfg) => {
             let host = crate::network::endpoint_display_host(&cfg.endpoint);
-            println!("Endpoint:  {host}");
-            println!("API key:   set");
+            println!("{:<13}  {host}", "Endpoint:");
+            println!("{:<13}  set", "API key:");
         }
     }
 
@@ -461,11 +462,13 @@ fn handle_auth_status() -> i32 {
         .filter(|s| !s.is_empty());
 
     println!(
-        "Scanner UUID:  {}",
+        "{:<13}  {}",
+        "Scanner UUID:",
         scanner_uuid.as_deref().unwrap_or("not set")
     );
     println!(
-        "Account UUID:  {}",
+        "{:<13}  {}",
+        "Account UUID:",
         account_uuid.as_deref().unwrap_or("not set")
     );
 
@@ -484,12 +487,12 @@ fn handle_auth_status() -> i32 {
     );
     match crate::read_client::fetch_raw(&contract_url) {
         Err(crate::read_client::ReadError::Unreachable(msg)) => {
-            println!("Reachability: unreachable ({msg})");
+            println!("{:<13}  unreachable ({msg})", "Reachability:");
             return 5;
         }
         _ => {
             // Any HTTP response (even an error status) means the server was reached.
-            println!("Reachability: ok");
+            println!("{:<13}  ok", "Reachability:");
         }
     }
 
@@ -509,22 +512,22 @@ fn handle_auth_status() -> i32 {
         Ok(mut response) => {
             let status = response.status().as_u16();
             if status == 401 || status == 403 {
-                println!("Identity:  API key invalid or revoked");
+                println!("{:<13}  API key invalid or revoked", "Identity:");
                 return 3;
             }
             if status == 200 {
                 if let Ok(whoami) = response.body_mut().read_json::<WhoamiResponse>() {
                     if let Some(name) = &whoami.user.name {
-                        println!("Account:   {name}");
+                        println!("{:<13}  {name}", "Account:");
                     }
                     if let Some(email) = &whoami.user.email {
-                        println!("Email:     {email}");
+                        println!("{:<13}  {email}", "Email:");
                     }
                     if let Some(role) = &whoami.user.role {
-                        println!("Role:      {role}");
+                        println!("{:<13}  {role}", "Role:");
                     }
                     if let Some(key_name) = &whoami.api_key.name {
-                        println!("Key name:  {key_name}");
+                        println!("{:<13}  {key_name}", "Key name:");
                     }
                 }
             }
@@ -721,7 +724,16 @@ pub fn run() {
     // Handle directory commands
     if let Commands::Directory { action } = &cmd {
         match action {
-            DirectorySubcommand::Search { query } => crate::directory::handle_search(query),
+            DirectorySubcommand::Search { query } => {
+                if query.len() > 1 {
+                    eprintln!(
+                        "Error: use quotes for multi-word queries: vettd directory search '{}'",
+                        query.join(" ")
+                    );
+                    std::process::exit(1);
+                }
+                crate::directory::handle_search(&query[0])
+            }
             DirectorySubcommand::List => crate::directory::handle_list(),
             DirectorySubcommand::Random => crate::directory::handle_random(),
             DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
@@ -1355,7 +1367,7 @@ mod tests {
         match cli.command {
             Some(Commands::Directory {
                 action: DirectorySubcommand::Search { query },
-            }) => assert_eq!(query, "foo"),
+            }) => assert_eq!(query, vec!["foo"]),
             _ => panic!("Expected directory search command"),
         }
     }
