@@ -79,7 +79,7 @@ struct ManifestSignatureEnvelope {
 }
 
 /// Result of comparing the manifest version to the running binary.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct UpdateCheckResult {
     pub current_version: String,
     pub latest_version: String,

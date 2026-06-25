@@ -21,6 +21,9 @@ use crate::submit::{save_auth_config, AuthConfig, DEFAULT_PRODUCTION_ENDPOINT};
     version = env!("CARGO_PKG_VERSION"),
 )]
 pub struct Cli {
+    /// Output machine-readable JSON to stdout
+    #[arg(long, global = true)]
+    pub json: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -452,45 +455,80 @@ struct WhoamiResponse {
     api_key: WhoamiApiKeyInfo,
 }
 
-fn handle_auth_status() -> i32 {
+#[derive(serde::Serialize)]
+struct AuthStatusOutput {
+    configured: bool,
+    endpoint: Option<String>,
+    api_key_set: bool,
+    scanner_uuid: Option<String>,
+    account_uuid: Option<String>,
+    reachable: Option<bool>,
+    account: Option<AuthAccountInfo>,
+}
+
+#[derive(serde::Serialize)]
+struct AuthAccountInfo {
+    name: Option<String>,
+    email: Option<String>,
+    role: Option<String>,
+    key_name: Option<String>,
+}
+
+fn handle_auth_status(json: bool) -> i32 {
     let config = crate::submit::load_auth_config();
 
-    // Local half — always print what we know.
-    match &config {
-        None => {
-            println!("Not configured. Run `vettd auth` to set up credentials.");
-        }
-        Some(cfg) => {
-            let host = crate::network::endpoint_display_host(&cfg.endpoint);
-            println!("{:<13}  {host}", "Endpoint:");
-            println!("{:<13}  set", "API key:");
+    let mut out = AuthStatusOutput {
+        configured: config.is_some(),
+        endpoint: config.as_ref().map(|c| c.endpoint.clone()),
+        api_key_set: config.is_some(),
+        scanner_uuid: None,
+        account_uuid: None,
+        reachable: None,
+        account: None,
+    };
+
+    if !json {
+        match &config {
+            None => {
+                println!("Not configured. Run `vettd auth` to set up credentials.");
+            }
+            Some(cfg) => {
+                let host = crate::network::endpoint_display_host(&cfg.endpoint);
+                println!("{:<13}  {host}", "Endpoint:");
+                println!("{:<13}  set", "API key:");
+            }
         }
     }
 
     // Scanner identity files (read-only — do not generate if absent).
-    let scanner_uuid = crate::identity::default_scanner_uuid_path()
+    out.scanner_uuid = crate::identity::default_scanner_uuid_path()
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let account_uuid = crate::identity::default_scanner_account_uuid_path()
+    out.account_uuid = crate::identity::default_scanner_account_uuid_path()
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    println!(
-        "{:<13}  {}",
-        "Scanner UUID:",
-        scanner_uuid.as_deref().unwrap_or("not set")
-    );
-    println!(
-        "{:<13}  {}",
-        "Account UUID:",
-        account_uuid.as_deref().unwrap_or("not set")
-    );
+    if !json {
+        println!(
+            "{:<13}  {}",
+            "Scanner UUID:",
+            out.scanner_uuid.as_deref().unwrap_or("not set")
+        );
+        println!(
+            "{:<13}  {}",
+            "Account UUID:",
+            out.account_uuid.as_deref().unwrap_or("not set")
+        );
+    }
 
     if config.is_none() {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        }
         return 3;
     }
 
@@ -505,12 +543,19 @@ fn handle_auth_status() -> i32 {
     );
     match crate::read_client::fetch_raw(&contract_url) {
         Err(crate::read_client::ReadError::Unreachable(msg)) => {
-            println!("{:<13}  unreachable ({msg})", "Reachability:");
+            out.reachable = Some(false);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            } else {
+                println!("{:<13}  unreachable ({msg})", "Reachability:");
+            }
             return 5;
         }
         _ => {
-            // Any HTTP response (even an error status) means the server was reached.
-            println!("{:<13}  ok", "Reachability:");
+            out.reachable = Some(true);
+            if !json {
+                println!("{:<13}  ok", "Reachability:");
+            }
         }
     }
 
@@ -530,30 +575,48 @@ fn handle_auth_status() -> i32 {
         Ok(mut response) => {
             let status = response.status().as_u16();
             if status == 401 || status == 403 {
-                println!("{:<13}  API key invalid or revoked", "Identity:");
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+                } else {
+                    println!("{:<13}  API key invalid or revoked", "Identity:");
+                }
                 return 3;
             }
             if status == 200 {
                 if let Ok(whoami) = response.body_mut().read_json::<WhoamiResponse>() {
-                    if let Some(name) = &whoami.user.name {
-                        println!("{:<13}  {name}", "Account:");
-                    }
-                    if let Some(email) = &whoami.user.email {
-                        println!("{:<13}  {email}", "Email:");
-                    }
-                    if let Some(role) = &whoami.user.role {
-                        println!("{:<13}  {role}", "Role:");
-                    }
-                    if let Some(key_name) = &whoami.api_key.name {
-                        println!("{:<13}  {key_name}", "Key name:");
+                    out.account = Some(AuthAccountInfo {
+                        name: whoami.user.name.clone(),
+                        email: whoami.user.email.clone(),
+                        role: whoami.user.role.clone(),
+                        key_name: whoami.api_key.name.clone(),
+                    });
+                    if !json {
+                        if let Some(name) = &whoami.user.name {
+                            println!("{:<13}  {name}", "Account:");
+                        }
+                        if let Some(email) = &whoami.user.email {
+                            println!("{:<13}  {email}", "Email:");
+                        }
+                        if let Some(role) = &whoami.user.role {
+                            println!("{:<13}  {role}", "Role:");
+                        }
+                        if let Some(key_name) = &whoami.api_key.name {
+                            println!("{:<13}  {key_name}", "Key name:");
+                        }
                     }
                 }
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
             }
             0
         }
         Err(_) => {
             // Server was reachable (confirmed above) but whoami failed at the
             // transport layer — treat as a transient error, don't change exit code.
+            if json {
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            }
             0
         }
     }
@@ -563,44 +626,89 @@ fn handle_auth_status() -> i32 {
 ///
 /// Exit codes: 0 = match, 3 = behind (server ahead), 4 = ahead (CLI forked),
 /// 5 = unreachable or unparseable server version.
-fn handle_contract_status() -> i32 {
+fn handle_contract_status(json: bool) -> i32 {
+    #[derive(serde::Serialize)]
+    struct ContractStatusOutput<'a> {
+        local_version: &'a str,
+        server_version: Option<String>,
+        status: &'a str,
+    }
+
     let endpoint = crate::submit::load_auth_config()
         .map(|c| c.endpoint)
         .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
 
     let local = crate::contract_sync::COMPILED_CONTRACT_VERSION;
 
+    let emit_json = |server_version: Option<String>, status: &str| {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ContractStatusOutput {
+                local_version: local,
+                server_version,
+                status,
+            })
+            .unwrap_or_default()
+        );
+    };
+
     match crate::contract_sync::fetch_server_contract_version(&endpoint) {
         Ok(server) => match crate::semver::cmp(local, &server) {
             Some(std::cmp::Ordering::Equal) => {
-                println!("Contract: up to date (v{local})");
+                if json {
+                    emit_json(Some(server), "up_to_date");
+                } else {
+                    println!("Contract: up to date (v{local})");
+                }
                 0
             }
             Some(std::cmp::Ordering::Less) => {
-                println!(
-                    "Contract: behind — compiled v{local}, server v{server}. \
-                     Run `vettd update` to upgrade."
-                );
+                if json {
+                    emit_json(Some(server.clone()), "behind");
+                } else {
+                    println!(
+                        "Contract: behind — compiled v{local}, server v{server}. \
+                         Run `vettd update` to upgrade."
+                    );
+                }
                 3
             }
             Some(std::cmp::Ordering::Greater) => {
-                println!(
-                    "Contract: ahead — compiled v{local}, server v{server}. \
-                     This build produces a newer contract than the server expects."
-                );
+                if json {
+                    emit_json(Some(server.clone()), "ahead");
+                } else {
+                    println!(
+                        "Contract: ahead — compiled v{local}, server v{server}. \
+                         This build produces a newer contract than the server expects."
+                    );
+                }
                 4
             }
             None => {
-                eprintln!("Error: could not parse server contract version '{server}' as semver.");
+                if json {
+                    emit_json(Some(server.clone()), "error");
+                } else {
+                    eprintln!(
+                        "Error: could not parse server contract version '{server}' as semver."
+                    );
+                }
                 5
             }
         },
         Err(crate::contract_sync::SyncError::Unreachable(msg)) => {
-            eprintln!("Error: could not reach contract endpoint: {msg}");
+            if json {
+                emit_json(None, "error");
+            } else {
+                eprintln!("Error: could not reach contract endpoint: {msg}");
+            }
             5
         }
         Err(crate::contract_sync::SyncError::ServerError(msg)) => {
-            eprintln!("Error: contract endpoint error: {msg}");
+            if json {
+                emit_json(None, "error");
+            } else {
+                eprintln!("Error: contract endpoint error: {msg}");
+            }
             5
         }
     }
@@ -621,6 +729,7 @@ fn not_implemented(command: &str) -> ! {
 
 pub fn run() {
     let cli = Cli::parse();
+    let json = cli.json;
 
     let cmd = match cli.command {
         Some(c) => c,
@@ -634,10 +743,10 @@ pub fn run() {
     // Handle rules subcommand
     if let Commands::Rules { action } = &cmd {
         match action {
-            RuleAction::List => crate::rules::cmd_list(),
+            RuleAction::List => crate::rules::cmd_list(json),
             RuleAction::Add { path } => crate::rules::cmd_add(path),
             RuleAction::Remove { name } => crate::rules::cmd_remove(name),
-            RuleAction::Validate { path } => crate::rules::cmd_validate(path),
+            RuleAction::Validate { path } => crate::rules::cmd_validate(path, json),
         }
         return;
     }
@@ -647,7 +756,12 @@ pub fn run() {
         if *check {
             match crate::updater::check_for_update(10) {
                 Ok(result) => {
-                    if result.is_newer {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&result).unwrap_or_default()
+                        );
+                    } else if result.is_newer {
                         eprintln!(
                             "Update available: {} → {}",
                             result.current_version, result.latest_version
@@ -665,9 +779,14 @@ pub fn run() {
                     std::process::exit(1);
                 }
             }
-        } else if let Err(e) = crate::updater::perform_update(*force) {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
+        } else {
+            if json {
+                println!("{{}}");
+            }
+            if let Err(e) = crate::updater::perform_update(*force) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -681,7 +800,7 @@ pub fn run() {
     } = &cmd
     {
         if let Some(AuthSubcommand::Status) = action {
-            std::process::exit(handle_auth_status());
+            std::process::exit(handle_auth_status(json));
         }
         let api_key = match require_auth_key(key.clone(), is_interactive()) {
             Ok(Some(value)) => value,
@@ -739,7 +858,7 @@ pub fn run() {
     // Handle contract command
     if let Commands::Contract { action } = &cmd {
         match action {
-            ContractSubcommand::Status => std::process::exit(handle_contract_status()),
+            ContractSubcommand::Status => std::process::exit(handle_contract_status(json)),
         }
     }
 
@@ -759,20 +878,20 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::directory::handle_search(&query[0], *page, sort, *reverse)
+                crate::directory::handle_search(&query[0], *page, sort, *reverse, json)
             }
             DirectorySubcommand::List {
                 page,
                 sort,
                 reverse,
-            } => crate::directory::handle_list(*page, sort, *reverse),
-            DirectorySubcommand::Random => crate::directory::handle_random(),
-            DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
+            } => crate::directory::handle_list(*page, sort, *reverse, json),
+            DirectorySubcommand::Random => crate::directory::handle_random(json),
+            DirectorySubcommand::View { slug } => crate::directory::handle_view(slug, json),
             DirectorySubcommand::Findings { slug, min_severity } => {
-                crate::directory::handle_findings(slug, min_severity)
+                crate::directory::handle_findings(slug, min_severity, json)
             }
             DirectorySubcommand::Compare { slug_a, slug_b } => {
-                crate::directory::handle_compare(slug_a, slug_b)
+                crate::directory::handle_compare(slug_a, slug_b, json)
             }
         }
         return;
