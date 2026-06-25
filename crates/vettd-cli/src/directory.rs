@@ -262,15 +262,36 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-pub fn handle_list() {
-    let url = format!("{}?sort=newest", directory_base_url());
+fn api_sort_params(sort: &str, reverse: bool) -> String {
+    let s = match sort {
+        "rating" => "verdict",
+        other => other,
+    };
+    let default_asc = sort == "alpha";
+    let dir = if default_asc ^ reverse { "asc" } else { "desc" };
+    format!("sort={s}&dir={dir}")
+}
+
+pub fn handle_list(page: u32, sort: &str, reverse: bool) {
+    let url = format!(
+        "{}?{}&page={page}",
+        directory_base_url(),
+        api_sort_params(sort, reverse)
+    );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
-            println!(
-                "{} skills (page {}/{}):",
-                resp.total, resp.page, resp.total_pages
-            );
             print_cards(&resp.skills);
+            let shown = resp.skills.len();
+            if resp.page < resp.total_pages {
+                println!(
+                    "\n{DIM}Showing {} of {} assets — use --page {} to see more.{RESET}",
+                    shown,
+                    resp.total,
+                    resp.page + 1,
+                );
+            } else {
+                println!("\n{DIM}Showing {} of {} assets.{RESET}", shown, resp.total);
+            }
         }
         Err(ReadError::Unreachable(msg)) => {
             eprintln!("Error: could not reach the vettd directory: {msg}");
@@ -283,22 +304,34 @@ pub fn handle_list() {
     }
 }
 
-pub fn handle_search(query: &str) {
+pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool) {
     let url = format!(
-        "{}?search={}&sort=newest",
+        "{}?search={}&{}&page={page}",
         directory_base_url(),
-        percent_encode(query)
+        percent_encode(query),
+        api_sort_params(sort, reverse),
     );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
             if resp.skills.is_empty() {
                 println!("No results for \"{}\".", query);
             } else {
-                println!(
-                    "{} results for \"{}\" (page {}/{}):",
-                    resp.total, query, resp.page, resp.total_pages
-                );
                 print_cards(&resp.skills);
+                let shown = resp.skills.len();
+                if resp.page < resp.total_pages {
+                    println!(
+                        "\n{DIM}Showing {} of {} assets for \"{}\" — use --page {} to see more.{RESET}",
+                        shown,
+                        resp.total,
+                        query,
+                        resp.page + 1,
+                    );
+                } else {
+                    println!(
+                        "\n{DIM}Showing {} of {} assets for \"{}\".{RESET}",
+                        shown, resp.total, query,
+                    );
+                }
             }
         }
         Err(ReadError::Unreachable(msg)) => {

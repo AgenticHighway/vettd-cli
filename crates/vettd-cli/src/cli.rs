@@ -155,9 +155,28 @@ pub enum DirectorySubcommand {
         /// Search query (use quotes for multi-word queries)
         #[arg(required = true)]
         query: Vec<String>,
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Sort order: newest|rating|alpha
+        #[arg(long, default_value = "newest")]
+        sort: String,
+        /// Reverse the sort order
+        #[arg(long, short = 'r')]
+        reverse: bool,
     },
     /// List directory entries
-    List,
+    List {
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Sort order: newest|rating|alpha
+        #[arg(long, default_value = "newest")]
+        sort: String,
+        /// Reverse the sort order
+        #[arg(long, short = 'r')]
+        reverse: bool,
+    },
     /// Show a random entry
     Random,
     /// View a directory entry by slug
@@ -727,7 +746,12 @@ pub fn run() {
     // Handle directory commands
     if let Commands::Directory { action } = &cmd {
         match action {
-            DirectorySubcommand::Search { query } => {
+            DirectorySubcommand::Search {
+                query,
+                page,
+                sort,
+                reverse,
+            } => {
                 if query.len() > 1 {
                     eprintln!(
                         "Error: use quotes for multi-word queries: vettd directory search '{}'",
@@ -735,9 +759,13 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::directory::handle_search(&query[0])
+                crate::directory::handle_search(&query[0], *page, sort, *reverse)
             }
-            DirectorySubcommand::List => crate::directory::handle_list(),
+            DirectorySubcommand::List {
+                page,
+                sort,
+                reverse,
+            } => crate::directory::handle_list(*page, sort, *reverse),
             DirectorySubcommand::Random => crate::directory::handle_random(),
             DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
             DirectorySubcommand::Findings { slug, min_severity } => {
@@ -1461,8 +1489,40 @@ mod tests {
         let cli = Cli::parse_from(["vettd", "directory", "search", "foo"]);
         match cli.command {
             Some(Commands::Directory {
-                action: DirectorySubcommand::Search { query },
-            }) => assert_eq!(query, vec!["foo"]),
+                action:
+                    DirectorySubcommand::Search {
+                        query, page, sort, ..
+                    },
+            }) => {
+                assert_eq!(query, vec!["foo"]);
+                assert_eq!(page, 1);
+                assert_eq!(sort, "newest");
+            }
+            _ => panic!("Expected directory search command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_search_page() {
+        let cli = Cli::parse_from(["vettd", "directory", "search", "foo", "--page", "3"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Search { query, page, .. },
+            }) => {
+                assert_eq!(query, vec!["foo"]);
+                assert_eq!(page, 3);
+            }
+            _ => panic!("Expected directory search command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_search_sort() {
+        let cli = Cli::parse_from(["vettd", "directory", "search", "foo", "--sort", "rating"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Search { sort, .. },
+            }) => assert_eq!(sort, "rating"),
             _ => panic!("Expected directory search command"),
         }
     }
@@ -1473,9 +1533,53 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Directory {
-                action: DirectorySubcommand::List
+                action: DirectorySubcommand::List { page: 1, .. }
             })
         ));
+    }
+
+    #[test]
+    fn parse_cli_directory_list_page() {
+        let cli = Cli::parse_from(["vettd", "directory", "list", "--page", "2"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Directory {
+                action: DirectorySubcommand::List { page: 2, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_list_sort() {
+        let cli = Cli::parse_from(["vettd", "directory", "list", "--sort", "alpha"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::List { sort, .. },
+            }) => assert_eq!(sort, "alpha"),
+            _ => panic!("Expected directory list command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_list_reverse() {
+        let cli = Cli::parse_from(["vettd", "directory", "list", "--reverse"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::List { reverse, .. },
+            }) => assert!(reverse),
+            _ => panic!("Expected directory list command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_search_reverse() {
+        let cli = Cli::parse_from(["vettd", "directory", "search", "foo", "--reverse"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Search { reverse, .. },
+            }) => assert!(reverse),
+            _ => panic!("Expected directory search command"),
+        }
     }
 
     #[test]
