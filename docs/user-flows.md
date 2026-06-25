@@ -43,7 +43,7 @@ sequenceDiagram
     participant Out as local output
     participant Prompt as post-scan menu
 
-    User->>CLI: vettd quick / file / repo ...
+    User->>CLI: vettd scan quick / scan file / scan repo ...
     CLI->>Scan: discover -> detect -> score -> verify
     Scan-->>CLI: ScanReport
     CLI->>Out: render overview / summary / full / JSON
@@ -72,11 +72,11 @@ sequenceDiagram
     participant Backend as compatible backend
 
     opt configure credentials ahead of time
-        User->>CLI: vettd auth / vettd setup
+        User->>CLI: vettd auth
         CLI->>Auth: save API key + endpoint
     end
 
-    User->>CLI: vettd repo . --submit [--api-key]
+    User->>CLI: vettd scan repo . --submit [--api-key]
     CLI->>CLI: build contract payload
     CLI->>Auth: resolve auth from flags or config
     Auth-->>CLI: endpoint + API key

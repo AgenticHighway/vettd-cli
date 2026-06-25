@@ -34,7 +34,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
     done < "$REPO_ROOT/.env"
 fi
 
-RUN="cargo run -p vettd-cli --"
+RUN="cargo run -p vettd-cli --bin vettd --"
 OUT_DIR="test-runs"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 PASS=0
@@ -150,16 +150,15 @@ fi
 section "Help & version"
 expect_ok    "vettd --help"         $RUN --help
 expect_ok    "vettd --version"      $RUN --version
-expect_ok    "vettd scan --help"    $RUN scan --help
-expect_ok    "vettd quick --help"   $RUN quick --help
-expect_ok    "vettd full --help"    $RUN full --help
-expect_ok    "vettd file --help"    $RUN file --help
-expect_ok    "vettd folder --help"  $RUN folder --help
-expect_ok    "vettd repo --help"    $RUN repo --help
-expect_ok    "vettd rules --help"   $RUN rules --help
-expect_ok    "vettd auth --help"    $RUN auth --help
-expect_ok    "vettd setup --help"   $RUN setup --help
-expect_ok    "vettd update --help"  $RUN update --help
+expect_ok    "vettd scan --help"         $RUN scan --help
+expect_ok    "vettd scan quick --help"   $RUN scan quick --help
+expect_ok    "vettd scan full --help"    $RUN scan full --help
+expect_ok    "vettd scan file --help"    $RUN scan file --help
+expect_ok    "vettd scan folder --help"  $RUN scan folder --help
+expect_ok    "vettd scan repo --help"    $RUN scan repo --help
+expect_ok    "vettd rules --help"        $RUN rules --help
+expect_ok    "vettd auth --help"         $RUN auth --help
+expect_ok    "vettd update --help"       $RUN update --help
 
 # Version flag output contains version number
 VERSION_OUT=$($RUN --version 2>&1) || true
@@ -177,28 +176,28 @@ section "Single file scan"
 AGENTS_FILE="$REPO_ROOT/agents.md"
 FILE_JSON="$OUT_DIR/${TIMESTAMP}-file.json"
 
-expect_ok       "file scan (agents.md, overview)"  $RUN file "$AGENTS_FILE"
-expect_ok       "file scan (agents.md, --full)"     $RUN file "$AGENTS_FILE" --full
-expect_ok       "file scan (agents.md, --summary)"  $RUN file "$AGENTS_FILE" --summary
+expect_ok       "file scan (agents.md, overview)"  $RUN scan file "$AGENTS_FILE"
+expect_ok       "file scan (agents.md, --full)"     $RUN scan file "$AGENTS_FILE" --full
+expect_ok       "file scan (agents.md, --summary)"  $RUN scan file "$AGENTS_FILE" --summary
 
 # JSON output to stdout
-expect_contains "file scan (--json has scanMeta)" "scanMeta" $RUN file "$AGENTS_FILE" --json
+expect_contains "file scan (--json has scanMeta)" "scanMeta" $RUN scan file "$AGENTS_FILE" --json
 
 # JSON output to file
-$RUN file "$AGENTS_FILE" --out "$FILE_JSON" > /dev/null 2>&1 || true
+$RUN scan file "$AGENTS_FILE" --out "$FILE_JSON" > /dev/null 2>&1 || true
 expect_json_file "file scan (--out writes valid JSON)" "$FILE_JSON"
 
 # Contract flag
-expect_contains "file scan (--contract has scanMeta)" "scanMeta" $RUN file "$AGENTS_FILE" --contract
+expect_contains "file scan (--contract has scanMeta)" "scanMeta" $RUN scan file "$AGENTS_FILE" --contract
 
 # ── 3. Folder scan ──────────────────────────────────────────────────
 
 section "Folder scan"
 FOLDER_JSON="$OUT_DIR/${TIMESTAMP}-folder.json"
 
-expect_ok       "folder scan (this repo)"           $RUN folder "$REPO_ROOT"
-expect_ok       "folder scan (--summary)"            $RUN folder "$REPO_ROOT" --summary
-$RUN folder "$REPO_ROOT" --out "$FOLDER_JSON" > /dev/null 2>&1 || true
+expect_ok       "folder scan (this repo)"           $RUN scan folder "$REPO_ROOT"
+expect_ok       "folder scan (--summary)"            $RUN scan folder "$REPO_ROOT" --summary
+$RUN scan folder "$REPO_ROOT" --out "$FOLDER_JSON" > /dev/null 2>&1 || true
 expect_json_file "folder scan (--out writes valid JSON)" "$FOLDER_JSON"
 
 # ── 4. Repo scan ────────────────────────────────────────────────────
@@ -206,8 +205,8 @@ expect_json_file "folder scan (--out writes valid JSON)" "$FOLDER_JSON"
 section "Repo scan (deep)"
 REPO_JSON="$OUT_DIR/${TIMESTAMP}-repo.json"
 
-expect_ok       "repo scan (this repo)"             $RUN repo "$REPO_ROOT"
-$RUN repo "$REPO_ROOT" --json > "$REPO_JSON" 2>/dev/null || true
+expect_ok       "repo scan (this repo)"             $RUN scan repo "$REPO_ROOT"
+$RUN scan repo "$REPO_ROOT" --json > "$REPO_JSON" 2>/dev/null || true
 expect_json_file "repo scan (--json writes valid JSON)" "$REPO_JSON"
 
 # ── 5. Quick scan ───────────────────────────────────────────────────
@@ -215,9 +214,9 @@ expect_json_file "repo scan (--json writes valid JSON)" "$REPO_JSON"
 section "Quick scan (agentic config areas)"
 QUICK_JSON="$OUT_DIR/${TIMESTAMP}-quick.json"
 
-expect_ok       "quick scan (overview)"              $RUN quick
-expect_ok       "quick scan (--summary)"             $RUN quick --summary
-$RUN quick --out "$QUICK_JSON" > /dev/null 2>&1 || true
+expect_ok       "quick scan (overview)"              $RUN scan quick
+expect_ok       "quick scan (--summary)"             $RUN scan quick --summary
+$RUN scan quick --out "$QUICK_JSON" > /dev/null 2>&1 || true
 expect_json_file "quick scan (--out writes valid JSON)" "$QUICK_JSON"
 
 # ── 6. Default scan ─────────────────────────────────────────────────
@@ -227,17 +226,17 @@ DEFAULT_JSON="$OUT_DIR/${TIMESTAMP}-default.json"
 
 # This walks critical host roots plus bounded user-space roots
 echo "  (this scans critical host roots plus bounded user-space roots — may take a few seconds)"
-expect_ok       "default scan (overview)"            $RUN scan --summary
-$RUN scan --json > "$DEFAULT_JSON" 2>/dev/null || true
+expect_ok       "default scan (overview)"            $RUN scan default --summary
+$RUN scan default --json > "$DEFAULT_JSON" 2>/dev/null || true
 expect_json_file "default scan (--json writes valid JSON)" "$DEFAULT_JSON"
 
 # ── 7. Severity filter ──────────────────────────────────────────────
 
 section "Severity filtering"
-expect_ok "quick --min-severity=critical"  $RUN quick --min-severity critical --summary
-expect_ok "quick --min-severity=high"      $RUN quick --min-severity high --summary
-expect_ok "quick --min-severity=medium"    $RUN quick --min-severity medium --summary
-expect_ok "quick --min-severity=low"       $RUN quick --min-severity low --summary
+expect_ok "quick --min-severity=critical"  $RUN scan quick --min-severity critical --summary
+expect_ok "quick --min-severity=high"      $RUN scan quick --min-severity high --summary
+expect_ok "quick --min-severity=medium"    $RUN scan quick --min-severity medium --summary
+expect_ok "quick --min-severity=low"       $RUN scan quick --min-severity low --summary
 
 # ── 8. Rules management ─────────────────────────────────────────────
 
@@ -250,7 +249,7 @@ section "Contract payload validation"
 
 # Validate that contract JSON has the expected top-level keys
 CONTRACT_JSON="$OUT_DIR/${TIMESTAMP}-contract-validate.json"
-$RUN repo "$REPO_ROOT" --contract > "$CONTRACT_JSON" 2>/dev/null || true
+$RUN scan repo "$REPO_ROOT" --contract > "$CONTRACT_JSON" 2>/dev/null || true
 
 for key in scanMeta prompts skills mcpServers agents agenticApps; do
     if python3 -c "
@@ -290,7 +289,7 @@ PLAIN_JSON="$OUT_DIR/${TIMESTAMP}-fixture-plain.json"
 DIRECT_JSON="$OUT_DIR/${TIMESTAMP}-fixture-direct.json"
 COLOCATED_CONTRACT="$OUT_DIR/${TIMESTAMP}-fixture-colocated-contract.json"
 
-$RUN folder "$PLAIN_FIXTURE" --json > "$PLAIN_JSON" 2>/dev/null || true
+$RUN scan folder "$PLAIN_FIXTURE" --json > "$PLAIN_JSON" 2>/dev/null || true
 expect_json_file "plain Docker fixture (--json writes valid JSON)" "$PLAIN_JSON"
 if python3 -c "
 import json
@@ -302,7 +301,7 @@ else
     fail "plain Docker fixture classification changed"
 fi
 
-$RUN folder "$DIRECT_FIXTURE" --json > "$DIRECT_JSON" 2>/dev/null || true
+$RUN scan folder "$DIRECT_FIXTURE" --json > "$DIRECT_JSON" 2>/dev/null || true
 expect_json_file "direct agentic fixture (--json writes valid JSON)" "$DIRECT_JSON"
 if python3 -c "
 import json
@@ -318,7 +317,7 @@ else
     fail "direct agentic fixture classification changed"
 fi
 
-$RUN folder "$COLOCATED_FIXTURE" --contract > "$COLOCATED_CONTRACT" 2>/dev/null || true
+$RUN scan folder "$COLOCATED_FIXTURE" --contract > "$COLOCATED_CONTRACT" 2>/dev/null || true
 expect_json_file "co-located agent fixture (--contract writes valid JSON)" "$COLOCATED_CONTRACT"
 if python3 -c "
 import json

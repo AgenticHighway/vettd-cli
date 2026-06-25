@@ -57,6 +57,9 @@ fn read_key() -> String {
 // ── Prompt helpers (pub(crate) so cli.rs can reuse them) ────────────────
 
 pub(crate) fn ask(prompt: &str, default: &str) -> String {
+    if !is_tty() {
+        return default.to_string();
+    }
     if default.is_empty() {
         eprint!("  {prompt}: ");
     } else {

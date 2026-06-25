@@ -28,7 +28,7 @@ Custom rules let you detect artifacts specific to your environment:
 3. **Run a scan** — custom rules are loaded automatically:
 
     ```bash
-    vettd quick
+    vettd scan quick
     ```
 
     You'll see `Loaded 1 custom rule(s) from ~/.vettd/rules` in the output.
@@ -106,7 +106,7 @@ Filename matching is **case-insensitive**. Glob patterns (using `*`) are support
 
 #### `[deep_keywords]` (optional)
 
-Same format as `[keywords]`, but only applied in deep scan mode (`vettd repo`, `vettd full`).
+Same format as `[keywords]`, but only applied in deep scan mode (`vettd scan repo`, `vettd scan full`).
 
 #### `[patterns]` (optional)
 
@@ -121,7 +121,7 @@ Regex patterns are validated when rules are loaded. Invalid patterns are rejecte
 
 #### `[deep_patterns]` (optional)
 
-Same format as `[patterns]`, but only applied in deep scan mode (`vettd repo`, `vettd full`).
+Same format as `[patterns]`, but only applied in deep scan mode (`vettd scan repo`, `vettd scan full`).
 
 ## How it works
 
@@ -159,7 +159,7 @@ These signals feed into the risk engine and verifier. Use the same signal patter
 - **Use glob patterns** for broad matching (`"*.ai.yaml"`) and exact names for precision.
 - **Set confidence conservatively.** Let keyword boosts raise it.
 - **Check the examples** in `examples/rules/` for working patterns.
-- **Test with `vettd file <path>`** to verify a rule fires on a specific file.
+- **Test with `vettd scan file <path>`** to verify a rule fires on a specific file.
 
 ## Security model and limits
 

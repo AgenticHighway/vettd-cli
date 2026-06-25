@@ -21,7 +21,7 @@ sequenceDiagram
     participant Con as contract::build_contract_payload()
     participant File as output::write_json_report()
 
-    User->>CLI: vettd file agents.md
+    User->>CLI: vettd scan file agents.md
     CLI->>Scan: run_scan("file", Some(path), None, false)
     Scan->>Disc: discover_file_surface(path)
     Disc-->>Scan: Vec<Candidate>
