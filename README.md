@@ -271,6 +271,24 @@ Source builds remain fully functional, but `vettd update` will fail explicitly
 unless the binary was built with `PROOV_UPDATE_PUBLIC_KEY_DER_B64` set at
 compile time.
 
+## Non-interactive use / automation
+
+Every interactive prompt has a flag (or subcommand) equivalent, so `vettd` can
+run unattended in CI, scripts, and agents. When stdin is not a TTY the prompts
+are never shown: each command below either takes its explicit input or exits
+non-zero with guidance, rather than blocking on input.
+
+| Interactive prompt | Non-interactive equivalent |
+| --- | --- |
+| Scan type picker (`vettd scan` with no subcommand) | `vettd scan quick` (or `full`, `default`, `folder <path>`, `file <path>`) |
+| Save / submit menu after a local scan | `--out <path>` to write a report; `vettd scan submit <report>` to submit |
+| "Report path" prompt | `--out <path>` |
+| API key prompt (`vettd auth`) | `vettd auth --key <key>` |
+| Update confirmation (`vettd update`) | `vettd update --force` |
+
+Without a TTY and without the equivalent flag, `vettd scan`, `vettd auth`, and
+`vettd update` exit non-zero with a message naming the flag to use.
+
 ## Privacy
 
 - **Path-first scanning** — content is only read from specific allowlisted file types

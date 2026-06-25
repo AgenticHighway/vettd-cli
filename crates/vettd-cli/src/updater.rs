@@ -11,7 +11,7 @@
 //! only extracted, verified, and placed.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -354,6 +354,12 @@ pub fn perform_update(force: bool) -> Result<(), String> {
     );
 
     if !force {
+        if !io::stdin().is_terminal() {
+            return Err(
+                "Update requires confirmation. Re-run with --force in non-interactive mode."
+                    .to_string(),
+            );
+        }
         eprint!("Proceed with update? [Y/n] ");
         let _ = io::stderr().flush();
         let mut input = String::new();

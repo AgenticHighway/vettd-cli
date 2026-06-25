@@ -665,9 +665,13 @@ pub fn run() {
         if let Some(AuthSubcommand::Status) = action {
             std::process::exit(handle_auth_status());
         }
-        let api_key = match key {
-            Some(value) => value.clone(),
-            None => crate::wizard::ask_secret("API key"),
+        let api_key = match require_auth_key(key.clone(), is_interactive()) {
+            Ok(Some(value)) => value,
+            Ok(None) => crate::wizard::ask_secret("API key"),
+            Err(msg) => {
+                eprintln!("{msg}");
+                std::process::exit(2);
+            }
         };
         if api_key.is_empty() {
             eprintln!("Error: API key cannot be empty.");
@@ -752,9 +756,13 @@ pub fn run() {
         return;
     };
 
-    let sub = match subcommand {
-        None => crate::wizard::pick_scan(),
-        Some(s) => s,
+    let sub = match require_scan_subcommand(subcommand, is_interactive()) {
+        Ok(Some(s)) => s,
+        Ok(None) => crate::wizard::pick_scan(),
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
     };
 
     // Handle submit separately — reads a saved report and submits it
@@ -932,6 +940,45 @@ enum PostScanAction {
 
 fn is_interactive() -> bool {
     io::stdin().is_terminal()
+}
+
+/// Resolve the scan subcommand, failing fast in non-interactive mode.
+///
+/// - An explicit subcommand always passes through.
+/// - With no subcommand on a TTY, returns `Ok(None)` so the caller can show
+///   the interactive scan picker.
+/// - With no subcommand and no TTY, returns guidance instead of silently
+///   running a default scan, so automation never hangs or guesses (issue #145).
+fn require_scan_subcommand(
+    subcommand: Option<ScanSubcommand>,
+    interactive: bool,
+) -> Result<Option<ScanSubcommand>, String> {
+    match subcommand {
+        Some(sub) => Ok(Some(sub)),
+        None if interactive => Ok(None),
+        None => Err("Error: no scan subcommand given. In non-interactive mode, \
+             run a scan subcommand, e.g. `vettd scan quick` \
+             (or full, default, folder <path>, file <path>)."
+            .to_string()),
+    }
+}
+
+/// Resolve the `vettd auth` API key, failing fast in non-interactive mode.
+///
+/// - An explicit `--key` always passes through.
+/// - With no key on a TTY, returns `Ok(None)` so the caller can prompt securely.
+/// - With no key and no TTY, returns guidance instead of prompting, so
+///   automation never hangs waiting for input (issue #145).
+fn require_auth_key(key: Option<String>, interactive: bool) -> Result<Option<String>, String> {
+    match key {
+        Some(value) => Ok(Some(value)),
+        None if interactive => Ok(None),
+        None => Err(
+            "Error: no API key given. In non-interactive mode, pass it explicitly: \
+             `vettd auth --key <key>`."
+                .to_string(),
+        ),
+    }
 }
 
 fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64) {
@@ -1115,6 +1162,55 @@ mod tests {
     #[test]
     fn min_severity_score_low() {
         assert_eq!(min_severity_score("low"), 10);
+    }
+
+    // ── #145: interactive prompts must have a non-interactive fail-fast path ──
+
+    #[test]
+    fn require_scan_subcommand_passes_explicit_through() {
+        // An explicit subcommand is honored regardless of TTY state.
+        let sub = ScanSubcommand::Quick {
+            output: OutputArgs::default(),
+        };
+        let resolved = require_scan_subcommand(Some(sub), false);
+        assert!(matches!(resolved, Ok(Some(ScanSubcommand::Quick { .. }))));
+    }
+
+    #[test]
+    fn require_scan_subcommand_prompts_only_on_a_tty() {
+        // On a TTY with no subcommand, the caller should fall back to the picker.
+        assert!(matches!(require_scan_subcommand(None, true), Ok(None)));
+    }
+
+    #[test]
+    fn require_scan_subcommand_non_interactive_errors_with_guidance() {
+        // Without a TTY and without a subcommand, automation must get an error
+        // (not a silent default scan and not a hang). The message must name a
+        // concrete subcommand so the caller knows the flag equivalent.
+        // (`ScanSubcommand` isn't `Debug`, so match rather than `unwrap_err`.)
+        match require_scan_subcommand(None, false) {
+            Err(err) => assert!(err.contains("vettd scan quick"), "guidance was: {err}"),
+            Ok(_) => panic!("expected an error with no subcommand and no TTY"),
+        }
+    }
+
+    #[test]
+    fn require_auth_key_passes_explicit_through() {
+        let resolved = require_auth_key(Some("secret".to_string()), false);
+        assert_eq!(resolved, Ok(Some("secret".to_string())));
+    }
+
+    #[test]
+    fn require_auth_key_prompts_only_on_a_tty() {
+        assert_eq!(require_auth_key(None, true), Ok(None));
+    }
+
+    #[test]
+    fn require_auth_key_non_interactive_errors_with_guidance() {
+        // Without a TTY and without --key, automation must get actionable
+        // guidance naming the flag, not a hanging secret prompt.
+        let err = require_auth_key(None, false).unwrap_err();
+        assert!(err.contains("--key"), "guidance was: {err}");
     }
 
     #[test]
