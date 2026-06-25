@@ -155,9 +155,16 @@ pub enum DirectorySubcommand {
         /// Search query (use quotes for multi-word queries)
         #[arg(required = true)]
         query: Vec<String>,
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
     },
     /// List directory entries
-    List,
+    List {
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
+    },
     /// Show a random entry
     Random,
     /// View a directory entry by slug
@@ -727,7 +734,7 @@ pub fn run() {
     // Handle directory commands
     if let Commands::Directory { action } = &cmd {
         match action {
-            DirectorySubcommand::Search { query } => {
+            DirectorySubcommand::Search { query, page } => {
                 if query.len() > 1 {
                     eprintln!(
                         "Error: use quotes for multi-word queries: vettd directory search '{}'",
@@ -735,9 +742,9 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::directory::handle_search(&query[0])
+                crate::directory::handle_search(&query[0], *page)
             }
-            DirectorySubcommand::List => crate::directory::handle_list(),
+            DirectorySubcommand::List { page } => crate::directory::handle_list(*page),
             DirectorySubcommand::Random => crate::directory::handle_random(),
             DirectorySubcommand::View { slug } => crate::directory::handle_view(slug),
             DirectorySubcommand::Findings { slug, min_severity } => {
@@ -1461,8 +1468,25 @@ mod tests {
         let cli = Cli::parse_from(["vettd", "directory", "search", "foo"]);
         match cli.command {
             Some(Commands::Directory {
-                action: DirectorySubcommand::Search { query },
-            }) => assert_eq!(query, vec!["foo"]),
+                action: DirectorySubcommand::Search { query, page },
+            }) => {
+                assert_eq!(query, vec!["foo"]);
+                assert_eq!(page, 1);
+            }
+            _ => panic!("Expected directory search command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_search_page() {
+        let cli = Cli::parse_from(["vettd", "directory", "search", "foo", "--page", "3"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Search { query, page },
+            }) => {
+                assert_eq!(query, vec!["foo"]);
+                assert_eq!(page, 3);
+            }
             _ => panic!("Expected directory search command"),
         }
     }
@@ -1473,7 +1497,18 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Directory {
-                action: DirectorySubcommand::List
+                action: DirectorySubcommand::List { page: 1 }
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_cli_directory_list_page() {
+        let cli = Cli::parse_from(["vettd", "directory", "list", "--page", "2"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Directory {
+                action: DirectorySubcommand::List { page: 2 }
             })
         ));
     }

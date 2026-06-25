@@ -262,8 +262,8 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-pub fn handle_list() {
-    let url = format!("{}?sort=newest", directory_base_url());
+pub fn handle_list(page: u32) {
+    let url = format!("{}?sort=newest&page={page}", directory_base_url());
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
             println!(
@@ -283,9 +283,9 @@ pub fn handle_list() {
     }
 }
 
-pub fn handle_search(query: &str) {
+pub fn handle_search(query: &str, page: u32) {
     let url = format!(
-        "{}?search={}&sort=newest",
+        "{}?search={}&sort=newest&page={page}",
         directory_base_url(),
         percent_encode(query)
     );
