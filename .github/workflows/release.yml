@@ -44,10 +44,34 @@ env:
     PROOV_UPDATE_PUBLIC_KEY_DER_B64: ${{ vars.PROOV_UPDATE_PUBLIC_KEY_DER_B64 }}
 
 jobs:
+    # ── Version gate ─────────────────────────────────────────────────
+    # Fail early if the release tag (e.g. v0.8.0) doesn't match the
+    # version declared in Cargo.toml (e.g. 0.8.0). Skipped on
+    # workflow_dispatch runs that aren't triggered by a tag.
+    validate-version:
+        runs-on: blacksmith-2vcpu-ubuntu-2204
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+            - name: Check tag matches Cargo.toml version
+              if: github.ref_type == 'tag'
+              run: |
+                  set -euo pipefail
+                  TAG_VERSION="${GITHUB_REF_NAME#v}"
+                  TOML_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+                  if [ "${TAG_VERSION}" != "${TOML_VERSION}" ]; then
+                    echo "::error::Tag v${TAG_VERSION} does not match Cargo.toml version ${TOML_VERSION}. Bump [workspace.package] version before tagging."
+                    exit 1
+                  fi
+                  echo "Version check passed: ${TOML_VERSION}"
+
     # ── Build ────────────────────────────────────────────────────────
     # Cross-compile for 5 OS/arch targets. Each matrix leg uploads its
     # artifact so downstream jobs can download without rebuilding.
     build:
+        needs: validate-version
         strategy:
             matrix:
                 include:
