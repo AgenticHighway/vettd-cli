@@ -92,7 +92,7 @@ to local output or optional submission:
 
 ```
  ┌─────────────┐
- │  User runs   │  vettd quick / scan / file <path> / ...
+ │  User runs   │  vettd scan quick / scan default / scan file <path> / ...
  │  CLI command  │
  └──────┬───────┘
         │
@@ -310,7 +310,7 @@ set before formatting or JSON emission.
 
 | File                             | Purpose                     | Created by                         |
 | -------------------------------- | --------------------------- | ---------------------------------- |
-| `~/.config/vettd/config.json`   | API key + endpoint          | `vettd setup` or `vettd auth`      |
+| `~/.config/vettd/config.json`   | API key + endpoint          | `vettd auth`                       |
 | `.vettd.toml`                   | Access mode + license key   | User creates manually              |
 | `~/.vettd/scanner_uuid`         | Persistent scanner identity | Auto-generated on first submit     |
 | `~/.vettd/scanner_account_uuid` | Persistent account identity | Auto-generated on first submit     |

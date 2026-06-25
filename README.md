@@ -18,7 +18,7 @@ If Vettd helps your team, you can support ongoing open source development with a
 
 ## How it works
 
-vettd is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows or `vettd update`. `vettd auth` and `vettd setup` only save local configuration.
+vettd is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows or `vettd update`. `vettd auth` only saves local configuration.
 
 If you want a hosted review, policy, and governance surface, vettd can
 submit to compatible ingest APIs. You can configure an endpoint during
@@ -41,7 +41,7 @@ setup or pass one directly at submission time.
 ```bash
 brew tap AgenticHighway/tap
 brew install vettd
-vettd quick
+vettd scan quick
 ```
 
 Homebrew is the smoothest install path on macOS while direct-download
@@ -54,11 +54,11 @@ Download the latest binary for your platform from [GitHub Releases](https://gith
 ```bash
 # macOS (Apple Silicon)
 tar xzf vettd-darwin-arm64.tar.gz
-./vettd quick
+./vettd scan quick
 
 # Linux (x86_64)
 tar xzf vettd-linux-amd64.tar.gz
-./vettd quick
+./vettd scan quick
 ```
 
 #### Verifying downloads
@@ -87,30 +87,29 @@ For the full signature-verification procedure (including how to verify
 git clone https://github.com/AgenticHighway/vettd-cli.git
 cd vettd
 cargo build --release
-./target/release/vettd quick
+./target/release/vettd scan quick
 ```
 
 ## Quick start
 
 ```bash
-vettd                      # Interactive wizard — walks you through options
-vettd quick                # Tier 1 scan of critical AI config areas (~/.cursor, VS Code, Claude, etc.)
-vettd scan                 # Default tiered scan of critical roots + bounded user-space/project roots
-vettd full                 # Deep system-wide scan (slow, thorough)
-vettd file <path>          # Scan a single file
-vettd folder <path>        # Scan a directory
-vettd repo <path>          # Deep-scan a git repository
-vettd setup                # Interactive connected-mode setup (API key + endpoint)
-vettd auth                 # Prompt securely for an API key and save it
-vettd auth --key <key>     # Save API credentials directly (useful for automation)
-vettd auth status          # Show auth/identity status (coming soon)
-vettd contract status      # Show local vs. server contract status (coming soon)
-vettd directory <cmd>      # Browse the public directory: search|list|trending|random|view|findings|compare (coming soon)
-vettd update               # Check for and install updates
-vettd rules list           # List installed custom detection rules
-vettd rules add <file>     # Install a TOML rule file
-vettd rules remove <name>  # Remove an installed rule by name
-vettd rules validate <f>   # Validate a rule file without installing
+vettd                           # Interactive wizard — walks you through options
+vettd scan quick                # Tier 1 scan of critical AI config areas (~/.cursor, VS Code, Claude, etc.)
+vettd scan default              # Default tiered scan of critical roots + bounded user-space/project roots
+vettd scan full                 # Deep system-wide scan (slow, thorough)
+vettd scan file <path>          # Scan a single file
+vettd scan folder <path>        # Scan a directory
+vettd scan repo <path>          # Deep-scan a git repository
+vettd auth                      # Prompt securely for an API key and save it
+vettd auth --key <key>          # Save API credentials directly (useful for automation)
+vettd auth status               # Show auth/identity status
+vettd contract status           # Show local vs. server contract status
+vettd directory <cmd>           # Browse the public directory: search|list|random|view|findings|compare
+vettd update                    # Check for and install updates
+vettd rules list                # List installed custom detection rules
+vettd rules add <file>          # Install a TOML rule file
+vettd rules remove <name>       # Remove an installed rule by name
+vettd rules validate <f>        # Validate a rule file without installing
 ```
 
 ## Scan surfaces
@@ -132,15 +131,15 @@ Current critical roots are OS-aware:
 ## Output formats
 
 ```bash
-vettd quick              # Overview with risk bars (default)
-vettd quick --full       # Detailed per-artifact breakdown
-vettd quick --summary    # Compact statistics only
-vettd quick --json       # JSON report to stdout
-vettd quick --out        # JSON report to ./vettd-report.json
-vettd quick --out r.json # JSON report to a custom path
-vettd quick --contract   # Scanner data contract JSON to stdout
-vettd quick --contract --out r.json  # Contract JSON to file
-vettd quick --contract --submit --api-key <key>  # Contract to file + submit
+vettd scan quick              # Overview with risk bars (default)
+vettd scan quick --full       # Detailed per-artifact breakdown
+vettd scan quick --summary    # Compact statistics only
+vettd scan quick --json       # JSON report to stdout
+vettd scan quick --out        # JSON report to ./vettd-report.json
+vettd scan quick --out r.json # JSON report to a custom path
+vettd scan quick --contract   # Scanner data contract JSON to stdout
+vettd scan quick --contract --out r.json  # Contract JSON to file
+vettd scan quick --contract --submit --api-key <key>  # Contract to file + submit
 ```
 
 `--json`, `--out`, and `--contract` all emit the scanner data contract
@@ -199,20 +198,17 @@ self-hosting, testing, or interoperability.
 With an API key configured:
 
 ```bash
-# First-time setup (saves credentials and endpoint)
-vettd setup
-
-# Or prompt securely for credentials
+# Prompt securely for credentials
 vettd auth
 
 # Or set credentials directly for automation
 vettd auth --key your-api-key
 
 # Submit scan results (uses saved endpoint)
-vettd repo . --submit --api-key your-key
+vettd scan repo . --submit --api-key your-key
 
 # Submit to a custom public endpoint — requires --allow-public-endpoint
-vettd repo . --submit https://example.com/api/scans/ingest \
+vettd scan repo . --submit https://example.com/api/scans/ingest \
   --allow-public-endpoint --api-key your-key
 
 # Save a custom public endpoint for future use — also requires the flag
@@ -234,7 +230,7 @@ Each submission payload contains:
 
 No file contents, secret values, or credential material are transmitted.
 
-In **interactive flows** (`vettd scan` / `vettd quick` / etc. from a terminal), vettd displays this summary and asks for confirmation before sending.
+In **interactive flows** (`vettd scan quick` / `vettd scan repo` / etc. from a terminal), vettd displays this summary and asks for confirmation before sending.
 
 In **automation flows** (`--submit --api-key …`), the submission proceeds without a prompt. Review the data categories above before embedding `vettd` in CI/CD pipelines.
 
@@ -363,7 +359,7 @@ For security vulnerability reports: [SECURITY.md](SECURITY.md)
 
 | File                           | Purpose                                       |
 | ------------------------------ | --------------------------------------------- |
-| `~/.config/vettd/config.json` | API key + endpoint (created by `vettd setup`) |
+| `~/.config/vettd/config.json` | API key + endpoint (created by `vettd auth`) |
 | `.vettd.toml`                 | Optional local access-mode settings           |
 | `~/.vettd/scanner_uuid`       | Persistent scanner identity (auto-generated)  |
 | `~/.vettd/rules/*.toml`       | Custom detection rules                        |
