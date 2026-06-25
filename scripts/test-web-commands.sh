@@ -162,13 +162,15 @@ pass "directory list"
 check_content "directory list output has skill count line" \
     "[0-9]+ skills" "$LIST_OUTPUT"
 
-# Extract slugs from list output. Line format: "  [X] slug-name  | ..."
+# Extract slugs from list output. Grade badges are ANSI-colored — strip escape
+# codes before pattern matching so the regex sees plain "[X] slug-name ..." text.
+LIST_CLEAN=$(printf '%s\n' "$LIST_OUTPUT" | sed $'s/\033\[[0-9;]*m//g')
 SLUGS=()
 while IFS= read -r line; do
     if [[ "$line" =~ ^[[:space:]]*\[[A-Z?]\][[:space:]]+([^[:space:]]+) ]]; then
         SLUGS+=("${BASH_REMATCH[1]}")
     fi
-done <<< "$LIST_OUTPUT"
+done <<< "$LIST_CLEAN"
 
 if [[ ${#SLUGS[@]} -lt 2 ]]; then
     echo "  WARNING: fewer than 2 slugs returned — using what we have."
