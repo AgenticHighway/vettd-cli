@@ -170,6 +170,20 @@ fn should_descend(entry: &walkdir::DirEntry, excluded: &HashSet<&str>) -> bool {
     entry.depth() == 0 || !is_excluded_dir(entry, excluded)
 }
 
+fn is_regular_file(entry: &walkdir::DirEntry) -> bool {
+    if entry.file_type().is_file() {
+        return true;
+    }
+    if entry.file_type().is_symlink() {
+        return entry
+            .path()
+            .metadata()
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Platform-aware roots
 // ---------------------------------------------------------------------------
@@ -290,6 +304,7 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
     let excluded = nonforensic_excluded_set();
     let mut candidates = Vec::new();
     let mut count: usize = 0;
+    let mut depth_cap_hit = false;
 
     let walker = WalkDir::new(root).max_depth(MAX_DEPTH).follow_links(false);
     let filtered = walker
@@ -297,7 +312,10 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
         .filter_entry(|e| should_descend(e, &excluded));
 
     for entry in filtered.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+        if entry.depth() == MAX_DEPTH && entry.file_type().is_dir() {
+            depth_cap_hit = true;
+        }
+        if !is_regular_file(&entry) {
             continue;
         }
         candidates.push(Candidate {
@@ -310,6 +328,12 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
                 tick(&format!("{count} files"));
             }
         }
+    }
+
+    if depth_cap_hit {
+        eprintln!(
+            "warning: scan depth capped at {MAX_DEPTH}; some files may have been skipped (use --deep for a full scan)"
+        );
     }
     candidates
 }
@@ -329,7 +353,7 @@ pub fn walk_deep_workdir(
         .filter_entry(|e| should_descend(e, &excluded));
 
     for entry in filtered.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+        if !is_regular_file(&entry) {
             continue;
         }
         candidates.push(Candidate {
@@ -473,7 +497,7 @@ pub fn discover_filesystem_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candi
             .filter_entry(|e| should_descend(e, &excluded));
 
         for entry in filtered.filter_map(|e| e.ok()) {
-            if !entry.file_type().is_file() {
+            if !is_regular_file(&entry) {
                 continue;
             }
             candidates.push(Candidate {
@@ -512,7 +536,7 @@ pub fn discover_root_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> 
     let walker = WalkDir::new(&root).follow_links(false);
 
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+        if !is_regular_file(&entry) {
             continue;
         }
         candidates.push(Candidate {
@@ -615,6 +639,48 @@ mod tests {
         let candidates = walk_bounded(&root, "host", None);
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].path.ends_with(".vscode/settings.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_bounded_finds_symlinked_files() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real.txt");
+        let link = tmp.path().join("SKILL.md");
+        fs::write(&real, "content").unwrap();
+        symlink(&real, &link).unwrap();
+
+        let candidates = walk_bounded(tmp.path(), "test", None);
+        let paths: Vec<_> = candidates
+            .iter()
+            .map(|c| c.path.file_name().unwrap())
+            .collect();
+        assert!(
+            paths.contains(&std::ffi::OsStr::new("SKILL.md")),
+            "symlinked file should be found"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_deep_workdir_finds_symlinked_files() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real.txt");
+        let link = tmp.path().join("SKILL.md");
+        fs::write(&real, "content").unwrap();
+        symlink(&real, &link).unwrap();
+
+        let candidates = walk_deep_workdir(tmp.path(), "test", None);
+        let paths: Vec<_> = candidates
+            .iter()
+            .map(|c| c.path.file_name().unwrap())
+            .collect();
+        assert!(
+            paths.contains(&std::ffi::OsStr::new("SKILL.md")),
+            "symlinked file should be found"
+        );
     }
 
     #[test]

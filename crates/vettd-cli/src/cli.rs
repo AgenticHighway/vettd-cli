@@ -102,6 +102,9 @@ pub enum ScanSubcommand {
     /// Scan a folder
     Folder {
         path: PathBuf,
+        /// Walk all subdirectories without a depth limit
+        #[arg(long)]
+        deep: bool,
         #[command(flatten)]
         output: OutputArgs,
     },
@@ -364,11 +367,11 @@ fn resolve_scan_params(sub: &ScanSubcommand) -> ScanParams<'_> {
             file: Some(path.as_path()),
             deep: false,
         },
-        ScanSubcommand::Folder { path, .. } => ScanParams {
+        ScanSubcommand::Folder { path, deep, .. } => ScanParams {
             mode: "workdir",
             workdir: Some(path.as_path()),
             file: None,
-            deep: false,
+            deep: *deep,
         },
         ScanSubcommand::Repo { path, .. } => ScanParams {
             mode: "workdir",
