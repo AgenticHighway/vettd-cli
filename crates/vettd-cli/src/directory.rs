@@ -4,7 +4,7 @@
 //! Deserialization uses narrow allow-list structs — unknown fields are ignored,
 //! so any server over-exposure is silently dropped rather than printed.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::read_client::{self, ReadError};
 
@@ -41,7 +41,7 @@ fn severity_color(sev_lower: &str) -> &'static str {
 // unknown_fields is NOT set — that's intentional for forward compatibility).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryListResponse {
     pub skills: Vec<DirectoryCard>,
@@ -50,7 +50,7 @@ pub struct DirectoryListResponse {
     pub total_pages: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryCard {
     pub slug: Option<String>,
@@ -65,7 +65,7 @@ pub struct DirectoryCard {
     pub scanner_run_count: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectorySkillDetail {
     pub slug: Option<String>,
@@ -87,7 +87,7 @@ pub struct DirectorySkillDetail {
     pub scanner_runs: Vec<ScannerRun>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryFinding {
     pub severity: String,
@@ -99,7 +99,7 @@ pub struct DirectoryFinding {
     pub filepath: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerRun {
     pub source: String,
@@ -272,7 +272,7 @@ fn api_sort_params(sort: &str, reverse: bool) -> String {
     format!("sort={s}&dir={dir}")
 }
 
-pub fn handle_list(page: u32, sort: &str, reverse: bool) {
+pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     let url = format!(
         "{}?{}&page={page}",
         directory_base_url(),
@@ -280,17 +280,24 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool) {
     );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
-            print_cards(&resp.skills);
-            let shown = resp.skills.len();
-            if resp.page < resp.total_pages {
+            if json {
                 println!(
-                    "\n{DIM}Showing {} of {} assets — use --page {} to see more.{RESET}",
-                    shown,
-                    resp.total,
-                    resp.page + 1,
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
                 );
             } else {
-                println!("\n{DIM}Showing {} of {} assets.{RESET}", shown, resp.total);
+                print_cards(&resp.skills);
+                let shown = resp.skills.len();
+                if resp.page < resp.total_pages {
+                    println!(
+                        "\n{DIM}Showing {} of {} assets — use --page {} to see more.{RESET}",
+                        shown,
+                        resp.total,
+                        resp.page + 1,
+                    );
+                } else {
+                    println!("\n{DIM}Showing {} of {} assets.{RESET}", shown, resp.total);
+                }
             }
         }
         Err(ReadError::Unreachable(msg)) => {
@@ -304,7 +311,7 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool) {
     }
 }
 
-pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool) {
+pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bool) {
     let url = format!(
         "{}?search={}&{}&page={page}",
         directory_base_url(),
@@ -313,7 +320,12 @@ pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool) {
     );
     match read_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
-            if resp.skills.is_empty() {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+            } else if resp.skills.is_empty() {
                 println!("No results for \"{}\".", query);
             } else {
                 print_cards(&resp.skills);
@@ -345,8 +357,16 @@ pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool) {
     }
 }
 
-pub fn handle_view(slug: &str) {
+pub fn handle_view(slug: &str, json: bool) {
     let detail = fetch_skill(slug);
+    if json {
+        let mut val = serde_json::to_value(&detail).unwrap_or_default();
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("findings");
+        }
+        println!("{}", serde_json::to_string_pretty(&val).unwrap_or_default());
+        return;
+    }
     let (c, h, m, l, i) = count_by_severity(&detail.findings);
 
     let mut scanned_by: Vec<&str> = detail
@@ -450,7 +470,7 @@ pub fn handle_view(slug: &str) {
     println!("  {DIM}Run `vettd directory findings {display_slug}` to see finding details.{RESET}");
 }
 
-pub fn handle_findings(slug: &str, min_severity: &str) {
+pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
     let detail = fetch_skill(slug);
     let min_val = severity_value(min_severity);
 
@@ -459,6 +479,14 @@ pub fn handle_findings(slug: &str, min_severity: &str) {
         .iter()
         .filter(|f| severity_value(&f.severity) >= min_val)
         .collect();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&filtered).unwrap_or_default()
+        );
+        return;
+    }
 
     let total = detail.findings.len();
     let shown = filtered.len();
@@ -495,9 +523,26 @@ pub fn handle_findings(slug: &str, min_severity: &str) {
     }
 }
 
-pub fn handle_compare(slug_a: &str, slug_b: &str) {
+pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     let detail_a = fetch_skill(slug_a);
     let detail_b = fetch_skill(slug_b);
+
+    if json {
+        #[derive(Serialize)]
+        struct CompareOutput<'a> {
+            a: &'a DirectorySkillDetail,
+            b: &'a DirectorySkillDetail,
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&CompareOutput {
+                a: &detail_a,
+                b: &detail_b,
+            })
+            .unwrap_or_default()
+        );
+        return;
+    }
 
     // Column geometry: 2 indent + 13 label + 2 sep + 30 value + 2 sep + right value
     let label_w: usize = 13;
@@ -679,21 +724,30 @@ pub fn handle_trending() {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RandomSkillResponse {
     pub skill: Option<DirectoryCard>,
 }
 
-pub fn handle_random() {
+pub fn handle_random(json: bool) {
     let endpoint = crate::submit::load_auth_config()
         .map(|c| c.endpoint)
         .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
     let url = crate::network::derive_api_url(&endpoint, "directory/random");
     match read_client::fetch_json::<RandomSkillResponse>(&url) {
-        Ok(resp) => match resp.skill {
-            Some(card) => print_cards(std::slice::from_ref(&card)),
-            None => println!("No public skills available."),
-        },
+        Ok(resp) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+            } else {
+                match resp.skill {
+                    Some(card) => print_cards(std::slice::from_ref(&card)),
+                    None => println!("No public skills available."),
+                }
+            }
+        }
         Err(ReadError::Unreachable(msg)) => {
             eprintln!("Error: could not reach the vettd directory: {msg}");
             std::process::exit(1);

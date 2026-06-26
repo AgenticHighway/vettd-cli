@@ -7,6 +7,7 @@
 //!   validate  — parse and report errors in a rule file without installing it
 
 use crate::rule_engine::{default_rules_dir, load_rule_file_pub, DetectionRule};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,37 +15,71 @@ use std::path::{Path, PathBuf};
 // Entry points (CLI-facing, call process::exit on error)
 // ---------------------------------------------------------------------------
 
-pub fn cmd_list() {
+pub fn cmd_list(json: bool) {
     let dir = match rules_dir_or_exit() {
         Some(d) => d,
         None => return,
     };
 
     if !dir.exists() {
-        eprintln!(
-            "No rules directory found ({}). No custom rules installed.",
-            dir.display()
-        );
+        if json {
+            println!("[]");
+        } else {
+            eprintln!(
+                "No rules directory found ({}). No custom rules installed.",
+                dir.display()
+            );
+        }
         return;
     }
 
     let entries = toml_entries(&dir);
 
     if entries.is_empty() {
-        eprintln!("No rules installed in {}.", dir.display());
-        eprintln!("Use `vettd rules add <file.toml>` to install one.");
+        if json {
+            println!("[]");
+        } else {
+            eprintln!("No rules installed in {}.", dir.display());
+            eprintln!("Use `vettd rules add <file.toml>` to install one.");
+        }
         return;
     }
 
-    eprintln!("{} custom rule(s) in {}:", entries.len(), dir.display());
-    for path in &entries {
-        match load_rule_file_pub(path) {
-            Ok(rule) => print_rule_summary(path, &rule),
-            Err(e) => eprintln!(
-                "  {} [INVALID: {}]",
-                path.file_name().unwrap_or_default().to_string_lossy(),
-                e
-            ),
+    if json {
+        #[derive(Serialize)]
+        struct RuleEntry {
+            file: String,
+            name: String,
+            artifact_type: String,
+            confidence: f64,
+        }
+        let out: Vec<RuleEntry> = entries
+            .iter()
+            .filter_map(|path| {
+                load_rule_file_pub(path).ok().map(|rule| RuleEntry {
+                    file: path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    name: rule.detector.name,
+                    artifact_type: rule.detector.artifact_type,
+                    confidence: rule.match_config.confidence,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        eprintln!("{} custom rule(s) in {}:", entries.len(), dir.display());
+        for path in &entries {
+            match load_rule_file_pub(path) {
+                Ok(rule) => print_rule_summary(path, &rule),
+                Err(e) => eprintln!(
+                    "  {} [INVALID: {}]",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    e
+                ),
+            }
         }
     }
 }
@@ -89,28 +124,68 @@ pub fn cmd_remove(name: &str) {
     }
 }
 
-pub fn cmd_validate(source: &Path) {
+pub fn cmd_validate(source: &Path, json: bool) {
     if !source.exists() {
-        eprintln!("Error: file not found: {}", source.display());
+        if json {
+            let msg = format!("file not found: {}", source.display());
+            println!("{}", serde_json::json!({"valid": false, "error": msg}));
+        } else {
+            eprintln!("Error: file not found: {}", source.display());
+        }
         std::process::exit(1);
     }
 
     match load_rule_file_pub(source) {
         Ok(rule) => {
-            eprintln!("OK: '{}' is valid.", rule.detector.name);
-            eprintln!("  artifact_type : {}", rule.detector.artifact_type);
-            eprintln!("  filenames     : {:?}", rule.match_config.filenames);
-            eprintln!("  suffixes      : {:?}", rule.match_config.suffixes);
-            eprintln!("  confidence    : {}", rule.match_config.confidence);
-            if rule.keywords.is_some() {
-                eprintln!("  keywords      : yes");
-            }
-            if rule.deep_keywords.is_some() {
-                eprintln!("  deep_keywords : yes");
+            if json {
+                #[derive(Serialize)]
+                struct ValidateOutput {
+                    valid: bool,
+                    name: String,
+                    artifact_type: String,
+                    filenames: Vec<String>,
+                    suffixes: Vec<String>,
+                    confidence: f64,
+                    has_keywords: bool,
+                    has_deep_keywords: bool,
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ValidateOutput {
+                        valid: true,
+                        name: rule.detector.name,
+                        artifact_type: rule.detector.artifact_type,
+                        filenames: rule.match_config.filenames,
+                        suffixes: rule.match_config.suffixes,
+                        confidence: rule.match_config.confidence,
+                        has_keywords: rule.keywords.is_some(),
+                        has_deep_keywords: rule.deep_keywords.is_some(),
+                    })
+                    .unwrap_or_default()
+                );
+            } else {
+                eprintln!("OK: '{}' is valid.", rule.detector.name);
+                eprintln!("  artifact_type : {}", rule.detector.artifact_type);
+                eprintln!("  filenames     : {:?}", rule.match_config.filenames);
+                eprintln!("  suffixes      : {:?}", rule.match_config.suffixes);
+                eprintln!("  confidence    : {}", rule.match_config.confidence);
+                if rule.keywords.is_some() {
+                    eprintln!("  keywords      : yes");
+                }
+                if rule.deep_keywords.is_some() {
+                    eprintln!("  deep_keywords : yes");
+                }
             }
         }
         Err(e) => {
-            eprintln!("INVALID: {e}");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"valid": false, "error": e.to_string()})
+                );
+            } else {
+                eprintln!("INVALID: {e}");
+            }
             std::process::exit(1);
         }
     }
