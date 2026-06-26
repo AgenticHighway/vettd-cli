@@ -272,6 +272,7 @@ pub fn pick_scan() -> ScanSubcommand {
             let dir = ask("Directory path", ".");
             ScanSubcommand::Folder {
                 path: PathBuf::from(dir),
+                deep: false,
                 output,
             }
         }
