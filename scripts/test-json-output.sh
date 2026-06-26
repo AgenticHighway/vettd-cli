@@ -280,8 +280,8 @@ if skills:
         assert_json "directory view --json ($FIRST_SLUG)" \
             $RUN --json directory view "$FIRST_SLUG"
         if [ -n "$JSON_OUT" ]; then
-            assert_field "name present"     "$JSON_OUT" 'data["name"]'
-            assert_type  "findings is list" "$JSON_OUT" 'data["findings"]' 'list'
+            assert_field "name present"          "$JSON_OUT" 'data["name"]'
+            assert_field "findings key absent"   "$JSON_OUT" '"findings" not in data'
         fi
 
         assert_json "directory findings --json ($FIRST_SLUG)" \

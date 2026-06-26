@@ -179,7 +179,10 @@ pub fn cmd_validate(source: &Path, json: bool) {
         }
         Err(e) => {
             if json {
-                println!("{}", serde_json::json!({"valid": false, "error": e.to_string()}));
+                println!(
+                    "{}",
+                    serde_json::json!({"valid": false, "error": e.to_string()})
+                );
             } else {
                 eprintln!("INVALID: {e}");
             }
