@@ -775,7 +775,11 @@ pub fn run() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Update check failed: {e}");
+                    if json {
+                        println!("{}", serde_json::json!({"error": e.to_string()}));
+                    } else {
+                        eprintln!("Update check failed: {e}");
+                    }
                     std::process::exit(1);
                 }
             }

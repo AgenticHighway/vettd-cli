@@ -181,7 +181,7 @@ expect_ok       "file scan (agents.md, --full)"     $RUN scan file "$AGENTS_FILE
 expect_ok       "file scan (agents.md, --summary)"  $RUN scan file "$AGENTS_FILE" --summary
 
 # JSON output to stdout
-expect_contains "file scan (--json has scanMeta)" "scanMeta" $RUN scan file "$AGENTS_FILE" --json
+expect_contains "file scan (--stdout has scanMeta)" "scanMeta" $RUN scan file "$AGENTS_FILE" --stdout
 
 # JSON output to file
 $RUN scan file "$AGENTS_FILE" --out "$FILE_JSON" > /dev/null 2>&1 || true
@@ -206,8 +206,8 @@ section "Repo scan (deep)"
 REPO_JSON="$OUT_DIR/${TIMESTAMP}-repo.json"
 
 expect_ok       "repo scan (this repo)"             $RUN scan repo "$REPO_ROOT"
-$RUN scan repo "$REPO_ROOT" --json > "$REPO_JSON" 2>/dev/null || true
-expect_json_file "repo scan (--json writes valid JSON)" "$REPO_JSON"
+$RUN scan repo "$REPO_ROOT" --stdout > "$REPO_JSON" 2>/dev/null || true
+expect_json_file "repo scan (--stdout writes valid JSON)" "$REPO_JSON"
 
 # ── 5. Quick scan ───────────────────────────────────────────────────
 
@@ -227,8 +227,8 @@ DEFAULT_JSON="$OUT_DIR/${TIMESTAMP}-default.json"
 # This walks critical host roots plus bounded user-space roots
 echo "  (this scans critical host roots plus bounded user-space roots — may take a few seconds)"
 expect_ok       "default scan (overview)"            $RUN scan default --summary
-$RUN scan default --json > "$DEFAULT_JSON" 2>/dev/null || true
-expect_json_file "default scan (--json writes valid JSON)" "$DEFAULT_JSON"
+$RUN scan default --stdout > "$DEFAULT_JSON" 2>/dev/null || true
+expect_json_file "default scan (--stdout writes valid JSON)" "$DEFAULT_JSON"
 
 # ── 7. Severity filter ──────────────────────────────────────────────
 
@@ -289,8 +289,8 @@ PLAIN_JSON="$OUT_DIR/${TIMESTAMP}-fixture-plain.json"
 DIRECT_JSON="$OUT_DIR/${TIMESTAMP}-fixture-direct.json"
 COLOCATED_CONTRACT="$OUT_DIR/${TIMESTAMP}-fixture-colocated-contract.json"
 
-$RUN scan folder "$PLAIN_FIXTURE" --json > "$PLAIN_JSON" 2>/dev/null || true
-expect_json_file "plain Docker fixture (--json writes valid JSON)" "$PLAIN_JSON"
+$RUN scan folder "$PLAIN_FIXTURE" --stdout > "$PLAIN_JSON" 2>/dev/null || true
+expect_json_file "plain Docker fixture (--stdout writes valid JSON)" "$PLAIN_JSON"
 if python3 -c "
 import json
 data = json.load(open('$PLAIN_JSON'))
@@ -301,8 +301,8 @@ else
     fail "plain Docker fixture classification changed"
 fi
 
-$RUN scan folder "$DIRECT_FIXTURE" --json > "$DIRECT_JSON" 2>/dev/null || true
-expect_json_file "direct agentic fixture (--json writes valid JSON)" "$DIRECT_JSON"
+$RUN scan folder "$DIRECT_FIXTURE" --stdout > "$DIRECT_JSON" 2>/dev/null || true
+expect_json_file "direct agentic fixture (--stdout writes valid JSON)" "$DIRECT_JSON"
 if python3 -c "
 import json
 data = json.load(open('$DIRECT_JSON'))

@@ -360,10 +360,11 @@ pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bo
 pub fn handle_view(slug: &str, json: bool) {
     let detail = fetch_skill(slug);
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&detail).unwrap_or_default()
-        );
+        let mut val = serde_json::to_value(&detail).unwrap_or_default();
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("findings");
+        }
+        println!("{}", serde_json::to_string_pretty(&val).unwrap_or_default());
         return;
     }
     let (c, h, m, l, i) = count_by_severity(&detail.findings);

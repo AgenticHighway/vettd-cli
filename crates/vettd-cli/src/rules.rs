@@ -127,10 +127,8 @@ pub fn cmd_remove(name: &str) {
 pub fn cmd_validate(source: &Path, json: bool) {
     if !source.exists() {
         if json {
-            println!(
-                "{{\"valid\":false,\"error\":\"file not found: {}\"}}",
-                source.display()
-            );
+            let msg = format!("file not found: {}", source.display());
+            println!("{}", serde_json::json!({"valid": false, "error": msg}));
         } else {
             eprintln!("Error: file not found: {}", source.display());
         }
@@ -181,7 +179,7 @@ pub fn cmd_validate(source: &Path, json: bool) {
         }
         Err(e) => {
             if json {
-                println!("{{\"valid\":false,\"error\":\"{e}\"}}");
+                println!("{}", serde_json::json!({"valid": false, "error": e.to_string()}));
             } else {
                 eprintln!("INVALID: {e}");
             }
