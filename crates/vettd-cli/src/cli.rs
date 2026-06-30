@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
-use crate::contract::build_contract_payload;
+use crate::contract::{
+    build_contract_payload, build_contract_payload_for_disclosure, ContractPayload,
+};
 use crate::lite_mode::{limit_lite_mode_report, print_locked_summary, LITE_MODE_VISIBLE_RESULTS};
 use crate::models::ScanReport;
 use crate::output::{do_submit, emit, resolve_submit_auth};
@@ -1164,22 +1166,39 @@ fn save_report_interactively(report: &ScanReport, scan_duration_ms: u64) {
     crate::output::write_json_report(report, scan_duration_ms, &maybe_path);
 }
 
+/// Count the non-MCP artifact records (prompts, skills, agents, agentic apps)
+/// that a payload will actually transmit.
+///
+/// This counts the real contract records — not `report.artifacts` — so that
+/// artifact types dropped during partitioning (e.g. `browser_footprint`) are
+/// not disclosed as transmitted. MCP servers are disclosed on their own line.
+fn disclosure_artifact_record_count(payload: &ContractPayload) -> usize {
+    payload.prompts.len() + payload.skills.len() + payload.agents.len() + payload.agentic_apps.len()
+}
+
 /// Print a concise summary of the data categories included in a submission.
 ///
 /// Called in interactive flows immediately before asking for consent.  The
 /// summary is intentionally short — it names the data categories without
-/// reproducing actual values.
-fn print_submit_disclosure(report: &ScanReport) {
-    let artifact_count = report.artifacts.len();
+/// reproducing actual values. It takes the built [`ContractPayload`] so the
+/// disclosed counts and field claims match exactly what will be transmitted.
+fn print_submit_disclosure(payload: &ContractPayload) {
+    let record_count = disclosure_artifact_record_count(payload);
     eprintln!("  This submission will include:");
     eprintln!("    • Scan root paths and machine hostname");
     eprintln!(
-        "    • {} AI artifact record(s): file paths, content hashes, capability signals, risk scores",
-        artifact_count
+        "    • {} AI artifact record(s) — prompts, skills, agents, agentic apps: file paths, \
+         capability signals, and risk/trust indicators; content hashes for prompt records",
+        record_count
     );
-    eprintln!("    • MCP server config metadata: commands, tool names, env-var names (not values)");
+    eprintln!(
+        "    • {} MCP server config record(s): commands, tool names, network endpoint URLs, env-var names (not values)",
+        payload.mcp_servers.len()
+    );
     eprintln!("    • Host security context (macOS firewall state on macOS; empty elsewhere)");
-    eprintln!("    • Scanner version, OS, and architecture");
+    eprintln!(
+        "    • Scanner version (OS and architecture are sent only in the request User-Agent header)"
+    );
     eprintln!("  No file contents, secret values, or credential material are transmitted.");
 }
 
@@ -1211,15 +1230,19 @@ fn prompt_submit(report: &ScanReport, scan_duration_ms: u64) {
         crate::network::endpoint_display_host(&endpoint)
     );
 
+    // Build a disclosure payload that skips gather_host_network() so no
+    // subprocesses run before the user has seen the consent text.
+    let disclosure = build_contract_payload_for_disclosure(report, scan_duration_ms);
+
     // Show a concise data-disclosure summary, then ask for consent.
-    print_submit_disclosure(report);
+    print_submit_disclosure(&disclosure);
     let confirmed = crate::wizard::confirm("Send this data?", false);
     if !confirmed {
         eprintln!("  Submission cancelled.");
         return;
     }
 
-    // Build and submit
+    // Build the real payload (including host-network data) now that consent is given.
     let payload = build_contract_payload(report, scan_duration_ms);
     let json = match serde_json::to_string_pretty(&payload) {
         Ok(j) => j,
@@ -1283,8 +1306,8 @@ mod tests {
 
     #[test]
     fn print_submit_disclosure_runs_without_panic() {
-        // Smoke-test: disclosure function must not panic for empty or non-empty reports.
-        let empty = ScanReport::new("/test");
+        // Smoke-test: disclosure function must not panic for empty or non-empty payloads.
+        let empty = build_contract_payload(&ScanReport::new("/test"), 0);
         print_submit_disclosure(&empty);
 
         let mut with_artifacts = ScanReport::new("/test");
@@ -1294,7 +1317,32 @@ mod tests {
         with_artifacts
             .artifacts
             .push(crate::models::ArtifactReport::new("prompt_config", 0.5));
-        print_submit_disclosure(&with_artifacts);
+        let payload = build_contract_payload(&with_artifacts, 0);
+        print_submit_disclosure(&payload);
+    }
+
+    #[test]
+    fn disclosure_count_excludes_dropped_artifact_types() {
+        // Issue #156: the disclosed count must reflect the real payload, not
+        // `report.artifacts.len()`. An unrecognized type (browser_footprint) is
+        // dropped during partitioning and must not be counted, while a real
+        // prompt_config artifact must be.
+        let mut report = ScanReport::new("/test");
+        report
+            .artifacts
+            .push(crate::models::ArtifactReport::new("prompt_config", 0.5));
+        report
+            .artifacts
+            .push(crate::models::ArtifactReport::new("browser_footprint", 0.5));
+
+        assert_eq!(report.artifacts.len(), 2, "two raw artifacts scanned");
+
+        let payload = build_contract_payload(&report, 0);
+        assert_eq!(
+            disclosure_artifact_record_count(&payload),
+            1,
+            "only the prompt_config maps to a transmitted record"
+        );
     }
 
     #[test]

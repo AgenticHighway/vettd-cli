@@ -17,15 +17,36 @@ pub mod types;
 pub use types::*;
 
 use crate::models::ScanReport;
-use crate::network_evidence;
+use crate::network_evidence::{self, HostNetworkInfo};
 
 pub fn build_contract_payload(report: &ScanReport, scan_duration_ms: u64) -> ContractPayload {
+    build_contract_payload_impl(
+        report,
+        scan_duration_ms,
+        network_evidence::gather_host_network(),
+    )
+}
+
+/// Like [`build_contract_payload`] but skips [`network_evidence::gather_host_network`],
+/// which on macOS spawns subprocesses to read firewall state. Use this to build a
+/// payload for the consent disclosure so no subprocesses run before the user
+/// has seen and accepted the consent text.
+pub(crate) fn build_contract_payload_for_disclosure(
+    report: &ScanReport,
+    scan_duration_ms: u64,
+) -> ContractPayload {
+    build_contract_payload_impl(report, scan_duration_ms, HostNetworkInfo::default())
+}
+
+fn build_contract_payload_impl(
+    report: &ScanReport,
+    scan_duration_ms: u64,
+    host_network: HostNetworkInfo,
+) -> ContractPayload {
     let hostname = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
-
-    let host_network = network_evidence::gather_host_network();
 
     let scan_meta = ScanMeta {
         scan_id: uuid::Uuid::new_v4().to_string(),
@@ -116,7 +137,38 @@ fn build_mcp_with_links(
                 .collect();
         }
     }
+
+    // Extend each server's network_evidence with URLs observed in application
+    // logs (VS Code, Cursor, Claude). Each log entry is matched to the server
+    // whose config-based evidence shares the same URL authority; unmatched
+    // entries are dropped (no contract field exists for host-level log URLs).
+    let log_evidence = network_evidence::scan_mcp_logs();
+    for entry in log_evidence {
+        let Some(log_url) = entry.url.as_deref() else {
+            continue;
+        };
+        let log_host = url_authority(log_url);
+        for server in &mut servers {
+            if server
+                .network_evidence
+                .iter()
+                .any(|e| e.url.as_deref().map(url_authority) == Some(log_host))
+            {
+                server.network_evidence.push(entry.clone());
+                break;
+            }
+        }
+    }
+
     servers
+}
+
+/// Extracts the authority (host + optional port) from a URL for matching.
+fn url_authority(url: &str) -> &str {
+    let start = url.find("://").map(|i| i + 3).unwrap_or(0);
+    let rest = &url[start..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    &rest[..end]
 }
 
 #[cfg(test)]

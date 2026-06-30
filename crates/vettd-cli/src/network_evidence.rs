@@ -43,6 +43,45 @@ static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").expect("ENV_VAR_RE is a valid regex pattern")
 });
 
+/// `user:pass@` (or `user@`) userinfo in a URL authority. The authority class
+/// excludes `/?#` and whitespace (so it can't cross into the path/query) but
+/// deliberately allows `@`, so a password containing a literal `@`
+/// (`user:p@ss@host`) is matched up to the *last* `@` and fully stripped.
+static URL_USERINFO_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"://[^/?#\s]*@").expect("URL_USERINFO_RE is a valid regex pattern")
+});
+
+/// Query/fragment parameter whose key looks like a credential. Captures the
+/// `?`/`&`/`#` separator and the key name so the value can be masked. The
+/// key match is intentionally a broad substring (fail-safe: over-redacting a
+/// benign param is preferable to leaking a credential), and the key/value
+/// separator accepts a percent-encoded `=` (`%3D`) as well as a literal `=`.
+static URL_CRED_PARAM_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)([?&#])([^=&#\s]*(?:token|key|secret|password|auth|credential|apikey)[^=&#\s]*)(?:=|%3d)[^&#\s]*",
+    )
+    .expect("URL_CRED_PARAM_RE is a valid regex pattern")
+});
+
+/// Redact credential material from a URL before it is stored in
+/// [`NetworkEvidence`] or any human-readable detail string.
+///
+/// MCP configs and application logs can contain URLs with embedded
+/// credentials (e.g. `https://user:pass@host` or `https://host?token=abc123`).
+/// The pre-submission disclosure promises that no credential material is
+/// transmitted, so we strip userinfo and mask the values of credential-looking
+/// query/fragment parameters. Non-credential URLs are returned unchanged.
+///
+/// Note: `%3D`-encoded `=` separators in credential params are normalized to
+/// literal `=` in the output — the stored URL may differ in encoding from the
+/// source.
+fn redact_url_credentials(url: &str) -> String {
+    let no_userinfo = URL_USERINFO_RE.replace_all(url, "://");
+    URL_CRED_PARAM_RE
+        .replace_all(&no_userinfo, "${1}${2}=REDACTED")
+        .into_owned()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Data types
 // ═══════════════════════════════════════════════════════════════════════════
@@ -54,6 +93,17 @@ pub struct HostNetworkInfo {
     pub firewall_mode: String,
     pub stealth_mode: bool,
     pub firewall_rules: Vec<FirewallRule>,
+}
+
+impl Default for HostNetworkInfo {
+    fn default() -> Self {
+        Self {
+            firewall_enabled: false,
+            firewall_mode: "unknown".to_string(),
+            stealth_mode: false,
+            firewall_rules: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,11 +279,12 @@ pub fn gather_server_evidence(
     // 2. URL endpoint (for sse/http servers)
     if let Some(url) = server_val.get("url").and_then(|v| v.as_str()) {
         let cat = classify_url(url);
+        let safe = redact_url_credentials(url);
         evidence.push(NetworkEvidence {
             source: "config".into(),
             category: cat.into(),
-            detail: format!("Server endpoint: {url}"),
-            url: Some(url.to_string()),
+            detail: format!("Server endpoint: {safe}"),
+            url: Some(safe),
         });
     }
 
@@ -252,21 +303,23 @@ pub fn gather_server_evidence(
         if server_val.get("url").and_then(|v| v.as_str()) == Some(url) {
             continue;
         }
+        let safe = redact_url_credentials(url);
         evidence.push(NetworkEvidence {
             source: "config".into(),
             category: classify_url(url).into(),
-            detail: format!("URL in server config: {url}"),
-            url: Some(url.to_string()),
+            detail: format!("URL in server config: {safe}"),
+            url: Some(safe),
         });
     }
 
     // 4. WebSocket URLs
     for m in WS_URL_RE.find_iter(&text) {
+        let safe = redact_url_credentials(m.as_str());
         evidence.push(NetworkEvidence {
             source: "config".into(),
             category: "websocket".into(),
-            detail: format!("WebSocket URL: {}", m.as_str()),
-            url: Some(m.as_str().to_string()),
+            detail: format!("WebSocket URL: {safe}"),
+            url: Some(safe),
         });
     }
 
@@ -514,12 +567,13 @@ pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
                 if is_noisy_log_url(url) {
                     continue;
                 }
-                if seen_urls.insert(url.to_string()) {
+                let safe = redact_url_credentials(url);
+                if seen_urls.insert(safe.clone()) {
                     evidence.push(NetworkEvidence {
                         source: "logs".into(),
                         category: classify_url(url).into(),
                         detail: format!("URL observed in {log_name}"),
-                        url: Some(url.to_string()),
+                        url: Some(safe),
                     });
                 }
             }
@@ -527,12 +581,13 @@ pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
             // WebSocket URLs
             for m in WS_URL_LOG_RE.find_iter(&tail) {
                 let url = m.as_str();
-                if seen_urls.insert(url.to_string()) {
+                let safe = redact_url_credentials(url);
+                if seen_urls.insert(safe.clone()) {
                     evidence.push(NetworkEvidence {
                         source: "logs".into(),
                         category: "websocket".into(),
                         detail: format!("WebSocket observed in {log_name}"),
-                        url: Some(url.to_string()),
+                        url: Some(safe),
                     });
                 }
             }
@@ -736,5 +791,87 @@ mod tests {
             url: Some("https://api.example.com".into()),
         }];
         assert_eq!(classify_from_evidence("sse", &evidence), "Internet Exposed");
+    }
+
+    // ── Credential redaction (fix #4) ──────────────────────────────────────
+    //
+    // The disclosure promises no credential material is transmitted, so URLs
+    // stored in NetworkEvidence must not leak userinfo or credential query
+    // params even when an MCP config or log embeds them.
+
+    #[test]
+    fn redact_url_strips_userinfo() {
+        assert_eq!(
+            redact_url_credentials("https://user:p4ss@host.example.com/mcp"),
+            "https://host.example.com/mcp"
+        );
+    }
+
+    #[test]
+    fn redact_url_masks_credential_query_params() {
+        assert_eq!(
+            redact_url_credentials("https://host/mcp?token=abc123&page=2"),
+            "https://host/mcp?token=REDACTED&page=2"
+        );
+        assert_eq!(
+            redact_url_credentials("wss://host/stream?access_key=xyz"),
+            "wss://host/stream?access_key=REDACTED"
+        );
+    }
+
+    #[test]
+    fn redact_url_leaves_clean_url_unchanged() {
+        let clean = "https://api.example.com/mcp?page=2&limit=50";
+        assert_eq!(redact_url_credentials(clean), clean);
+    }
+
+    #[test]
+    fn redact_url_strips_userinfo_with_at_in_password() {
+        // A literal '@' in the password must not corrupt the host or leak a
+        // fragment of the password: strip up to the last '@' in the authority.
+        let out = redact_url_credentials("https://user:p@ss@host.example.com/mcp");
+        assert_eq!(out, "https://host.example.com/mcp");
+        assert!(!out.contains("p@ss") && !out.contains("ss@host"));
+    }
+
+    #[test]
+    fn redact_url_masks_percent_encoded_separator() {
+        // %3D is a percent-encoded '='; a credential param using it must still
+        // be redacted rather than passing the value through verbatim.
+        let out = redact_url_credentials("https://host/mcp?token%3DSECRET");
+        assert!(
+            !out.contains("SECRET"),
+            "encoded-separator token must not leak"
+        );
+        assert!(out.contains("token=REDACTED"));
+    }
+
+    #[test]
+    fn redact_url_preserves_base64_padding_in_benign_param() {
+        // A non-credential param whose value ends in percent-encoded base64
+        // padding (%3D) must be left intact — only credential-keyed params are
+        // touched, and the separator alternation must not corrupt the value.
+        let clean = "https://host/mcp?state=eyJhbGci%3D%3D&page=1";
+        assert_eq!(redact_url_credentials(clean), clean);
+    }
+
+    #[test]
+    fn server_evidence_redacts_credential_in_endpoint_url() {
+        let val = serde_json::json!({
+            "type": "http",
+            "url": "https://api.example.com/mcp?token=SUPERSECRET"
+        });
+        let evidence = gather_server_evidence("creds", &val, "streamable-http");
+        let url_ev = evidence
+            .iter()
+            .find(|e| e.url.is_some())
+            .expect("should capture the endpoint url");
+        let stored = url_ev.url.as_deref().unwrap();
+        assert!(!stored.contains("SUPERSECRET"), "raw token must not leak");
+        assert!(stored.contains("token=REDACTED"));
+        assert!(
+            !url_ev.detail.contains("SUPERSECRET"),
+            "detail string must not leak the token either"
+        );
     }
 }
