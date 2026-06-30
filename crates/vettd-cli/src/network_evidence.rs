@@ -71,6 +71,10 @@ static URL_CRED_PARAM_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// The pre-submission disclosure promises that no credential material is
 /// transmitted, so we strip userinfo and mask the values of credential-looking
 /// query/fragment parameters. Non-credential URLs are returned unchanged.
+///
+/// Note: `%3D`-encoded `=` separators in credential params are normalized to
+/// literal `=` in the output — the stored URL may differ in encoding from the
+/// source.
 fn redact_url_credentials(url: &str) -> String {
     let no_userinfo = URL_USERINFO_RE.replace_all(url, "://");
     URL_CRED_PARAM_RE
@@ -89,6 +93,17 @@ pub struct HostNetworkInfo {
     pub firewall_mode: String,
     pub stealth_mode: bool,
     pub firewall_rules: Vec<FirewallRule>,
+}
+
+impl Default for HostNetworkInfo {
+    fn default() -> Self {
+        Self {
+            firewall_enabled: false,
+            firewall_mode: "unknown".to_string(),
+            stealth_mode: false,
+            firewall_rules: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,12 +567,13 @@ pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
                 if is_noisy_log_url(url) {
                     continue;
                 }
-                if seen_urls.insert(url.to_string()) {
+                let safe = redact_url_credentials(url);
+                if seen_urls.insert(safe.clone()) {
                     evidence.push(NetworkEvidence {
                         source: "logs".into(),
                         category: classify_url(url).into(),
                         detail: format!("URL observed in {log_name}"),
-                        url: Some(redact_url_credentials(url)),
+                        url: Some(safe),
                     });
                 }
             }
@@ -565,12 +581,13 @@ pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
             // WebSocket URLs
             for m in WS_URL_LOG_RE.find_iter(&tail) {
                 let url = m.as_str();
-                if seen_urls.insert(url.to_string()) {
+                let safe = redact_url_credentials(url);
+                if seen_urls.insert(safe.clone()) {
                     evidence.push(NetworkEvidence {
                         source: "logs".into(),
                         category: "websocket".into(),
                         detail: format!("WebSocket observed in {log_name}"),
-                        url: Some(redact_url_credentials(url)),
+                        url: Some(safe),
                     });
                 }
             }

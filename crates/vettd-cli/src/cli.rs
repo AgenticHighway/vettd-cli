@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
-use crate::contract::{build_contract_payload, ContractPayload};
+use crate::contract::{
+    build_contract_payload, build_contract_payload_for_disclosure, ContractPayload,
+};
 use crate::lite_mode::{limit_lite_mode_report, print_locked_summary, LITE_MODE_VISIBLE_RESULTS};
 use crate::models::ScanReport;
 use crate::output::{do_submit, emit, resolve_submit_auth};
@@ -1190,7 +1192,7 @@ fn print_submit_disclosure(payload: &ContractPayload) {
         record_count
     );
     eprintln!(
-        "    • {} MCP server config record(s): commands, tool names, env-var names (not values)",
+        "    • {} MCP server config record(s): commands, tool names, network endpoint URLs, env-var names (not values)",
         payload.mcp_servers.len()
     );
     eprintln!("    • Host security context (macOS firewall state on macOS; empty elsewhere)");
@@ -1228,18 +1230,20 @@ fn prompt_submit(report: &ScanReport, scan_duration_ms: u64) {
         crate::network::endpoint_display_host(&endpoint)
     );
 
-    // Build the payload first so the disclosure can describe exactly what will
-    // be transmitted (record counts and fields must match the real payload).
-    let payload = build_contract_payload(report, scan_duration_ms);
+    // Build a disclosure payload that skips gather_host_network() so no
+    // subprocesses run before the user has seen the consent text.
+    let disclosure = build_contract_payload_for_disclosure(report, scan_duration_ms);
 
     // Show a concise data-disclosure summary, then ask for consent.
-    print_submit_disclosure(&payload);
+    print_submit_disclosure(&disclosure);
     let confirmed = crate::wizard::confirm("Send this data?", false);
     if !confirmed {
         eprintln!("  Submission cancelled.");
         return;
     }
 
+    // Build the real payload (including host-network data) now that consent is given.
+    let payload = build_contract_payload(report, scan_duration_ms);
     let json = match serde_json::to_string_pretty(&payload) {
         Ok(j) => j,
         Err(e) => {
