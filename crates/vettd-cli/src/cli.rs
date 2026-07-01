@@ -1052,7 +1052,8 @@ pub fn run() {
 
     // Offer interactive follow-up actions for local-only scans.
     if !wants_submit && !out.stdout && !out.contract && is_interactive() {
-        prompt_post_scan_action(&report, scan_duration_ms);
+        let cmd_name = command_name(&sub);
+        prompt_post_scan_action(&report, scan_duration_ms, cmd_name);
     }
 }
 
@@ -1136,7 +1137,7 @@ fn require_auth_key(key: Option<String>, interactive: bool) -> Result<Option<Str
     }
 }
 
-fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64) {
+fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64, cmd_name: &str) {
     let saved = crate::submit::load_auth_config();
     let endpoint = saved
         .as_ref()
@@ -1155,7 +1156,7 @@ fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64) {
 
     match action {
         PostScanAction::SaveReport => save_report_interactively(report, scan_duration_ms),
-        PostScanAction::SubmitToVettd => prompt_submit(report, scan_duration_ms),
+        PostScanAction::SubmitToVettd => prompt_submit(report, scan_duration_ms, cmd_name),
         PostScanAction::DoNothing => {}
     }
 }
@@ -1203,7 +1204,7 @@ fn print_submit_disclosure(payload: &ContractPayload) {
 }
 
 /// After a scan, ask the user if they want to submit results.
-fn prompt_submit(report: &ScanReport, scan_duration_ms: u64) {
+fn prompt_submit(report: &ScanReport, scan_duration_ms: u64, cmd_name: &str) {
     // Resolve or collect API key
     let saved = crate::submit::load_auth_config();
     let api_key = match saved.as_ref().filter(|a| !a.api_key.is_empty()) {
@@ -1263,7 +1264,7 @@ fn prompt_submit(report: &ScanReport, scan_duration_ms: u64) {
         }
         Err(e) => {
             eprintln!("  {e}");
-            eprintln!("  You can retry later with: \x1b[1mvettd scan --submit\x1b[0m");
+            eprintln!("  You can retry later with: \x1b[1mvettd scan {cmd_name} --submit\x1b[0m");
         }
     }
 }
