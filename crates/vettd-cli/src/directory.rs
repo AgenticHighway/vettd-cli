@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::read_client::{self, ReadError};
 
 // ── ANSI helpers (mirrors formatters.rs palette) ──────────────────────────
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
+pub(crate) const RESET: &str = "\x1b[0m";
+pub(crate) const BOLD: &str = "\x1b[1m";
+pub(crate) const DIM: &str = "\x1b[2m";
 
-fn grade_color(grade: &str) -> &'static str {
+pub(crate) fn grade_color(grade: &str) -> &'static str {
     match grade {
         "A" => "\x1b[32m",       // green
         "B" => "\x1b[34m",       // blue
@@ -23,7 +23,7 @@ fn grade_color(grade: &str) -> &'static str {
     }
 }
 
-fn severity_color(sev_lower: &str) -> &'static str {
+pub(crate) fn severity_color(sev_lower: &str) -> &'static str {
     match sev_lower {
         "critical" => "\x1b[1;35m", // bold magenta
         "high" => "\x1b[31m",       // red
@@ -125,7 +125,7 @@ fn directory_base_url() -> String {
 
 /// Percent-encode a query parameter value (UTF-8, RFC 3986 unreserved chars
 /// pass through; everything else is `%XX` encoded).
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         match byte {
@@ -139,7 +139,7 @@ fn percent_encode(s: &str) -> String {
 }
 
 /// Normalize source type identifiers to display-friendly labels.
-fn display_source_type(s: &str) -> &str {
+pub(crate) fn display_source_type(s: &str) -> &str {
     match s {
         "scan" => "cli",
         "zip" => "upload",
@@ -148,7 +148,7 @@ fn display_source_type(s: &str) -> &str {
 }
 
 /// Numeric value for a severity string (higher = more severe).
-fn severity_value(s: &str) -> u8 {
+pub(crate) fn severity_value(s: &str) -> u8 {
     match s.to_ascii_lowercase().as_str() {
         "critical" => 4,
         "high" => 3,
@@ -159,7 +159,9 @@ fn severity_value(s: &str) -> u8 {
 }
 
 /// Count findings by severity level, returning (critical, high, medium, low, info).
-fn count_by_severity(findings: &[DirectoryFinding]) -> (usize, usize, usize, usize, usize) {
+pub(crate) fn count_by_severity(
+    findings: &[DirectoryFinding],
+) -> (usize, usize, usize, usize, usize) {
     let mut critical = 0usize;
     let mut high = 0usize;
     let mut medium = 0usize;
@@ -178,7 +180,7 @@ fn count_by_severity(findings: &[DirectoryFinding]) -> (usize, usize, usize, usi
 }
 
 /// Number of distinct successful external scanners (source != "vettd", status == "success").
-fn external_scanner_run_count(runs: &[ScannerRun]) -> usize {
+pub(crate) fn external_scanner_run_count(runs: &[ScannerRun]) -> usize {
     use std::collections::HashSet;
     runs.iter()
         .filter(|r| r.source != "vettd" && r.status == "success")
@@ -213,7 +215,13 @@ fn fmt_severity_breakdown(c: usize, h: usize, m: usize, l: usize, i: usize) -> S
 }
 
 /// Format a severity breakdown with ANSI color per level.
-fn fmt_severity_breakdown_colored(c: usize, h: usize, m: usize, l: usize, i: usize) -> String {
+pub(crate) fn fmt_severity_breakdown_colored(
+    c: usize,
+    h: usize,
+    m: usize,
+    l: usize,
+    i: usize,
+) -> String {
     let mut parts = Vec::new();
     if c > 0 {
         parts.push(format!("\x1b[1;35m{c} critical{RESET}"));
@@ -767,7 +775,7 @@ pub fn handle_random(json: bool) {
 ///
 /// Slug column width is computed from the batch so all rows align. Description
 /// is truncated to fit the remaining terminal width.
-fn print_cards(cards: &[DirectoryCard]) {
+pub(crate) fn print_cards(cards: &[DirectoryCard]) {
     let slug_w = cards
         .iter()
         .map(|c| c.slug.as_deref().unwrap_or(&c.name).len())
@@ -820,7 +828,7 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize) {
 }
 
 /// Read terminal width from `$COLUMNS`, falling back to 120.
-fn terminal_width() -> usize {
+pub(crate) fn terminal_width() -> usize {
     std::env::var("COLUMNS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -828,7 +836,7 @@ fn terminal_width() -> usize {
 }
 
 /// Truncate a string to at most `max` display characters, appending `…` if cut.
-fn truncate_to_display(s: &str, max: usize) -> String {
+pub(crate) fn truncate_to_display(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
