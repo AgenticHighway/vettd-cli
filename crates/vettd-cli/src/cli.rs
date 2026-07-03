@@ -252,9 +252,9 @@ pub enum InventorySubcommand {
     Findings {
         /// Entry slug
         slug: String,
-        /// Minimum severity: critical|high|medium|low|info
-        #[arg(long, default_value = "info")]
-        min_severity: String,
+        /// Minimum rating grade: A|B|C|D|F (A = safest/default, F = most severe)
+        #[arg(long, default_value = "A")]
+        min_rating: String,
     },
     /// Side-by-side comparison of two of your skills
     Compare {
@@ -986,8 +986,8 @@ pub fn run() {
                 reverse,
             } => crate::inventory::handle_list(*page, sort, *reverse, json),
             InventorySubcommand::View { slug } => crate::inventory::handle_view(slug, json),
-            InventorySubcommand::Findings { slug, min_severity } => {
-                crate::inventory::handle_findings(slug, min_severity, json)
+            InventorySubcommand::Findings { slug, min_rating } => {
+                crate::inventory::handle_findings(slug, min_rating, json)
             }
             InventorySubcommand::Compare { slug_a, slug_b } => {
                 crate::inventory::handle_compare(slug_a, slug_b, json)

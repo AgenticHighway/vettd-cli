@@ -83,6 +83,21 @@ fn api_sort_params(sort: &str, reverse: bool) -> String {
     format!("sort={s}&dir={dir}")
 }
 
+/// Map a letter grade (A/B/C/D/F) onto the same 0-4 scale as
+/// `directory::severity_value`, so `--min-rating` can reuse severity
+/// filtering/comparison logic. `A` is the safest grade (lowest bar,
+/// matches "info"); `F` is the most severe (matches "critical") — this
+/// mirrors the color convention already used by `directory::grade_color`.
+fn rating_value(grade: &str) -> u8 {
+    match grade.to_ascii_uppercase().as_str() {
+        "F" => 4,
+        "D" => 3,
+        "C" => 2,
+        "B" => 1,
+        _ => 0, // "A" and anything unrecognized
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
@@ -233,15 +248,14 @@ pub fn handle_view(slug: &str, json: bool) {
     println!("  Run `vettd inventory findings {display_slug}` to see finding details.");
 }
 
-pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
+pub fn handle_findings(slug: &str, min_rating: &str, json: bool) {
     require_auth_or_exit();
     let detail = fetch_skill(slug);
+    let threshold = rating_value(min_rating);
     let filtered: Vec<&DirectoryFinding> = detail
         .findings
         .iter()
-        .filter(|f| {
-            directory::severity_value(&f.severity) >= directory::severity_value(min_severity)
-        })
+        .filter(|f| directory::severity_value(&f.severity) >= threshold)
         .collect();
 
     if json {
@@ -254,14 +268,15 @@ pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
 
     let total = detail.findings.len();
     let shown = filtered.len();
+    let rating_display = min_rating.to_ascii_uppercase();
     println!(
-        "Findings for {}  (--min-severity {min_severity})",
+        "Findings for {}  (--min-rating {rating_display})",
         detail.name
     );
     println!();
 
     if filtered.is_empty() {
-        println!("  No findings at or above the '{min_severity}' severity threshold.");
+        println!("  No findings at or above the '{rating_display}' rating threshold.");
     } else {
         for f in &filtered {
             let rule = f.rule_id.as_deref().unwrap_or("—");
@@ -271,7 +286,7 @@ pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
             }
             println!();
         }
-        println!("  Showing {shown}/{total} findings (filter: >= {min_severity}).");
+        println!("  Showing {shown}/{total} findings (filter: >= {rating_display} rating).");
     }
 }
 
@@ -330,5 +345,20 @@ mod tests {
     #[test]
     fn api_sort_params_default_desc() {
         assert_eq!(api_sort_params("newest", false), "sort=newest&dir=desc");
+    }
+
+    #[test]
+    fn rating_value_matches_severity_scale() {
+        assert_eq!(rating_value("A"), 0);
+        assert_eq!(rating_value("B"), 1);
+        assert_eq!(rating_value("C"), 2);
+        assert_eq!(rating_value("D"), 3);
+        assert_eq!(rating_value("F"), 4);
+        assert_eq!(rating_value("a"), 0, "case-insensitive");
+        assert_eq!(
+            rating_value("nonsense"),
+            0,
+            "unrecognized defaults to lowest bar"
+        );
     }
 }
