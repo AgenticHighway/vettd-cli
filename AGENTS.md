@@ -139,3 +139,7 @@ For broader CLI smoke coverage, run:
 - Machine-readable output belongs on stdout.
 - Human-oriented logs and progress output belong on stderr.
 - Update public docs when behavior or CLI flows change.
+- **Known gotcha:** `parity_adapter.rs` and `parity/` are a testing tool only
+  (cross-language Rust-vs-TS output parity checks). They are not a production
+  integration path — do not treat this subprocess/JSON boundary as how any
+  real consumer (vettd-cli, the scanner suite) talks to a scanner in prod.
