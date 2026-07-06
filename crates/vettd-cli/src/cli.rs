@@ -10,7 +10,7 @@ use crate::lite_mode::{limit_lite_mode_report, print_locked_summary, LITE_MODE_V
 use crate::models::ScanReport;
 use crate::output::{do_submit, emit, resolve_submit_auth};
 use crate::scan::run_scan;
-use crate::submit::{save_auth_config, AuthConfig, DEFAULT_PRODUCTION_ENDPOINT};
+use crate::submit::{save_auth_config, AuthConfig, SaveOutcome, DEFAULT_PRODUCTION_ENDPOINT};
 
 // ---------------------------------------------------------------------------
 // CLI argument definitions
@@ -852,9 +852,8 @@ pub fn run() {
             api_key,
         };
         match save_auth_config(&config) {
-            Ok(()) => {
-                eprintln!("Credentials saved.");
-                eprintln!("  Endpoint: {}", config.endpoint);
+            Ok(outcome) => {
+                eprint!("{}", auth_save_report(&outcome, &config.endpoint));
             }
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -1137,6 +1136,24 @@ fn require_auth_key(key: Option<String>, interactive: bool) -> Result<Option<Str
     }
 }
 
+/// Build the stderr report for a `vettd auth` credential save.
+///
+/// The user needs the on-disk config path to confirm setup completed and to
+/// locate the file for debugging; when nothing was written (already up to
+/// date) that state is stated explicitly instead of implying a write
+/// (issue #126).
+fn auth_save_report(outcome: &SaveOutcome, endpoint: &str) -> String {
+    let status = if outcome.written {
+        "Credentials saved."
+    } else {
+        "Credentials already up to date — nothing written."
+    };
+    format!(
+        "{status}\n  Config:   {}\n  Endpoint: {endpoint}\n",
+        outcome.path.display()
+    )
+}
+
 fn prompt_post_scan_action(report: &ScanReport, scan_duration_ms: u64, cmd_name: &str) {
     let saved = crate::submit::load_auth_config();
     let endpoint = saved
@@ -1413,6 +1430,46 @@ mod tests {
         // guidance naming the flag, not a hanging secret prompt.
         let err = require_auth_key(None, false).unwrap_err();
         assert!(err.contains("--key"), "guidance was: {err}");
+    }
+
+    // ── #126: auth must tell the user where the config file landed ──
+
+    #[test]
+    fn auth_save_report_names_the_config_path() {
+        // "Credentials saved." alone doesn't help a user confirm setup or
+        // find the file later — the on-disk path is the actionable part.
+        let outcome = SaveOutcome {
+            path: PathBuf::from("/home/u/.config/vettd/config.json"),
+            written: true,
+        };
+        let report = auth_save_report(&outcome, "https://example.com/api");
+        assert!(report.contains("Credentials saved."));
+        assert!(
+            report.contains("/home/u/.config/vettd/config.json"),
+            "report must name the written file: {report}"
+        );
+        assert!(report.contains("https://example.com/api"));
+    }
+
+    #[test]
+    fn auth_save_report_unchanged_is_explicit_about_no_write() {
+        // When the config was already up to date the user must be told no
+        // file was written — while still being pointed at the existing
+        // config so they can locate it.
+        let outcome = SaveOutcome {
+            path: PathBuf::from("/home/u/.config/vettd/config.json"),
+            written: false,
+        };
+        let report = auth_save_report(&outcome, "https://example.com/api");
+        assert!(
+            report.contains("nothing written"),
+            "unchanged state must be explicit: {report}"
+        );
+        assert!(!report.contains("Credentials saved."));
+        assert!(
+            report.contains("/home/u/.config/vettd/config.json"),
+            "unchanged report must still name the config: {report}"
+        );
     }
 
     #[test]

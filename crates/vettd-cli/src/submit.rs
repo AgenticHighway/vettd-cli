@@ -18,11 +18,19 @@ pub const DEFAULT_PRODUCTION_ENDPOINT: &str = "https://vettd.agentichighway.ai/a
 // Global auth config (~/.config/vettd/config.json)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthConfig {
     pub endpoint: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+}
+
+/// What a config save actually did on disk, so the CLI can tell the user
+/// where the file landed — or that nothing needed writing (issue #126).
+#[derive(Debug)]
+pub struct SaveOutcome {
+    pub path: PathBuf,
+    pub written: bool,
 }
 
 impl fmt::Debug for AuthConfig {
@@ -47,13 +55,34 @@ pub fn load_auth_config() -> Option<AuthConfig> {
 }
 
 /// Save the global auth config to `~/.config/vettd/config.json`.
-pub fn save_auth_config(config: &AuthConfig) -> Result<(), String> {
+///
+/// Returns where the config lives and whether the file was actually written;
+/// an identical config already on disk is left untouched.
+pub fn save_auth_config(config: &AuthConfig) -> Result<SaveOutcome, String> {
     let path =
         auth_config_path().ok_or_else(|| "Could not determine config directory".to_string())?;
     save_auth_config_to_path(&path, config)
 }
 
-fn save_auth_config_to_path(path: &Path, config: &AuthConfig) -> Result<(), String> {
+fn save_auth_config_to_path(path: &Path, config: &AuthConfig) -> Result<SaveOutcome, String> {
+    // Skip the rewrite when the identical config is already on disk, so the
+    // caller can honestly report "nothing written" (issue #126). The 0600
+    // permission invariant is still enforced on the existing file.
+    if let Ok(existing) = fs::read_to_string(path) {
+        if serde_json::from_str::<AuthConfig>(&existing).ok().as_ref() == Some(config) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("Failed to secure config file {}: {e}", path.display()))?;
+            }
+            return Ok(SaveOutcome {
+                path: path.to_path_buf(),
+                written: false,
+            });
+        }
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
@@ -91,7 +120,10 @@ fn save_auth_config_to_path(path: &Path, config: &AuthConfig) -> Result<(), Stri
             .map_err(|e| format!("Failed to write config to {}: {e}", path.display()))?;
     }
 
-    Ok(())
+    Ok(SaveOutcome {
+        path: path.to_path_buf(),
+        written: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +314,95 @@ mod tests {
         let dir_mode = fs::metadata(&config_dir).unwrap().permissions().mode() & 0o777;
         let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+    }
+
+    // ── #126: the save outcome is what the CLI reports to the user ──
+
+    #[test]
+    fn save_outcome_names_the_path_holding_the_credentials() {
+        // Issue #126: the CLI prints `outcome.path` so a user can locate the
+        // config after setup. The reported path must actually contain the
+        // saved credentials — not a sibling or intended-but-unwritten path.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("config.json");
+        let auth = AuthConfig {
+            endpoint: "https://example.com/api".to_string(),
+            api_key: "ah_test".to_string(),
+        };
+
+        let outcome = save_auth_config_to_path(&path, &auth).unwrap();
+
+        assert!(outcome.written, "first save must report a write");
+        assert_eq!(outcome.path, path);
+        let loaded: AuthConfig =
+            serde_json::from_str(&fs::read_to_string(&outcome.path).unwrap()).unwrap();
+        assert_eq!(loaded, auth, "reported path must hold the saved config");
+    }
+
+    #[test]
+    fn save_outcome_identical_config_reports_nothing_written() {
+        // Issue #126: re-running setup with unchanged credentials must be
+        // reported as "already up to date" so the user isn't told a write
+        // happened when the file was left alone.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("config.json");
+        let auth = AuthConfig {
+            endpoint: "https://example.com/api".to_string(),
+            api_key: "ah_test".to_string(),
+        };
+
+        assert!(save_auth_config_to_path(&path, &auth).unwrap().written);
+        let resave = save_auth_config_to_path(&path, &auth).unwrap();
+
+        assert!(!resave.written, "identical resave must not claim a write");
+        assert_eq!(resave.path, path, "unchanged state still names the path");
+    }
+
+    #[test]
+    fn save_outcome_changed_config_still_writes() {
+        // The up-to-date check must never swallow a real change: a new
+        // endpoint has to reach disk or later submissions use stale config.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("config.json");
+        let auth = AuthConfig {
+            endpoint: "https://example.com/api".to_string(),
+            api_key: "ah_test".to_string(),
+        };
+        save_auth_config_to_path(&path, &auth).unwrap();
+
+        let changed = AuthConfig {
+            endpoint: "https://other.example.com/api".to_string(),
+            ..auth
+        };
+        let outcome = save_auth_config_to_path(&path, &changed).unwrap();
+
+        assert!(outcome.written);
+        let loaded: AuthConfig = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.endpoint, changed.endpoint);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_outcome_identical_config_still_secures_permissions() {
+        // Skipping the rewrite must not skip the security invariant: after
+        // any successful save call the key file is 0600, even if its mode
+        // drifted while the contents stayed current.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("config.json");
+        let auth = AuthConfig {
+            endpoint: "https://example.com/api".to_string(),
+            api_key: "ah_test".to_string(),
+        };
+        save_auth_config_to_path(&path, &auth).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let resave = save_auth_config_to_path(&path, &auth).unwrap();
+
+        assert!(!resave.written);
+        let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(file_mode, 0o600);
     }
 }
