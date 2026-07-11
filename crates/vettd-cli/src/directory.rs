@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::read_client::{self, ReadError};
 
 // ── ANSI helpers (mirrors formatters.rs palette) ──────────────────────────
-pub(crate) const RESET: &str = "\x1b[0m";
-pub(crate) const BOLD: &str = "\x1b[1m";
-pub(crate) const DIM: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
 
-pub(crate) fn grade_color(grade: &str) -> &'static str {
+fn grade_color(grade: &str) -> &'static str {
     match grade {
         "A" => "\x1b[32m",       // green
         "B" => "\x1b[34m",       // blue
@@ -23,7 +23,7 @@ pub(crate) fn grade_color(grade: &str) -> &'static str {
     }
 }
 
-pub(crate) fn severity_color(sev_lower: &str) -> &'static str {
+fn severity_color(sev_lower: &str) -> &'static str {
     match sev_lower {
         "critical" => "\x1b[1;35m", // bold magenta
         "high" => "\x1b[31m",       // red
@@ -139,7 +139,7 @@ pub(crate) fn percent_encode(s: &str) -> String {
 }
 
 /// Normalize source type identifiers to display-friendly labels.
-pub(crate) fn display_source_type(s: &str) -> &str {
+fn display_source_type(s: &str) -> &str {
     match s {
         "scan" => "cli",
         "zip" => "upload",
@@ -159,9 +159,7 @@ pub(crate) fn severity_value(s: &str) -> u8 {
 }
 
 /// Count findings by severity level, returning (critical, high, medium, low, info).
-pub(crate) fn count_by_severity(
-    findings: &[DirectoryFinding],
-) -> (usize, usize, usize, usize, usize) {
+fn count_by_severity(findings: &[DirectoryFinding]) -> (usize, usize, usize, usize, usize) {
     let mut critical = 0usize;
     let mut high = 0usize;
     let mut medium = 0usize;
@@ -180,7 +178,7 @@ pub(crate) fn count_by_severity(
 }
 
 /// Number of distinct successful external scanners (source != "vettd", status == "success").
-pub(crate) fn external_scanner_run_count(runs: &[ScannerRun]) -> usize {
+fn external_scanner_run_count(runs: &[ScannerRun]) -> usize {
     use std::collections::HashSet;
     runs.iter()
         .filter(|r| r.source != "vettd" && r.status == "success")
@@ -215,13 +213,7 @@ fn fmt_severity_breakdown(c: usize, h: usize, m: usize, l: usize, i: usize) -> S
 }
 
 /// Format a severity breakdown with ANSI color per level.
-pub(crate) fn fmt_severity_breakdown_colored(
-    c: usize,
-    h: usize,
-    m: usize,
-    l: usize,
-    i: usize,
-) -> String {
+fn fmt_severity_breakdown_colored(c: usize, h: usize, m: usize, l: usize, i: usize) -> String {
     let mut parts = Vec::new();
     if c > 0 {
         parts.push(format!("\x1b[1;35m{c} critical{RESET}"));
@@ -270,7 +262,7 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-fn api_sort_params(sort: &str, reverse: bool) -> String {
+pub(crate) fn api_sort_params(sort: &str, reverse: bool) -> String {
     let s = match sort {
         "rating" => "verdict",
         other => other,
@@ -828,7 +820,7 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize) {
 }
 
 /// Read terminal width from `$COLUMNS`, falling back to 120.
-pub(crate) fn terminal_width() -> usize {
+fn terminal_width() -> usize {
     std::env::var("COLUMNS")
         .ok()
         .and_then(|s| s.parse().ok())

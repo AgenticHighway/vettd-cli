@@ -35,7 +35,7 @@ pub fn require_auth_or_exit() {
 /// clear exit messages.
 fn fetch_skill(slug: &str) -> DirectorySkillDetail {
     let base = inventory_base_url();
-    let url = format!("{base}/{}", percent_encode(slug));
+    let url = format!("{base}/{}", directory::percent_encode(slug));
     match inventory_client::fetch_json::<DirectorySkillDetail>(&url) {
         Ok(detail) => detail,
         Err(InventoryError::Unauthenticated) => {
@@ -57,41 +57,14 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
     }
 }
 
-// Re-export percent_encode's behavior locally (directory's is module-private
-// by design — inventory builds its own tiny copy to avoid widening directory's
-// public surface for a one-line helper).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
-fn api_sort_params(sort: &str, reverse: bool) -> String {
-    let s = match sort {
-        "rating" => "verdict",
-        other => other,
-    };
-    let default_asc = sort == "alpha";
-    let dir = if default_asc ^ reverse { "asc" } else { "desc" };
-    format!("sort={s}&dir={dir}")
-}
-
-/// Map a letter grade (A/B/C/D/F) onto the same 0-4 scale as
-/// `directory::severity_value`, so `--min-rating` can reuse severity
-/// filtering/comparison logic. `A` is the safest grade (lowest bar,
-/// matches "info"); `F` is the most severe (matches "critical") — this
-/// mirrors the color convention already used by `directory::grade_color`.
+/// Map a letter grade (A/B/C/F — the only grades the real data model uses)
+/// onto the same 0-4 scale as `directory::severity_value`, so `--min-rating`
+/// can reuse severity filtering/comparison logic. `A` is the safest grade
+/// (lowest bar, matches "info"); `F` is the most severe (matches "critical")
+/// — this mirrors the color convention already used by `directory::grade_color`.
 fn rating_value(grade: &str) -> u8 {
     match grade.to_ascii_uppercase().as_str() {
         "F" => 4,
-        "D" => 3,
         "C" => 2,
         "B" => 1,
         _ => 0, // "A" and anything unrecognized
@@ -107,7 +80,7 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     let url = format!(
         "{}?{}&page={page}",
         inventory_base_url(),
-        api_sort_params(sort, reverse)
+        directory::api_sort_params(sort, reverse)
     );
     match inventory_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
@@ -151,8 +124,8 @@ pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bo
     let url = format!(
         "{}?search={}&{}&page={page}",
         inventory_base_url(),
-        percent_encode(query),
-        api_sort_params(sort, reverse),
+        directory::percent_encode(query),
+        directory::api_sort_params(sort, reverse),
     );
     match inventory_client::fetch_json::<DirectoryListResponse>(&url) {
         Ok(resp) => {
@@ -312,24 +285,40 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
         return;
     }
 
+    // Column geometry mirrors directory::handle_compare's approach: truncate
+    // each value to fit its column so long values can't run into each other,
+    // and separate the header from the data with a rule.
+    let label_w: usize = 10;
+    let val_w: usize = 30;
+    let col = |s: &str| directory::truncate_to_display(s, val_w);
+
     let slug_display_a = detail_a.slug.as_deref().unwrap_or(slug_a);
     let slug_display_b = detail_b.slug.as_deref().unwrap_or(slug_b);
-    println!("{:<15}{}", slug_display_a, slug_display_b);
+    let files_a = detail_a
+        .file_count
+        .map_or_else(|| "—".to_string(), |n| n.to_string());
+    let files_b = detail_b
+        .file_count
+        .map_or_else(|| "—".to_string(), |n| n.to_string());
+
     println!(
-        "{:<15}{}",
-        detail_a.overall_grade.as_deref().unwrap_or("—"),
-        detail_b.overall_grade.as_deref().unwrap_or("—")
+        "{:label_w$}{:<val_w$}  {}",
+        "",
+        col(slug_display_a),
+        col(slug_display_b)
+    );
+    println!("{}", "─".repeat(label_w + val_w + 2 + val_w));
+    println!(
+        "{:<label_w$}{:<val_w$}  {}",
+        "Grade:",
+        col(detail_a.overall_grade.as_deref().unwrap_or("—")),
+        col(detail_b.overall_grade.as_deref().unwrap_or("—"))
     );
     println!(
-        "{:<15}{}",
-        detail_a
-            .file_count
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        detail_b
-            .file_count
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".to_string())
+        "{:<label_w$}{:<val_w$}  {}",
+        "Files:",
+        col(&files_a),
+        col(&files_b)
     );
 }
 
@@ -338,21 +327,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn percent_encode_basic() {
-        assert_eq!(percent_encode("hello world"), "hello%20world");
-    }
-
-    #[test]
-    fn api_sort_params_default_desc() {
-        assert_eq!(api_sort_params("newest", false), "sort=newest&dir=desc");
-    }
-
-    #[test]
     fn rating_value_matches_severity_scale() {
         assert_eq!(rating_value("A"), 0);
         assert_eq!(rating_value("B"), 1);
         assert_eq!(rating_value("C"), 2);
-        assert_eq!(rating_value("D"), 3);
         assert_eq!(rating_value("F"), 4);
         assert_eq!(rating_value("a"), 0, "case-insensitive");
         assert_eq!(

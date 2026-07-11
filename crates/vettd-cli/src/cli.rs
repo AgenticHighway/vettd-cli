@@ -252,7 +252,7 @@ pub enum InventorySubcommand {
     Findings {
         /// Entry slug
         slug: String,
-        /// Minimum rating grade: A|B|C|D|F (A = safest/default, F = most severe)
+        /// Minimum rating grade: A|B|C|F (A = safest/default, F = most severe)
         #[arg(long, default_value = "A")]
         min_rating: String,
     },
