@@ -15,6 +15,7 @@ flowchart TD
     Choice -->|"auth status"| AuthStatus["Show identity + reachability"]
     Choice -->|"contract status"| ContractStatus["Show contract version status"]
     Choice -->|"directory ..."| Directory["Browse public directory"]
+    Choice -->|"inventory ..."| Inventory["Browse your own inventory\n(requires auth)"]
     Choice -->|"rules ..."| Rules["List, add, remove,\nvalidate custom rules"]
     Choice -->|"update"| Update["Check or install a signed update"]
 
@@ -27,14 +28,16 @@ flowchart TD
     AuthStatus --> End
     ContractStatus --> End
     Directory --> End
+    Inventory --> End
     Rules --> End
     Update --> End
     Prompt --> End
 ```
 
-The `auth status`, `contract status`, and `directory`
-(`search`/`list`/`random`/`view`/`findings`/`compare`) commands are
-fully implemented and connected to the vettd backend.
+The `auth status`, `contract status`, `directory`
+(`search`/`list`/`random`/`view`/`findings`/`compare`), and `inventory`
+(`search`/`list`/`view`/`findings`/`compare` — authenticated, no `random`)
+commands are fully implemented and connected to the vettd backend.
 
 ## Local-First Scan Journey
 

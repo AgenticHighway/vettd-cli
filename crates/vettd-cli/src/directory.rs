@@ -125,7 +125,7 @@ fn directory_base_url() -> String {
 
 /// Percent-encode a query parameter value (UTF-8, RFC 3986 unreserved chars
 /// pass through; everything else is `%XX` encoded).
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         match byte {
@@ -148,7 +148,7 @@ fn display_source_type(s: &str) -> &str {
 }
 
 /// Numeric value for a severity string (higher = more severe).
-fn severity_value(s: &str) -> u8 {
+pub(crate) fn severity_value(s: &str) -> u8 {
     match s.to_ascii_lowercase().as_str() {
         "critical" => 4,
         "high" => 3,
@@ -262,7 +262,7 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-fn api_sort_params(sort: &str, reverse: bool) -> String {
+pub(crate) fn api_sort_params(sort: &str, reverse: bool) -> String {
     let s = match sort {
         "rating" => "verdict",
         other => other,
@@ -767,7 +767,7 @@ pub fn handle_random(json: bool) {
 ///
 /// Slug column width is computed from the batch so all rows align. Description
 /// is truncated to fit the remaining terminal width.
-fn print_cards(cards: &[DirectoryCard]) {
+pub(crate) fn print_cards(cards: &[DirectoryCard]) {
     let slug_w = cards
         .iter()
         .map(|c| c.slug.as_deref().unwrap_or(&c.name).len())
@@ -828,7 +828,7 @@ fn terminal_width() -> usize {
 }
 
 /// Truncate a string to at most `max` display characters, appending `…` if cut.
-fn truncate_to_display(s: &str, max: usize) -> String {
+pub(crate) fn truncate_to_display(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }

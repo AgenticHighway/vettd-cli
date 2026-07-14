@@ -12,6 +12,8 @@ mod directory;
 mod discovery;
 mod formatters;
 mod identity;
+mod inventory;
+mod inventory_client;
 mod lite_mode;
 mod models;
 mod network;

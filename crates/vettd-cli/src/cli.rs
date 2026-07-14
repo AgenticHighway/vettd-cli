@@ -62,6 +62,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: DirectorySubcommand,
     },
+    /// Browse your own vettd inventory (requires authentication)
+    Inventory {
+        #[command(subcommand)]
+        action: InventorySubcommand,
+    },
     /// Check for updates and self-update the scanner binary
     Update {
         /// Only check for updates — don't download or install
@@ -201,6 +206,57 @@ pub enum DirectorySubcommand {
         min_severity: String,
     },
     /// Compare two directory entries
+    Compare {
+        /// First entry slug
+        slug_a: String,
+        /// Second entry slug
+        slug_b: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum InventorySubcommand {
+    /// Search within your own skills
+    Search {
+        /// Search query (use quotes for multi-word queries)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Sort order: newest|rating|alpha
+        #[arg(long, default_value = "newest")]
+        sort: String,
+        /// Reverse the sort order
+        #[arg(long, short = 'r')]
+        reverse: bool,
+    },
+    /// List the authenticated user's skills (published and unpublished)
+    List {
+        /// Page number to retrieve
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Sort order: newest|rating|alpha
+        #[arg(long, default_value = "newest")]
+        sort: String,
+        /// Reverse the sort order
+        #[arg(long, short = 'r')]
+        reverse: bool,
+    },
+    /// View detail for one of your skills
+    View {
+        /// Entry slug
+        slug: String,
+    },
+    /// Show findings for one of your skills
+    Findings {
+        /// Entry slug
+        slug: String,
+        /// Minimum rating grade: A|B|C|F (A = safest/default, F = most severe)
+        #[arg(long, default_value = "A")]
+        min_rating: String,
+    },
+    /// Side-by-side comparison of two of your skills
     Compare {
         /// First entry slug
         slug_a: String,
@@ -900,6 +956,40 @@ pub fn run() {
             }
             DirectorySubcommand::Compare { slug_a, slug_b } => {
                 crate::directory::handle_compare(slug_a, slug_b, json)
+            }
+        }
+        return;
+    }
+
+    // Handle inventory commands
+    if let Commands::Inventory { action } = &cmd {
+        match action {
+            InventorySubcommand::Search {
+                query,
+                page,
+                sort,
+                reverse,
+            } => {
+                if query.len() > 1 {
+                    eprintln!(
+                        "Error: use quotes for multi-word queries: vettd inventory search '{}'",
+                        query.join(" ")
+                    );
+                    std::process::exit(1);
+                }
+                crate::inventory::handle_search(&query[0], *page, sort, *reverse, json)
+            }
+            InventorySubcommand::List {
+                page,
+                sort,
+                reverse,
+            } => crate::inventory::handle_list(*page, sort, *reverse, json),
+            InventorySubcommand::View { slug } => crate::inventory::handle_view(slug, json),
+            InventorySubcommand::Findings { slug, min_rating } => {
+                crate::inventory::handle_findings(slug, min_rating, json)
+            }
+            InventorySubcommand::Compare { slug_a, slug_b } => {
+                crate::inventory::handle_compare(slug_a, slug_b, json)
             }
         }
         return;
