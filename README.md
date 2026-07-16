@@ -14,7 +14,7 @@ vettd is a Rust CLI tool that scans your system for AI-related configuration fil
 
 If Vettd helps your team, you can support ongoing open source development with a donation via Stripe:
 
-[Donate to Vettd](https://donate.stripe.com/fZu00cdxZcxAbHH2Ya2ZO00)
+[Donate to Vettd](https://buy.stripe.com/3cI5kF8SjbNZceM8A1aIM01)
 
 ## How it works
 
