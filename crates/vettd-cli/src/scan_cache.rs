@@ -516,9 +516,11 @@ pub fn cache_enabled_for_mode(mode: &str) -> bool {
     matches!(mode, "host" | "scan" | "workdir" | "file")
 }
 
+/// Delegates to the centralized detector-registration contract in
+/// `detectors::is_cacheable` so mode gating and cache eligibility for a
+/// detector stay defined in one place. See `detectors/mod.rs` for details.
 pub fn cacheable_detector(mode: &str, detector_name: &str) -> bool {
-    matches!(detector_name, "custom_rules" | "containers" | "mcp_configs")
-        || (mode == "file" && detector_name == "source_risks")
+    crate::detectors::is_cacheable(mode, detector_name)
 }
 
 pub fn detector_fingerprint(detector_name: &str) -> String {
