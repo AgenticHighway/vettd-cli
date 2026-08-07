@@ -22,3 +22,5 @@ results.json
 *.jsonl
 
 .local/
+.opencode/
+.claude/
