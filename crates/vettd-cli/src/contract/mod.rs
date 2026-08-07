@@ -6,6 +6,7 @@
 
 mod agents;
 mod apps;
+mod disclosure;
 mod helpers;
 mod mcp;
 mod prompts;
@@ -14,6 +15,7 @@ pub(crate) use skill_scan::run_skill_scanner;
 mod skills;
 pub mod types;
 
+pub use disclosure::*;
 pub use types::*;
 
 use crate::models::ScanReport;
@@ -24,24 +26,32 @@ pub fn build_contract_payload(report: &ScanReport, scan_duration_ms: u64) -> Con
         report,
         scan_duration_ms,
         network_evidence::gather_host_network(),
+        true,
     )
 }
 
-/// Like [`build_contract_payload`] but skips [`network_evidence::gather_host_network`],
-/// which on macOS spawns subprocesses to read firewall state. Use this to build a
-/// payload for the consent disclosure so no subprocesses run before the user
-/// has seen and accepted the consent text.
+/// Like [`build_contract_payload`] but builds a payload for the consent
+/// disclosure with NO side effects on user files or host state:
+/// - skips [`network_evidence::gather_host_network`] (spawns subprocesses), and
+/// - skips [`network_evidence::scan_mcp_logs`] (reads application log files).
+///
+/// Use this to show the disclosure before the user consents — no log files or
+/// other user files may be read (or host subprocesses run) before consent
+/// (issue #196 AC #3). The payload is structurally the same as the real one
+/// (same MCP servers, prompts, etc.), differing only in that the
+/// log-derived network evidence is empty because it has not yet been read.
 pub(crate) fn build_contract_payload_for_disclosure(
     report: &ScanReport,
     scan_duration_ms: u64,
 ) -> ContractPayload {
-    build_contract_payload_impl(report, scan_duration_ms, HostNetworkInfo::default())
+    build_contract_payload_impl(report, scan_duration_ms, HostNetworkInfo::default(), false)
 }
 
 fn build_contract_payload_impl(
     report: &ScanReport,
     scan_duration_ms: u64,
     host_network: HostNetworkInfo,
+    scan_logs: bool,
 ) -> ContractPayload {
     let hostname = hostname::get()
         .ok()
@@ -67,7 +77,7 @@ fn build_contract_payload_impl(
     let skills_out = skills::build_skills(&report.artifacts, &agents_out);
     let agentic_apps = apps::build_agentic_apps(&container_artifacts, &agents_out);
 
-    let mcp_servers = build_mcp_with_links(&mcp_artifacts, &agents_out);
+    let mcp_servers = build_mcp_with_links(&mcp_artifacts, &agents_out, scan_logs);
 
     ContractPayload {
         scan_meta,
@@ -111,6 +121,7 @@ fn partition_artifacts(report: &ScanReport) -> ArtifactPartition<'_> {
 fn build_mcp_with_links(
     mcp_artifacts: &[&crate::models::ArtifactReport],
     agents_out: &[Agent],
+    scan_logs: bool,
 ) -> Vec<McpServer> {
     // Map: MCP server name → agent IDs that reference it
     let mut agent_ids_by_mcp: std::collections::HashMap<String, Vec<String>> =
@@ -142,20 +153,26 @@ fn build_mcp_with_links(
     // logs (VS Code, Cursor, Claude). Each log entry is matched to the server
     // whose config-based evidence shares the same URL authority; unmatched
     // entries are dropped (no contract field exists for host-level log URLs).
-    let log_evidence = network_evidence::scan_mcp_logs();
-    for entry in log_evidence {
-        let Some(log_url) = entry.url.as_deref() else {
-            continue;
-        };
-        let log_host = url_authority(log_url);
-        for server in &mut servers {
-            if server
-                .network_evidence
-                .iter()
-                .any(|e| e.url.as_deref().map(url_authority) == Some(log_host))
-            {
-                server.network_evidence.push(entry.clone());
-                break;
+    //
+    // On the consent-disclosure path (`scan_logs == false`) the log files are
+    // NOT read — no user files may be opened before consent (issue #196 #AC3).
+    // The real payload built after consent reads them here.
+    if scan_logs {
+        let log_evidence = network_evidence::scan_mcp_logs();
+        for entry in log_evidence {
+            let Some(log_url) = entry.url.as_deref() else {
+                continue;
+            };
+            let log_host = url_authority(log_url);
+            for server in &mut servers {
+                if server
+                    .network_evidence
+                    .iter()
+                    .any(|e| e.url.as_deref().map(url_authority) == Some(log_host))
+                {
+                    server.network_evidence.push(entry.clone());
+                    break;
+                }
             }
         }
     }

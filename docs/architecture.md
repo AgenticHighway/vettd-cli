@@ -97,9 +97,12 @@ to local output or optional submission:
  └──────┬───────┘
         │
         ▼
- ┌─────────────┐   Parses arguments, loads .vettd.toml for access tier
- │   cli.rs     │   (lite vs licensed), dispatches to scan, wizard,
- └──────┬───────┘   auth/rules/update, and post-scan actions
+  ┌─────────────┐   Parses arguments, loads `~/.vettd/.vettd.toml` for
+  │   cli.rs     │   access tier (lite vs licensed), dispatches to scan,
+  └──────┬───────┘   wizard, auth/rules/update, and post-scan actions.
+           │             The lite gate is display-only: machine-output
+           │             paths (contract, --out, --submit, --json,
+           │             --stdout) always receive the full report.
         │
         ▼
  ┌─────────────┐   Picks discovery mode based on subcommand:
@@ -297,21 +300,28 @@ This is calculated in `models.rs` via `content_digest()` → `compute_hash()` �
 | Local scanning    |     ✅      |    ✅    |
 | Risk scoring      |     ✅      |    ✅    |
 | Visible artifacts |    Top 3    |   All    |
-| JSON export       |     ❌      |    ✅    |
-| Server submission |     ❌      |    ✅    |
+| JSON export       |     ✅      |    ✅    |
+| Server submission |     ✅      |    ✅    |
 
-Access is controlled via `.vettd.toml` in the working directory.
+> **Note:** Lite mode limits the **visible artifacts in the terminal
+> console only**. `--out`, `--contract`, `--submit`, `--json`, and
+> `--stdout` always carry the full un-truncated findings regardless of
+> access tier. Tier enforcement on submissions is a server-side decision,
+> not a CLI concern (issue #198).
+
+Access is controlled via `~/.vettd/.vettd.toml` (per-user location only).
 
 At runtime, `cli.rs` loads this file before output is rendered. In `lite`
-mode, vettd keeps local scanning and scoring but limits the visible artifact
-set before formatting or JSON emission.
+mode, vettd keeps local scanning and scoring but applies the artifact limit
+to the human console rendering path only — machine-output paths always
+receive the complete report.
 
 ## Configuration files
 
 | File                             | Purpose                     | Created by                         |
 | -------------------------------- | --------------------------- | ---------------------------------- |
 | `~/.config/vettd/config.json`   | API key + endpoint          | `vettd auth`                       |
-| `.vettd.toml`                   | Access mode + license key   | User creates manually              |
+| `~/.vettd/.vettd.toml`          | Access mode (lite / licensed) | User creates manually            |
 | `~/.vettd/scanner_uuid`         | Persistent scanner identity | Auto-generated on first submit     |
 | `~/.vettd/scanner_account_uuid` | Persistent account identity | Auto-generated on first submit     |
 | `~/.vettd/rules/*.toml`         | Custom detection rules      | User creates (see custom-rules.md) |

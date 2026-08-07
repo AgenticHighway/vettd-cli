@@ -8,7 +8,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-const CACHE_SCHEMA_VERSION: &str = "scan-v1";
+// Bumped from "scan-v1" to "scan-v2" because the file-state key semantics
+// changed: `state_key_for` now folds in the file's SHA-256 content digest so
+// that a same-size/same-mtime in-place edit produces a different key (and
+// therefore a cache miss). Because `ensure_schema` uses `CREATE TABLE IF NOT
+// EXISTS` and old rows were written with a `NULL` content_hash / key that
+// never accounted for content, they must not be silently reused — the schema
+// version fold in `build_profile`'s `profile_key` orphans every prior
+// profile/artifact row, forcing a full rebuild under scan-v2 (which is what
+// we want: stale-by-size+mtime verdicts get discarded).
+const CACHE_SCHEMA_VERSION: &str = "scan-v2";
 
 #[derive(Debug, Clone)]
 pub struct FileStateSnapshot {
@@ -17,6 +26,7 @@ pub struct FileStateSnapshot {
     pub stable_file_id: Option<String>,
     pub size_bytes: u64,
     pub modified_ns: Option<i64>,
+    pub content_hash: Option<String>,
     pub state_key: String,
 }
 
@@ -167,12 +177,13 @@ impl ScanCache {
                         modified_ns,
                         content_hash,
                         last_seen_profile
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                     ON CONFLICT(canonical_path) DO UPDATE SET
                         origin_tier = excluded.origin_tier,
                         stable_file_id = excluded.stable_file_id,
                         size_bytes = excluded.size_bytes,
                         modified_ns = excluded.modified_ns,
+                        content_hash = excluded.content_hash,
                         last_seen_profile = excluded.last_seen_profile
                     ",
                     params![
@@ -181,6 +192,7 @@ impl ScanCache {
                         file_state.stable_file_id,
                         file_state.size_bytes as i64,
                         file_state.modified_ns,
+                        file_state.content_hash,
                         profile_key,
                     ],
                 )
@@ -386,7 +398,8 @@ impl ScanCache {
                     f.origin_tier,
                     f.stable_file_id,
                     f.size_bytes,
-                    f.modified_ns
+                    f.modified_ns,
+                    f.content_hash
                 FROM artifacts a
                 INNER JOIN file_states f ON f.canonical_path = a.canonical_path
                 WHERE a.profile_key = ?1
@@ -420,12 +433,16 @@ impl ScanCache {
             let modified_ns: Option<i64> = row
                 .get(4)
                 .map_err(|e| format!("Failed to decode cached candidate mtime: {e}"))?;
+            let content_hash: Option<String> = row
+                .get(5)
+                .map_err(|e| format!("Failed to decode cached candidate content hash: {e}"))?;
             let file_state = file_state_from_row(
                 &canonical_path,
                 &origin,
                 stable_file_id,
                 size_bytes.max(0) as u64,
                 modified_ns,
+                content_hash,
             );
             let candidate = Candidate {
                 path: PathBuf::from(&canonical_path),
@@ -519,7 +536,25 @@ pub fn cache_enabled_for_mode(mode: &str) -> bool {
 /// Delegates to the centralized detector-registration contract in
 /// `detectors::is_cacheable` so mode gating and cache eligibility for a
 /// detector stay defined in one place. See `detectors/mod.rs` for details.
+///
+/// The `containers` detector is deliberately excluded from caching here even
+/// though the registration table lists it as cache-eligible: it is a
+/// *cross-file* detector. `detectors::containers::build_ai_dir_set_and_container_candidates`
+/// derives each container's `ai_artifact_proximity` from *sibling* AI files
+/// (`.cursorrules`, `AGENTS.md`, `mcp.json`, …) present in whatever candidate
+/// slice it receives — not just from the container file it reports on. On a
+/// warm scan, `reuse_detector_results` only re-detects cache *misses*, so an
+/// unchanged container would be served from cache while its now-changed
+/// siblings are excluded from the miss slice, producing an incomplete
+/// `ai_dirs` set and a wrong proximity verdict (warm ≠ cold). Per-file
+/// artifact caching is fundamentally unsound for a proximity derived from
+/// sibling membership, so we always re-detect containers over the full
+/// candidate set. This is cheap: container detection only stats and reads a
+/// few KB of files whose name matches `CONTAINER_FILENAMES`.
 pub fn cacheable_detector(mode: &str, detector_name: &str) -> bool {
+    if detector_name == "containers" {
+        return false;
+    }
     crate::detectors::is_cacheable(mode, detector_name)
 }
 
@@ -572,6 +607,7 @@ fn file_state_from_row(
     stable_file_id: Option<String>,
     size_bytes: u64,
     modified_ns: Option<i64>,
+    content_hash: Option<String>,
 ) -> FileStateSnapshot {
     let state_key = state_key_for(
         canonical_path,
@@ -579,6 +615,7 @@ fn file_state_from_row(
         stable_file_id.as_deref(),
         size_bytes,
         modified_ns,
+        content_hash.as_deref(),
     );
     FileStateSnapshot {
         canonical_path: canonical_path.to_string(),
@@ -586,6 +623,7 @@ fn file_state_from_row(
         stable_file_id,
         size_bytes,
         modified_ns,
+        content_hash,
         state_key,
     }
 }
@@ -600,13 +638,45 @@ fn build_file_state_snapshot(candidate: &Candidate) -> Option<FileStateSnapshot>
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64);
+    // The cache's tamper identity MUST be a FULL-file digest, not the sampled
+    // digest `models::gather_file_primitives` embeds in report metadata (which
+    // hashes only the first 1 MiB of files > 8 MiB for the display). A
+    // same-size/same-mtime edit beyond that prefix must still produce a
+    // different key (issue #199 AC #1, unqualified by size). The displayed
+    // metadata hash may stay sampled; the cache key uses the full hash.
+    let content_hash = full_file_sha256(&candidate.path);
     Some(file_state_from_row(
         &canonical_path,
         &candidate.origin,
         stable_file_id,
         size_bytes,
         modified_ns,
+        content_hash,
     ))
+}
+
+/// Full-file SHA-256 of a candidate, used ONLY for the cache's content-tamper
+/// identity.
+///
+/// Unlike [`crate::models::gather_file_primitives`] (which samples the first
+/// 1 MiB of files larger than 8 MiB), this hashes the entire file stream so
+/// the cache key reflects any byte change regardless of where it occurs. The
+/// tamper-target artifact files (.cursorrules, AGENTS.md, mcp.json, SKILL.md)
+/// are small, so full-hashing is cheap; for large non-artifact files it is
+/// still the correct call for issue #199 AC #1.
+fn full_file_sha256(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 fn default_db_path() -> Result<PathBuf, String> {
@@ -614,7 +684,7 @@ fn default_db_path() -> Result<PathBuf, String> {
         .map(|home| {
             home.join(".vettd")
                 .join("scan-cache")
-                .join("scan-v1.sqlite3")
+                .join("scan-v2.sqlite3")
         })
         .ok_or_else(|| "Unable to determine home directory for scan-cache".to_string())
 }
@@ -642,15 +712,17 @@ fn state_key_for(
     stable_file_id: Option<&str>,
     size_bytes: u64,
     modified_ns: Option<i64>,
+    content_hash: Option<&str>,
 ) -> String {
     hex_sha256(
         format!(
-            "{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}",
             canonical_path,
             origin,
             stable_file_id.unwrap_or(""),
             size_bytes,
             modified_ns.unwrap_or_default(),
+            content_hash.unwrap_or(""),
         )
         .as_bytes(),
     )
@@ -684,6 +756,190 @@ mod tests {
         let second_key = second[0].file_state.as_ref().unwrap().state_key.clone();
 
         assert_ne!(first_key, second_key);
+    }
+
+    #[test]
+    fn snapshot_state_key_changes_on_same_size_same_mtime_content_edit() {
+        // Regression for issue #199 Defect A: a same-byte-count in-place
+        // edit that preserves mtime must still invalidate the cache. The
+        // state key now folds in a SHA-256 content digest, so path+size+
+        // mtime+inode all matching is no longer enough to reuse a stale
+        // verdict — exactly the tamper window a security scanner cannot
+        // tolerate. Before this change the key ignored content and this
+        // test would fail.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("agents.md");
+        fs::write(&file, b"one").unwrap();
+
+        let first = snapshot_candidates(&[candidate(&file, "host")]);
+        let first_state = first[0].file_state.as_ref().unwrap();
+        let first_key = first_state.state_key.clone();
+        let first_hash = first_state
+            .content_hash
+            .clone()
+            .expect("content hash should be recorded");
+
+        // Overwrite with different content of the SAME size, then restore the
+        // original mtime so the stat tuple is byte-for-byte identical to
+        // before the edit.
+        let original_mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, b"two").unwrap();
+        {
+            use std::fs::FileTimes;
+            use std::fs::OpenOptions;
+            OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(original_mtime))
+                .unwrap();
+        }
+
+        // Sanity-check the premise: only content changed, not size or mtime.
+        let meta = fs::metadata(&file).unwrap();
+        assert_eq!(
+            meta.len(),
+            3,
+            "size must be unchanged for this test to be meaningful"
+        );
+        assert_eq!(
+            meta.modified().unwrap(),
+            original_mtime,
+            "mtime must be unchanged for this test to be meaningful"
+        );
+
+        let second = snapshot_candidates(&[candidate(&file, "host")]);
+        let second_state = second[0].file_state.as_ref().unwrap();
+        let second_key = second_state.state_key.clone();
+        let second_hash = second_state
+            .content_hash
+            .clone()
+            .expect("content hash should be recorded");
+
+        assert_ne!(
+            first_hash, second_hash,
+            "content digests must differ even though size and mtime are identical"
+        );
+        assert_ne!(
+            first_key, second_key,
+            "same-size same-mtime content change must produce a different state key (cache miss)"
+        );
+    }
+
+    #[test]
+    fn cache_content_hash_is_full_file_even_beyond_prefix() {
+        // Issue #199 AC #1 (unqualified by size): the CACHE identity must be a
+        // full-file hash. A large file (>8 MiB) edited ONLY beyond the first
+        // 1 MiB prefix — preserving size and mtime — must still produce a
+        // different content hash and state key (cache miss). The sampled
+        // display digest (`models::gather_file_primitives`) would NOT catch
+        // this edit; the cache key must.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("agents.md");
+        // > models::MAX_FULL_FILE_HASH_BYTES (8 MiB) so the sampled digest
+        // would only read the first 1 MiB prefix.
+        let size = crate::models::MAX_FULL_FILE_HASH_BYTES as usize + 64;
+        let mut data = vec![b'a'; size];
+        fs::write(&file, &data).unwrap();
+
+        let first = snapshot_candidates(&[candidate(&file, "host")]);
+        let first_state = first[0].file_state.as_ref().unwrap();
+        let first_hash = first_state.content_hash.clone().unwrap();
+        let first_key = first_state.state_key.clone();
+
+        // Change a byte BEYOND the 1 MiB prefix (near the end), preserving size
+        // and restoring mtime so the stat tuple is unchanged.
+        let original_mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        data[size - 1] = b'z';
+        fs::write(&file, &data).unwrap();
+        {
+            use std::fs::FileTimes;
+            use std::fs::OpenOptions;
+            OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(original_mtime))
+                .unwrap();
+        }
+
+        let meta = fs::metadata(&file).unwrap();
+        assert_eq!(meta.len() as usize, size, "size must be unchanged");
+        assert_eq!(
+            meta.modified().unwrap(),
+            original_mtime,
+            "mtime must be unchanged for this test to be meaningful"
+        );
+
+        let second = snapshot_candidates(&[candidate(&file, "host")]);
+        let second_state = second[0].file_state.as_ref().unwrap();
+        let second_hash = second_state.content_hash.clone().unwrap();
+        let second_key = second_state.state_key.clone();
+
+        assert_ne!(
+            first_hash, second_hash,
+            "full-file cache digest must change for an edit past the 1 MiB prefix"
+        );
+        assert_ne!(
+            first_key, second_key,
+            "state key must change (cache miss) for a beyond-prefix same-size same-mtime edit"
+        );
+    }
+
+    #[test]
+    fn content_hash_round_trips_through_file_state_persistence() {
+        // The stored content_hash must be readable back through
+        // `load_profile_candidates_for_root` and reconstruct the exact same
+        // state key, otherwise a warm scan would derive a different key than
+        // the one written at upsert time and never hit the cache.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("scan-v2.sqlite3");
+        let file = dir.path().join("mcp.json");
+        fs::write(&file, br#"{"mcpServers":{"fs":{"command":"npx"}}}"#).unwrap();
+
+        let mut cache = ScanCache::open_at(&db_path).unwrap();
+        let profile = build_profile("host", false, "~", &["mcp_configs".to_string()], "rules");
+        cache.upsert_profile(&profile).unwrap();
+
+        let candidates = snapshot_candidates(&[candidate(&file, "host")]);
+        let snapshot_state = candidates[0].file_state.as_ref().unwrap();
+        let snapshot_hash = snapshot_state.content_hash.clone();
+        assert!(snapshot_hash.is_some());
+        cache
+            .upsert_file_states(&profile.profile_key, &candidates)
+            .unwrap();
+
+        let mut artifact = ArtifactReport::new("mcp_config", 0.9);
+        artifact.metadata.insert(
+            "paths".into(),
+            serde_json::json!([file.to_string_lossy().to_string()]),
+        );
+        artifact.compute_hash();
+        let mut by_path = HashMap::new();
+        by_path.insert(file.to_string_lossy().to_string(), vec![artifact]);
+        cache
+            .persist_detector_results(
+                &profile.profile_key,
+                "mcp_configs",
+                &detector_fingerprint("mcp_configs"),
+                &candidates,
+                &by_path,
+            )
+            .unwrap();
+
+        let loaded = cache
+            .load_profile_candidates_for_root(&profile.profile_key, dir.path())
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+        let loaded_state = loaded[0].file_state.as_ref().unwrap();
+        assert_eq!(
+            loaded_state.content_hash, snapshot_hash,
+            "content_hash must survive the upsert/load round trip"
+        );
+        assert_eq!(
+            loaded_state.state_key, snapshot_state.state_key,
+            "reconstructed state key must match the one persisted at snapshot time"
+        );
     }
 
     #[test]

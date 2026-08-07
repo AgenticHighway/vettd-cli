@@ -35,3 +35,34 @@ regexTarget = "line"
 regexes = [
   '''let jwt = "eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTYifQ\.c2lnbmF0dXJlMTIzNDU2Nzg5MA";''',
 ]
+
+[[allowlists]]
+description = "Intentional redaction-test fixtures: secret-shaped MCP command-arg literals in contract::mcp tests"
+condition = "AND"
+paths = [
+  '''(^|/)crates/(proov|vettd-cli)/src/contract/mcp\.rs$''',
+]
+regexTarget = "line"
+regexes = [
+  '''sk-live-ABC123''',
+  '''sk-live-ABC["']''',
+  '''ghp_abc123xyz''',
+  '''ghp_xxxxxxxxxxxxxxxxxxxx''',
+  '''ghp_xxxxxxxxxxxx''',
+  '''ghp_SECRETTOKEN''',
+  '''akia-1234567890''',
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxIn0''',
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9''',
+  '''s3cret!''',
+]
+
+[[allowlists]]
+description = "Intentional redaction-test fixture: pinned API key in contract::skills MCP-skill description test"
+condition = "AND"
+paths = [
+  '''(^|/)crates/(proov|vettd-cli)/src/contract/skills\.rs$''',
+]
+regexTarget = "line"
+regexes = [
+  '''sk-live-ABC123''',
+]

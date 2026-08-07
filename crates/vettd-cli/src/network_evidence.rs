@@ -514,6 +514,30 @@ fn mcp_log_directories() -> Vec<PathBuf> {
 const MAX_LOG_FILES: usize = 15;
 const MAX_LOG_TAIL_BYTES: usize = 32_768;
 
+/// Scrub a log file path of the OS username (issue #196 decision c).
+///
+/// Log paths under the home directory are the common case
+/// (`/Users/<name>/Library/...` or `/home/<name>/...`). The home-dir prefix is
+/// replaced with `~` so the serialized evidence never leaks the username into
+/// the submitted payload. Paths outside the home directory fall back to a
+/// username-free file-name label, which is safe because such system paths do
+/// not embed the account name.
+fn scrub_log_path(path: &Path) -> String {
+    match dirs::home_dir() {
+        Some(home) => match path.strip_prefix(&home) {
+            Ok(rel) => format!("~/{}", rel.display()),
+            Err(_) => path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<unknown log>".to_string()),
+        },
+        None => path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<unknown log>".to_string()),
+    }
+}
+
 /// Scan known log directories for MCP-related network activity.
 pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
     let mut evidence = Vec::new();
@@ -559,7 +583,7 @@ pub fn scan_mcp_logs() -> Vec<NetworkEvidence> {
                 None => continue,
             };
 
-            let log_name = path.display().to_string();
+            let log_name = scrub_log_path(path);
 
             // HTTP URLs
             for m in HTTP_URL_LOG_RE.find_iter(&tail) {
@@ -873,5 +897,52 @@ mod tests {
             !url_ev.detail.contains("SUPERSECRET"),
             "detail string must not leak the token either"
         );
+    }
+
+    // ── #196(c): log paths must not leak the OS username ───────────────────
+
+    #[test]
+    fn log_path_is_scrubbed_of_home_prefix_and_username() {
+        let home = dirs::home_dir().expect("test environment has a home dir");
+        let username = home
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // A path under the home directory must be reported relative to `~`, so
+        // it never contains /Users/<name>/ or /home/<name>/.
+        let path = home.join("Library/Logs/Claude/mcp.log");
+        let scrubbed = scrub_log_path(&path);
+        assert!(
+            scrubbed.starts_with("~/"),
+            "home-relative log path must be prefixed with ~/: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains(&home.to_string_lossy().to_string()),
+            "absolute home prefix must be scrubbed: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains("/Users/") && !scrubbed.contains("/home/"),
+            "username-bearing absolute prefix must not appear: {scrubbed}"
+        );
+        if !username.is_empty() {
+            assert!(
+                !scrubbed.contains(&username),
+                "OS username must not leak into the submitted path: {scrubbed}"
+            );
+        }
+        assert!(
+            scrubbed.ends_with("Library/Logs/Claude/mcp.log"),
+            "application-relative tail must be preserved: {scrubbed}"
+        );
+    }
+
+    #[test]
+    fn log_path_outside_home_falls_back_to_leaf_label() {
+        // A path not under the home directory must not expose any username
+        // either — it degrades to a bare file-name label.
+        let scrubbed = scrub_log_path(Path::new("/var/log/system/mcp.log"));
+        assert_eq!(scrubbed, "mcp.log");
+        assert!(!scrubbed.contains("/Users/") && !scrubbed.contains("/home/"));
     }
 }

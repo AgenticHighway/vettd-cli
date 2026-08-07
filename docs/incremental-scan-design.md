@@ -172,11 +172,22 @@ Stored field:
 
 Digest reuse rules:
 
-- do not recompute the digest on every run just to decide reuse
-- reuse the cached digest when the file identity key is unchanged
-- recompute only when file identity changed, the filesystem has coarse mtime
-  precision, or the platform fallback path is weak enough that extra certainty
-  is required
+- **implemented behavior (issue #199):** the CLI computes the content digest
+  on *every* file-state snapshot and folds it into the file identity key
+  (`state_key`), rather than only on stat change. This is a deliberate
+  deviation from the earlier draft below. Rationale: the tamper case this
+  layer exists to catch is a same-size / same-mtime in-place edit, which by
+  definition leaves the stat tuple (path + size + mtime + inode) unchanged.
+  Only recomputing the digest "when the file identity key is unchanged"
+  would therefore *never* detect that exact attack — the digest must be
+  recomputed each run for the content key to be a defense at all. The
+  digest is reused from `models::gather_file_primitives` so the cache key
+  and the reported `content_hash` metadata cannot diverge.
+- (original draft, superseded above) do not recompute the digest on every
+  run just to decide reuse; reuse the cached digest when the file identity
+  key is unchanged; recompute only when file identity changed, the
+  filesystem has coarse mtime precision, or the platform fallback path is
+  weak enough that extra certainty is required
 
 ### 4. Artifact bundle fingerprint
 
@@ -208,7 +219,7 @@ When any of those checks fail, the file is rescanned and the cache is replaced.
 
 Recommended storage:
 
-- `~/.vettd/scan-cache/scan-v1.sqlite3`
+- `~/.vettd/scan-cache/scan-v2.sqlite3`
 
 SQLite is the right default for the expected entry count because it supports:
 
@@ -420,7 +431,7 @@ incremental layer.
 
 The first implementation issue after this design should be narrowly scoped:
 
-- introduce `~/.vettd/scan-cache/scan-v1.sqlite3`
+- introduce `~/.vettd/scan-cache/scan-v2.sqlite3`
 - persist scan profiles, file states, and serialized artifact bundles
 - enable unchanged-file reuse for `quick` and `scan` using stat keys first
 - do not add watcher backends in the first implementation PR
