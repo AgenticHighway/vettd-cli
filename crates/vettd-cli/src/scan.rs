@@ -500,14 +500,25 @@ fn reuse_detector_results(
     }
 
     let fresh_artifacts = detector.detect(&miss_candidates, deep);
-    let artifacts_by_path = group_artifacts_by_path(&fresh_artifacts);
-    cache.persist_detector_results(
-        &profile.profile_key,
-        detector_name,
-        &detector_fingerprint,
-        &misses,
-        &artifacts_by_path,
-    )?;
+    let (artifacts_by_path, unattributed) = group_artifacts_by_path(&fresh_artifacts);
+    if unattributed > 0 {
+        eprintln!(
+            "Warning: detector '{detector_name}' produced {unattributed} artifact(s) without a \
+             resolvable metadata[\"paths\"][0]; skipping scan-cache persistence for this \
+             detector this run to avoid silently caching an empty result for the candidate(s) \
+             those artifacts belong to. Results will be re-detected on every scan until this \
+             detector is fixed."
+        );
+    }
+    if unattributed == 0 && cache_attribution_is_safe(detector_name, &artifacts_by_path, &misses) {
+        cache.persist_detector_results(
+            &profile.profile_key,
+            detector_name,
+            &detector_fingerprint,
+            &misses,
+            &artifacts_by_path,
+        )?;
+    }
     all_artifacts.extend(fresh_artifacts);
 
     Ok(DetectorCacheStats {
@@ -516,8 +527,11 @@ fn reuse_detector_results(
     })
 }
 
-fn group_artifacts_by_path(artifacts: &[ArtifactReport]) -> HashMap<String, Vec<ArtifactReport>> {
+fn group_artifacts_by_path(
+    artifacts: &[ArtifactReport],
+) -> (HashMap<String, Vec<ArtifactReport>>, usize) {
     let mut grouped = HashMap::new();
+    let mut unattributed = 0;
     for artifact in artifacts {
         let Some(path) = artifact
             .metadata
@@ -526,6 +540,7 @@ fn group_artifacts_by_path(artifacts: &[ArtifactReport]) -> HashMap<String, Vec<
             .and_then(|paths| paths.first())
             .and_then(|value| value.as_str())
         else {
+            unattributed += 1;
             continue;
         };
         grouped
@@ -533,7 +548,45 @@ fn group_artifacts_by_path(artifacts: &[ArtifactReport]) -> HashMap<String, Vec<
             .or_insert_with(Vec::new)
             .push(artifact.clone());
     }
-    grouped
+    (grouped, unattributed)
+}
+
+/// Guards the detector-registration contract's path-key invariant: a
+/// cacheable detector's artifacts must be keyed (via `metadata["paths"][0]`)
+/// to a canonical path that's actually among this run's candidates.
+/// `persist_detector_results` looks up `artifacts_by_path` by each
+/// candidate's canonical path and silently persists an empty result on a
+/// miss — so an artifact keyed to a path outside `misses` would otherwise
+/// vanish from the cache immediately, then look like a legitimate "zero
+/// artifacts" hit on every subsequent warm scan. If that happens, skip
+/// caching for this detector this run (falling back to always re-detecting,
+/// which is slow but never silently wrong) and warn loudly instead.
+fn cache_attribution_is_safe(
+    detector_name: &str,
+    artifacts_by_path: &HashMap<String, Vec<ArtifactReport>>,
+    misses: &[CachedCandidate],
+) -> bool {
+    let known_paths: HashSet<&str> = misses
+        .iter()
+        .filter_map(|candidate| candidate.file_state.as_ref())
+        .map(|file_state| file_state.canonical_path.as_str())
+        .collect();
+    let orphaned: Vec<&str> = artifacts_by_path
+        .keys()
+        .map(String::as_str)
+        .filter(|path| !known_paths.contains(path))
+        .collect();
+    if orphaned.is_empty() {
+        return true;
+    }
+    eprintln!(
+        "Warning: detector '{detector_name}' reported artifacts for {} path(s) not present in \
+         this run's candidate set; skipping scan-cache persistence for this detector this run \
+         to avoid silently caching an empty result. This usually means \
+         metadata[\"paths\"][0] does not exactly equal the candidate's canonicalized path.",
+        orphaned.len()
+    );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +699,7 @@ fn tag_analysis_origin(artifact: &mut ArtifactReport) {
 mod tests {
     use super::*;
     use crate::contract::build_contract_payload;
+    use crate::scan_cache::FileStateSnapshot;
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
@@ -653,6 +707,166 @@ mod tests {
         let mut a = ArtifactReport::new(atype, 0.8);
         a.metadata.insert("paths".into(), json!([path]));
         a
+    }
+
+    fn cached_candidate_at(path: &str) -> CachedCandidate {
+        CachedCandidate {
+            candidate: Candidate {
+                path: PathBuf::from(path),
+                origin: "workdir".to_string(),
+            },
+            file_state: Some(FileStateSnapshot {
+                canonical_path: path.to_string(),
+                origin: "workdir".to_string(),
+                stable_file_id: None,
+                size_bytes: 0,
+                modified_ns: None,
+                state_key: "state".to_string(),
+            }),
+        }
+    }
+
+    // --- group_artifacts_by_path ---
+
+    #[test]
+    fn group_artifacts_by_path_groups_by_metadata_paths_first_entry() {
+        let artifacts = vec![artifact_at("mcp_config", "/project/mcp.json")];
+        let (grouped, unattributed) = group_artifacts_by_path(&artifacts);
+        assert_eq!(unattributed, 0);
+        assert_eq!(grouped.get("/project/mcp.json").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_artifacts_by_path_counts_artifacts_missing_paths_metadata() {
+        let artifact = ArtifactReport::new("mcp_config", 0.8); // no metadata["paths"]
+        let (grouped, unattributed) = group_artifacts_by_path(&[artifact]);
+        assert!(grouped.is_empty());
+        assert_eq!(unattributed, 1);
+    }
+
+    // --- cache_attribution_is_safe: the paths[0]-must-match-a-candidate invariant ---
+
+    #[test]
+    fn cache_attribution_is_safe_when_artifact_paths_match_candidates() {
+        let artifacts = vec![artifact_at("mcp_config", "/project/mcp.json")];
+        let (grouped, _) = group_artifacts_by_path(&artifacts);
+        let misses = vec![cached_candidate_at("/project/mcp.json")];
+
+        assert!(cache_attribution_is_safe("mcp_configs", &grouped, &misses));
+    }
+
+    #[test]
+    fn cache_attribution_is_unsafe_when_artifact_path_has_no_matching_candidate() {
+        // Simulates a detector whose metadata["paths"][0] doesn't exactly
+        // equal the candidate's canonicalized path — e.g. a relative path,
+        // or a symlink target instead of the symlink itself. Without this
+        // guard, persist_detector_results would cache an empty result under
+        // the real candidate's path, silently dropping the artifact from
+        // every subsequent warm scan.
+        let artifacts = vec![artifact_at("mcp_config", "/elsewhere/mcp.json")];
+        let (grouped, _) = group_artifacts_by_path(&artifacts);
+        let misses = vec![cached_candidate_at("/project/mcp.json")];
+
+        assert!(!cache_attribution_is_safe("mcp_configs", &grouped, &misses));
+    }
+
+    #[test]
+    fn cache_attribution_is_safe_for_empty_artifacts() {
+        let (grouped, _) = group_artifacts_by_path(&[]);
+        let misses = vec![cached_candidate_at("/project/mcp.json")];
+
+        assert!(cache_attribution_is_safe("mcp_configs", &grouped, &misses));
+    }
+
+    // --- reuse_detector_results: end-to-end warm-scan regression coverage ---
+
+    struct StubDetector {
+        name: &'static str,
+        artifacts: Vec<ArtifactReport>,
+    }
+
+    impl crate::detectors::base::Detector for StubDetector {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn detect(&self, _candidates: &[Candidate], _deep: bool) -> Vec<ArtifactReport> {
+            self.artifacts.clone()
+        }
+    }
+
+    #[test]
+    fn reuse_detector_results_never_silently_drops_an_unattributed_artifact_on_warm_scans() {
+        // Regression test for the exact failure mode issue #200 calls out:
+        // a cacheable detector that returns an artifact without a
+        // metadata["paths"][0] matching its candidate's canonical path
+        // must not have an empty result cached for that candidate — that
+        // would make the artifact vanish on every subsequent unchanged
+        // (warm) scan, without any error or indication anything is wrong.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("scan-v1.sqlite3");
+        let file = dir.path().join("mcp.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let mut cache = ScanCache::open_at(&db_path).unwrap();
+        let profile = build_profile(
+            "workdir",
+            false,
+            "test",
+            &["stub_detector".to_string()],
+            "rules",
+        );
+        cache.upsert_profile(&profile).unwrap();
+
+        let candidates = snapshot_candidates(&[Candidate {
+            path: file.clone(),
+            origin: "workdir".to_string(),
+        }]);
+        cache
+            .upsert_file_states(&profile.profile_key, &candidates)
+            .unwrap();
+
+        // Deliberately missing metadata["paths"] — simulates a detector
+        // that violates the cache-key invariant.
+        let mut broken_artifact = ArtifactReport::new("mcp_config", 0.9);
+        broken_artifact.compute_hash();
+        let detector = StubDetector {
+            name: "stub_detector",
+            artifacts: vec![broken_artifact],
+        };
+
+        let mut cold_scan = Vec::new();
+        reuse_detector_results(
+            &mut cache,
+            &profile,
+            &detector,
+            &candidates,
+            false,
+            &mut cold_scan,
+        )
+        .unwrap();
+        assert_eq!(cold_scan.len(), 1, "artifact should surface on a cold scan");
+
+        // Second scan against the same unchanged file: file_state hasn't
+        // changed, so a naive cache would report this as a hit backed by
+        // whatever was persisted after the first scan.
+        let mut warm_scan = Vec::new();
+        reuse_detector_results(
+            &mut cache,
+            &profile,
+            &detector,
+            &candidates,
+            false,
+            &mut warm_scan,
+        )
+        .unwrap();
+        assert_eq!(
+            warm_scan.len(),
+            1,
+            "artifact must still surface on a warm scan — it should be treated as a \
+             permanent cache miss (always re-detected) rather than have an empty result \
+             cached for it"
+        );
     }
 
     // --- classify_artifact: scope ---
@@ -920,5 +1134,33 @@ mod tests {
         assert_eq!(payload.skills.len(), 1);
         assert_eq!(payload.skills[0].name, "release-notes/SKILL");
         assert!(payload.prompts.is_empty());
+    }
+
+    #[test]
+    fn workdir_scan_detects_vscode_mcp_json() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vscode_dir = tmp.path().join(".vscode");
+        std::fs::create_dir_all(&vscode_dir).unwrap();
+        std::fs::write(
+            vscode_dir.join("mcp.json"),
+            r#"{"mcpServers": {"filesystem": {"command": "npx"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(vscode_dir.join("settings.json"), "{}").unwrap();
+
+        let report = run_scan("workdir", Some(tmp.path()), None, false, None);
+        let mcp_artifact = report
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_type == "mcp_config")
+            .expect("expected .vscode/mcp.json to be detected as an mcp_config artifact");
+
+        assert!(mcp_artifact
+            .metadata
+            .get("paths")
+            .and_then(|value| value.as_array())
+            .and_then(|paths| paths.first())
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| path.ends_with(".vscode/mcp.json")));
     }
 }
