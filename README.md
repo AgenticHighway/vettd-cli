@@ -179,15 +179,23 @@ Scores are based on: artifact type, detected capability keywords (shell, network
 
 By default, vettd shows the full local report.
 
-If you want to locally limit emitted findings to the top three visible
-artifacts, add an `.vettd.toml` file in your project root:
+If you want to locally limit **terminal console** findings to the top three
+visible artifacts, create `~/.vettd/.vettd.toml` (per-user location):
 
 ```toml
 [access]
 mode = "lite"
 ```
 
-When `.vettd.toml` is absent, vettd keeps full output enabled.
+When the file is absent, vettd keeps full output enabled.
+
+> **Where the config lives:** `~/.vettd/.vettd.toml` (per-user only). A
+> `.vettd.toml` in a scanned project directory is **never** consulted —
+> a scanned repo must never be able to self-gate its own findings.
+>
+> **Display-only gate:** `--out`, `--contract`, `--submit`, `--json`, and
+> `--stdout` always carry the full un-truncated findings regardless of
+> access tier. The lite limit applies to the terminal console only.
 
 ## Submitting to a compatible endpoint
 
@@ -357,19 +365,24 @@ For security vulnerability reports: [SECURITY.md](SECURITY.md)
 
 ## Configuration reference
 
-| File                           | Purpose                                       |
-| ------------------------------ | --------------------------------------------- |
-| `~/.config/vettd/config.json` | API key + endpoint (created by `vettd auth`) |
-| `.vettd.toml`                 | Optional local access-mode settings           |
-| `~/.vettd/scanner_uuid`       | Persistent scanner identity (auto-generated)  |
-| `~/.vettd/rules/*.toml`       | Custom detection rules                        |
+| File                             | Purpose                                       |
+| -------------------------------- | --------------------------------------------- |
+| `~/.config/vettd/config.json`   | API key + endpoint (created by `vettd auth`) |
+| `~/.vettd/.vettd.toml`          | Optional access-mode setting (per-user only) |
+| `~/.vettd/scanner_uuid`         | Persistent scanner identity (auto-generated)  |
+| `~/.vettd/rules/*.toml`         | Custom detection rules                        |
 
-Optional `.vettd.toml`:
+Optional `~/.vettd/.vettd.toml`:
 
 ```toml
 [access]
-mode = "lite"                   # limit visible findings to the top three artifacts
+mode = "lite"                   # limit terminal console findings to the top three artifacts
 ```
+
+> **Per-user location only.** A `.vettd.toml` in a scanned project directory
+> is never consulted — a scanned repo must never be able to self-gate its
+> own findings. `--out`, `--contract`, `--submit`, `--json`, and `--stdout`
+> always carry the full un-truncated findings regardless of access tier.
 
 ## License
 

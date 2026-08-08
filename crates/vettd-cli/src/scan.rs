@@ -77,11 +77,35 @@ fn timing_value_enabled(value: &str) -> bool {
 /// - `"root"` — entire filesystem from / (full scan)
 /// - `"workdir"` — explicit project directory
 /// - `"file"` — single file
+///
+/// This is the cache-enabled entrypoint. Callers that need to force a fully
+/// cold scan (the `--no-cache` flag wired in `cli.rs`) should call
+/// [`run_scan_with_cache`] with `skip_cache = true` instead.
 pub fn run_scan(
     mode: &str,
     workdir: Option<&Path>,
     file: Option<&Path>,
     deep: bool,
+    on_tick: Option<&dyn Fn(&str)>,
+) -> ScanReport {
+    run_scan_with_cache(mode, workdir, file, deep, false, on_tick)
+}
+
+/// Like [`run_scan`] but lets callers disable the scan cache entirely.
+///
+/// When `skip_cache` is `true` the cache is never opened, so both discovery
+/// and detector reuse fall back to a full scan (equivalent to a cache miss
+/// on every file). This is the hook the `--no-cache` CLI flag should drive:
+/// `cli.rs` reads the flag into `OutputArgs` and calls this function with
+/// `skip_cache = true` instead of [`run_scan`]. Keeping it off [`run_scan`]'s
+/// existing signature avoids churning every existing caller for a
+/// rarely-used escape hatch.
+pub fn run_scan_with_cache(
+    mode: &str,
+    workdir: Option<&Path>,
+    file: Option<&Path>,
+    deep: bool,
+    skip_cache: bool,
     on_tick: Option<&dyn Fn(&str)>,
 ) -> ScanReport {
     let noop = |_: &str| {};
@@ -90,7 +114,7 @@ pub fn run_scan(
     let scan_started_at = Instant::now();
     let detectors = get_all_detectors(mode);
     let scanned_path = resolve_scanned_path(mode, workdir, file);
-    let mut scan_cache = if cache_enabled_for_mode(mode) {
+    let mut scan_cache = if cache_enabled_for_mode(mode) && !skip_cache {
         match ScanCache::open_default() {
             Ok(cache) => Some(cache),
             Err(e) => {
@@ -721,6 +745,7 @@ mod tests {
                 stable_file_id: None,
                 size_bytes: 0,
                 modified_ns: None,
+                content_hash: None,
                 state_key: "state".to_string(),
             }),
         }
@@ -866,6 +891,160 @@ mod tests {
             "artifact must still surface on a warm scan — it should be treated as a \
              permanent cache miss (always re-detected) rather than have an empty result \
              cached for it"
+        );
+    }
+
+    /// A detector whose verdict is a fixed marker plus a `paths[0]` pointing at
+    /// each candidate, so a warm scan can distinguish a fresh verdict (new
+    /// marker) from a stale cached one (old marker).
+    struct VerdictDetector {
+        name: &'static str,
+        marker: &'static str,
+    }
+
+    impl crate::detectors::base::Detector for VerdictDetector {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn detect(&self, candidates: &[Candidate], _deep: bool) -> Vec<ArtifactReport> {
+            candidates
+                .iter()
+                .map(|c| {
+                    let mut a = ArtifactReport::new("mcp_config", 0.9);
+                    a.metadata.insert(
+                        "paths".into(),
+                        json!([c.path.to_string_lossy().to_string()]),
+                    );
+                    a.metadata.insert("verdict".into(), json!(self.marker));
+                    a
+                })
+                .collect()
+        }
+    }
+
+    fn verdict_of(artifacts: &[ArtifactReport], path: &Path) -> Option<String> {
+        let path_str = path.to_string_lossy().to_string();
+        artifacts
+            .iter()
+            .find(|a| {
+                a.metadata
+                    .get("paths")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .map(|p| p == path_str)
+                    .unwrap_or(false)
+            })
+            .and_then(|a| a.metadata.get("verdict"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn same_size_same_mtime_tamper_rejects_stale_detector_verdict() {
+        // Issue #199 AC #1 end-to-end (reviewer finding #10): persisting a
+        // detector verdict, then tampering the artifact while preserving size
+        // AND mtime, must NOT reuse the now-stale cached verdict on the warm
+        // path. The detector re-runs and the fresh verdict matches a cold scan
+        // of the new content — proving rejection at the verdict level, not just
+        // the state-key level.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("scan-v2.sqlite3");
+        let file = dir.path().join("mcp.json");
+        std::fs::write(&file, b"{}").unwrap(); // content A (2 bytes)
+
+        let mut cache = ScanCache::open_at(&db_path).unwrap();
+        let profile = build_profile(
+            "workdir",
+            false,
+            "test",
+            &["tamper_detector".to_string()],
+            "rules",
+        );
+        cache.upsert_profile(&profile).unwrap();
+
+        // Cold scan of content A → verdict-A persisted.
+        let candidates_a = snapshot_candidates(&[Candidate {
+            path: file.clone(),
+            origin: "workdir".to_string(),
+        }]);
+        cache
+            .upsert_file_states(&profile.profile_key, &candidates_a)
+            .unwrap();
+        let detector_a = VerdictDetector {
+            name: "tamper_detector",
+            marker: "verdict-A",
+        };
+        let mut cold_a = Vec::new();
+        reuse_detector_results(
+            &mut cache,
+            &profile,
+            &detector_a,
+            &candidates_a,
+            false,
+            &mut cold_a,
+        )
+        .unwrap();
+        assert_eq!(
+            verdict_of(&cold_a, &file).as_deref(),
+            Some("verdict-A"),
+            "cold scan of content A must yield the A verdict"
+        );
+
+        // Tamper: different content of the SAME size, restore the original
+        // mtime so the stat tuple is identical to before the edit.
+        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::fs::write(&file, b"OK").unwrap(); // still 2 bytes, content B
+        {
+            use std::fs::FileTimes;
+            use std::fs::OpenOptions;
+            OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(original_mtime))
+                .unwrap();
+        }
+        let meta = std::fs::metadata(&file).unwrap();
+        assert_eq!(meta.len(), 2, "size must be unchanged");
+        assert_eq!(
+            meta.modified().unwrap(),
+            original_mtime,
+            "mtime must be unchanged for this test to be meaningful"
+        );
+
+        // Warm scan against the tampered file: the same-size same-mtime edit
+        // changes the full-file cache hash + state key, so the stale verdict-A
+        // bundle must NOT be reused. The detector re-runs and yields verdict-B.
+        let candidates_b = snapshot_candidates(&[Candidate {
+            path: file.clone(),
+            origin: "workdir".to_string(),
+        }]);
+        cache
+            .upsert_file_states(&profile.profile_key, &candidates_b)
+            .unwrap();
+        let detector_b = VerdictDetector {
+            name: "tamper_detector",
+            marker: "verdict-B",
+        };
+        let mut warm = Vec::new();
+        reuse_detector_results(
+            &mut cache,
+            &profile,
+            &detector_b,
+            &candidates_b,
+            false,
+            &mut warm,
+        )
+        .unwrap();
+
+        assert_eq!(
+            verdict_of(&warm, &file).as_deref(),
+            Some("verdict-B"),
+            "the stale cached verdict-A must NOT be reused after a same-size \
+             same-mtime tamper; the detector must re-run and produce the fresh \
+             verdict"
         );
     }
 
@@ -1102,6 +1281,93 @@ mod tests {
         assert!(payload.agentic_apps[0]
             .description
             .contains("Container image definition"));
+    }
+
+    #[test]
+    fn containers_detector_is_never_cacheable_for_cross_file_coherence() {
+        // Issue #199 Defect B: the `containers` detector derives a
+        // container's `ai_artifact_proximity` from *sibling* AI files, so a
+        // per-file artifact cache is unsound — a warm scan would serve an
+        // unchanged container from cache while its changed siblings are
+        // excluded from the re-detected miss slice, giving warm ≠ cold.
+        // It must always re-detect over the full candidate set.
+        for mode in ["host", "scan", "workdir", "file"] {
+            assert!(
+                !cacheable_detector(mode, "containers"),
+                "'containers' must always re-detect (never be warmed from cache) in {mode} mode"
+            );
+        }
+        // Sanity: a truly per-file detector remains cacheable.
+        assert!(cacheable_detector("workdir", "mcp_configs"));
+        assert!(cacheable_detector("file", "mcp_configs"));
+    }
+
+    #[test]
+    fn containers_warm_scan_matches_cold_for_ai_artifact_proximity() {
+        // Issue #199 Defect B regression: warming from cache must reproduce a
+        // cold scan's cross-file container verdict. The `containers` detector
+        // is never cached, so editing ONLY the Dockerfile (AGENTS.md sibling
+        // unchanged) still re-detects the container against the full tree and
+        // keeps `ai_artifact_proximity` true.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        let agents = tmp.path().join("AGENTS.md");
+        std::fs::write(
+            &dockerfile,
+            "FROM python:3.11-slim\nRUN pip install -r requirements.txt\n",
+        )
+        .unwrap();
+        std::fs::write(&agents, "# Agents\n\nUse shell tools to inspect files.\n").unwrap();
+
+        let cold_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        let cold_docker = container_artifact(&cold_report, "Dockerfile");
+        assert_eq!(cold_docker.metadata["ai_artifact_proximity"], true);
+
+        // Change ONLY the Dockerfile. Its size/mtime change makes it a cache
+        // miss, but the sibling AGENTS.md is unchanged — so this is exactly the
+        // case where a per-file cache would re-detect the container against an
+        // incomplete (miss-only) set and wrongly drop proximity.
+        std::fs::write(
+            &dockerfile,
+            "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nCMD [\"npm\", \"start\"]\n",
+        )
+        .unwrap();
+
+        let warm_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        let warm_docker = container_artifact(&warm_report, "Dockerfile");
+        assert_eq!(
+            warm_docker.metadata["ai_artifact_proximity"], true,
+            "warm scan must still see the colocated AGENTS.md sibling"
+        );
+    }
+
+    #[test]
+    fn containers_warm_scan_drops_proximity_after_sibling_deleted() {
+        // Issue #199 Defect B regression (inverse): deleting the sibling AI
+        // file must flip `ai_artifact_proximity` off on the next scan even
+        // though the Dockerfile itself is untouched. This is the case a
+        // per-file cache fundamentally cannot get right — the unchanged
+        // container would be a cache hit with stale proximity.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        let agents = tmp.path().join("AGENTS.md");
+        std::fs::write(&dockerfile, "FROM python:3.11-slim\n").unwrap();
+        std::fs::write(&agents, "# Agents\n").unwrap();
+
+        let cold_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        assert_eq!(
+            container_artifact(&cold_report, "Dockerfile").metadata["ai_artifact_proximity"],
+            true
+        );
+
+        std::fs::remove_file(&agents).unwrap();
+
+        let warm_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        assert_eq!(
+            container_artifact(&warm_report, "Dockerfile").metadata["ai_artifact_proximity"],
+            false,
+            "deleting the only colocated AI file must drop proximity on a warm scan"
+        );
     }
 
     #[test]

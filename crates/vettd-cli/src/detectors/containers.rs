@@ -466,4 +466,49 @@ mod tests {
         assert_eq!(containers.len(), 1);
         assert!(containers[0].path.ends_with("Dockerfile"));
     }
+
+    #[test]
+    fn detect_proximity_depends_on_the_full_candidate_set_not_just_the_container() {
+        // Documents why the `containers` detector must never be served from a
+        // per-file cache (issue #199 Defect B): its `ai_artifact_proximity`
+        // verdict is computed against whatever candidate slice it receives.
+        // A warm scan that re-detects only cache *misses* would hand it an
+        // incomplete slice, dropping an unchanged sibling AI file and flipping
+        // proximity off even though the file still exists on disk.
+        let dir = temp_candidate_dir();
+        let dockerfile = dir.path().join("Dockerfile");
+        let agents = dir.path().join("AGENTS.md");
+        std::fs::write(&dockerfile, "FROM python:3.11-slim").unwrap();
+        std::fs::write(&agents, "# agents").unwrap();
+
+        let docker = candidate(&dockerfile);
+        let sibling = candidate(&agents);
+
+        // Full candidate set (a correct scan): sibling present → proximity on.
+        let full_results = ContainerDetector.detect(&[docker.clone(), sibling], true);
+        let full_docker = full_results
+            .iter()
+            .find(|report| {
+                report.metadata["paths"][0]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("Dockerfile")
+            })
+            .expect("full-set detect should report the Dockerfile");
+        assert_eq!(full_docker.metadata["ai_artifact_proximity"], true);
+
+        // Miss-only slice (what a warm cache would pass): sibling absent from
+        // the slice → proximity off, even though the file is unchanged.
+        let miss_results = ContainerDetector.detect(&[docker], true);
+        let miss_docker = miss_results
+            .iter()
+            .find(|report| {
+                report.metadata["paths"][0]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("Dockerfile")
+            })
+            .expect("miss-only detect should still report the Dockerfile");
+        assert_eq!(miss_docker.metadata["ai_artifact_proximity"], false);
+    }
 }

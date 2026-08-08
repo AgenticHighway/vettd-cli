@@ -15,7 +15,7 @@ use std::io::Read;
 use std::path::Path;
 
 const HASH_BUFFER_BYTES: usize = 8192;
-const MAX_FULL_FILE_HASH_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_FULL_FILE_HASH_BYTES: u64 = 8 * 1024 * 1024;
 const LARGE_FILE_HASH_BYTES: u64 = 1024 * 1024;
 const CONTENT_HASH_MODE_FULL: &str = "full_sha256";
 const CONTENT_HASH_MODE_PREFIX: &str = "prefix_sha256";

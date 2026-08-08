@@ -89,35 +89,41 @@ pub fn locked_summary_counts(artifacts: &[ArtifactReport]) -> serde_json::Value 
     })
 }
 
+/// Print a locked-findings summary to **stderr**.
+///
+/// Machine-readable output (`--stdout`, `--contract`, `--submit`, `--json`,
+/// `--out`) suppresses this entirely via the `machine_mode` gate in the
+/// caller — human-oriented progress and summary logs belong on stderr per
+/// project convention (AGENTS.md), so `--stdout | jq` pipelines stay clean.
 pub fn print_locked_summary(artifacts: &[ArtifactReport]) {
     if artifacts.is_empty() {
         return;
     }
     let summary = locked_summary_counts(artifacts);
-    println!("Locked findings summary (lite mode):");
-    println!("  Locked findings: {}", summary["count"]);
+    eprintln!("Locked findings summary (lite mode):");
+    eprintln!("  Locked findings: {}", summary["count"]);
 
     if let Some(obj) = summary["by_origin"].as_object() {
-        println!("  Analysis handoff:");
+        eprintln!("  Analysis handoff:");
         for (k, v) in obj {
-            println!("    {}: {}", k, v);
+            eprintln!("    {}: {}", k, v);
         }
     }
     if let Some(obj) = summary["by_status"].as_object() {
-        println!("  Status distribution:");
+        eprintln!("  Status distribution:");
         for status in &["critical", "high", "medium", "low", "info", "pending"] {
             if let Some(v) = obj.get(*status) {
-                println!("    {}: {}", status, v);
+                eprintln!("    {}: {}", status, v);
             }
         }
     }
     if let Some(obj) = summary["by_type"].as_object() {
-        println!("  Locked artifact types:");
+        eprintln!("  Locked artifact types:");
         for (k, v) in obj {
-            println!("    {}: {}", k, v);
+            eprintln!("    {}: {}", k, v);
         }
     }
-    println!();
+    eprintln!();
 }
 
 #[cfg(test)]

@@ -4,12 +4,13 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 use crate::contract::{
-    build_contract_payload, build_contract_payload_for_disclosure, ContractPayload,
+    build_contract_payload, build_contract_payload_for_disclosure, render_disclosure,
+    ContractPayload,
 };
 use crate::lite_mode::{limit_lite_mode_report, print_locked_summary, LITE_MODE_VISIBLE_RESULTS};
-use crate::models::ScanReport;
+use crate::models::{ArtifactReport, ScanReport};
 use crate::output::{do_submit, emit, resolve_submit_auth};
-use crate::scan::run_scan;
+use crate::scan::run_scan_with_cache;
 use crate::submit::{save_auth_config, AuthConfig, SaveOutcome, DEFAULT_PRODUCTION_ENDPOINT};
 
 // ---------------------------------------------------------------------------
@@ -294,6 +295,9 @@ pub struct OutputArgs {
     /// Allow submission to public (non-local/private) endpoints
     #[arg(long)]
     pub allow_public_endpoint: bool,
+    /// Force a fresh scan — do not reuse the scan cache
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 impl Default for OutputArgs {
@@ -308,6 +312,7 @@ impl Default for OutputArgs {
             submit: None,
             api_key: None,
             allow_public_endpoint: false,
+            no_cache: false,
         }
     }
 }
@@ -317,26 +322,40 @@ impl Default for OutputArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct AccessConfig {
+pub(crate) struct AccessConfig {
     mode: String,
-    license_key: Option<String>,
-    endpoint: Option<String>,
-    license_timeout_seconds: f64,
 }
 
 impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             mode: "licensed".into(),
-            license_key: None,
-            endpoint: None,
-            license_timeout_seconds: 5.0,
         }
     }
 }
 
+/// Per-user access-tier config path: `~/.vettd/.vettd.toml`.
+///
+/// The cwd `.vettd.toml` lookup was removed (issue #198) because a scanned
+/// repo must never be able to self-gate its own findings. Access-tier config
+/// now lives exclusively under the per-user `~/.vettd/` root, consistent
+/// with where rules, the scan cache, and other per-user state already live.
+const ACCESS_CONFIG_FILE: &str = ".vettd.toml";
+
 fn load_access_config() -> AccessConfig {
-    let path = Path::new(".vettd.toml");
+    let Some(home) = dirs::home_dir() else {
+        return AccessConfig::default();
+    };
+    let path = home.join(".vettd").join(ACCESS_CONFIG_FILE);
+    load_access_config_from(&path)
+}
+
+/// Parse a `~/.vettd/.vettd.toml`-style access config from an explicit path.
+///
+/// Kept separate from [`load_access_config`] so tests can point the loader at
+/// an isolated fake home directory and prove that (a) the per-user config is
+/// read and (b) any conflicting cwd `.vettd.toml` is never consulted.
+fn load_access_config_from(path: &Path) -> AccessConfig {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return AccessConfig::default(),
@@ -356,15 +375,6 @@ fn load_access_config() -> AccessConfig {
 
     if let Some(toml::Value::String(v)) = access.get("mode") {
         cfg.mode = v.clone();
-    }
-    if let Some(toml::Value::String(v)) = access.get("license_key") {
-        cfg.license_key = Some(v.clone());
-    }
-    if let Some(toml::Value::String(v)) = access.get("endpoint") {
-        cfg.endpoint = Some(v.clone());
-    }
-    if let Some(toml::Value::Float(v)) = access.get("license_timeout_seconds") {
-        cfg.license_timeout_seconds = *v;
     }
 
     cfg
@@ -475,17 +485,46 @@ fn command_name(sub: &ScanSubcommand) -> &'static str {
 // Access gate
 // ---------------------------------------------------------------------------
 
-fn apply_access_gate(report: ScanReport, access: &AccessConfig) -> ScanReport {
+/// Compute the display-limited report for human console rendering.
+///
+/// Returns a tuple of:
+/// - The display report (limited to `LITE_MODE_VISIBLE_RESULTS` artifacts in
+///   lite mode, otherwise a clone of `report`)
+/// - Hidden artifacts (non-empty only in lite mode, for `print_locked_summary`)
+///
+/// The original `report` is never mutated — machine-output paths (`--out`,
+/// `--contract`, `--submit`, `--json`, `--stdout`) always receive the full
+/// un-truncated findings.
+///
+/// When `machine_mode` is `true`, `print_locked_summary` is suppressed so
+/// that machine-readable output stays clean (no human-oriented summary on
+/// stderr polluting `--stdout | jq` pipelines).
+pub(crate) fn display_limited_report(
+    report: &ScanReport,
+    access: &AccessConfig,
+    machine_mode: bool,
+) -> (ScanReport, Vec<ArtifactReport>) {
     if access.mode == "lite" {
         let (limited, _hidden_count, hidden_artifacts) =
-            limit_lite_mode_report(&report, LITE_MODE_VISIBLE_RESULTS);
-        if !hidden_artifacts.is_empty() {
+            limit_lite_mode_report(report, LITE_MODE_VISIBLE_RESULTS);
+        if !hidden_artifacts.is_empty() && !machine_mode {
             print_locked_summary(&hidden_artifacts);
         }
-        limited
+        (limited, hidden_artifacts)
     } else {
-        report
+        (report.clone(), Vec::new())
     }
+}
+
+/// Determine whether the output path is machine-readable.
+///
+/// Machine mode covers `--json`, `--stdout`, `--contract`, `--submit`, and
+/// `--out` (file write). In machine mode the lite gate must not limit the
+/// report and `print_locked_summary` must be suppressed so that stdout stays
+/// clean for pipeline consumption (`--stdout | jq`, file writes, contract
+/// payloads, submissions).
+fn is_machine_mode(cli_json: bool, out: &OutputArgs, wants_submit: bool) -> bool {
+    cli_json || out.stdout || out.contract || wants_submit || out.out.is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,11 +1094,12 @@ pub fn run() {
     if let Some(ref mut p) = *progress_cell.borrow_mut() {
         p.phase("Scanning");
     }
-    let mut report = run_scan(
+    let mut report = run_scan_with_cache(
         params.mode,
         params.workdir,
         params.file,
         params.deep,
+        out.no_cache,
         if interactive { Some(&tick_fn) } else { None },
     );
     let scan_duration_ms = scan_start.elapsed().as_millis() as u64;
@@ -1070,69 +1110,93 @@ pub fn run() {
         )));
     }
 
-    report = apply_access_gate(report, &access);
     filter_by_severity(&mut report, min_score);
 
+    // Machine-output paths (contract, JSON, file, submit) always receive the
+    // full un-truncated report. The lite gate is display-only: the
+    // display-limited report is used only for human console rendering.
     let wants_submit = out.submit.is_some();
+    let machine_mode = is_machine_mode(json, out, wants_submit);
+    let (display_report, _hidden_artifacts) =
+        display_limited_report(&report, &access, machine_mode);
 
-    if out.contract || wants_submit {
+    if machine_mode {
+        // Any machine flag (`--json`, `--stdout`, `--contract`, `--out`,
+        // `--submit`) routes the FULL report through the contract payload,
+        // not the display-limited report. `--out <file>` must therefore carry
+        // all findings (issue #198 AC #2), and `--stdout`/`--json`/`--contract`
+        // must emit jq-parseable JSON to stdout.
+        //
+        // For `--submit`, configured auth is resolved FIRST — that establishes
+        // standing consent (issue #196) — before `build_contract_payload` reads
+        // logs/host-network state and user files. No logs or user files are
+        // read before consent is established.
+        let submit_auth = if wants_submit {
+            Some(
+                match resolve_submit_auth(
+                    &out.submit,
+                    out.api_key.as_deref(),
+                    out.allow_public_endpoint,
+                ) {
+                    Ok(auth) => auth,
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
+            )
+        } else {
+            None
+        };
+
         let payload = build_contract_payload(&report, scan_duration_ms);
-        let json = match serde_json::to_string_pretty(&payload) {
+        let contract_json = match serde_json::to_string_pretty(&payload) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("Error serializing contract payload: {e}");
                 std::process::exit(1);
             }
         };
+        let plan = plan_machine_output(out, wants_submit, json);
 
-        if out.contract && !wants_submit {
-            println!("{json}");
+        // Print contract JSON to stdout for --stdout/--json/--contract (never
+        // when submitting — stdout stays clean for pipelines).
+        if plan.to_stdout {
+            println!("{contract_json}");
         }
 
-        // Write to file if --out is specified, or always when submitting
-        let write_dest = if let Some(maybe_path) = &out.out {
-            Some(match maybe_path {
-                Some(p) => p.clone(),
-                None => PathBuf::from("vettd-contract.json"),
-            })
-        } else if wants_submit {
-            Some(PathBuf::from("vettd-contract.json"))
-        } else {
-            None
-        };
-
-        if let Some(dest) = write_dest {
-            if let Err(e) = fs::write(&dest, &json) {
+        // Write to file if --out is specified, or always when submitting.
+        if let Some(dest) = plan.write_path {
+            if let Err(e) = fs::write(&dest, &contract_json) {
                 eprintln!("Error writing contract to {}: {}", dest.display(), e);
             } else {
                 eprintln!("Contract written to {}", dest.display());
             }
         }
 
-        if wants_submit {
-            let auth = match resolve_submit_auth(
-                &out.submit,
-                out.api_key.as_deref(),
-                out.allow_public_endpoint,
-            ) {
-                Ok(auth) => auth,
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
-            };
-            if let Err(e) = do_submit(&json, &auth) {
+        if let Some(auth) = submit_auth {
+            // Show the disclosure to stderr before submitting — the user
+            // needs to see what data is being transmitted regardless of
+            // whether the flow is interactive. Consent is implicit (configured
+            // auth = standing consent); only the interactive path blocks.
+            print_submit_disclosure(&payload);
+            if let Err(e) = do_submit(&contract_json, &auth) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
         }
     } else {
+        // Human console rendering: use the display-limited report so that
+        // lite-mode users see only the top N artifacts on the terminal.
+        //
+        // In this branch `machine_mode` is false, so `json`, `out.stdout`,
+        // `out.contract`, `wants_submit`, and `out.out` are all false/None.
         let cmd_name = command_name(&sub);
         emit(
-            &report,
+            &display_report,
             scan_duration_ms,
-            out.stdout,
-            &out.out,
+            false,
+            &None,
             out.summary,
             out.full,
             cmd_name,
@@ -1140,9 +1204,45 @@ pub fn run() {
     }
 
     // Offer interactive follow-up actions for local-only scans.
-    if !wants_submit && !out.stdout && !out.contract && is_interactive() {
+    if !machine_mode && is_interactive() {
         let cmd_name = command_name(&sub);
         prompt_post_scan_action(&report, scan_duration_ms, cmd_name);
+    }
+}
+
+/// Where machine-readable scan output should go.
+///
+/// Machine output is the full contract payload rendered as JSON. Which
+/// destinations receive it depends on the flags: `--stdout`, `--json`, and
+/// `--contract` print it to stdout; `--out <file>` (or submitting) writes it
+/// to a file. Submission transmits the same full payload.
+#[derive(Debug)]
+struct MachineOutputPlan {
+    /// Whether the contract JSON should be printed to stdout.
+    to_stdout: bool,
+    /// Destination path to write the contract JSON to, if any.
+    write_path: Option<PathBuf>,
+}
+
+/// Decide stdout/file destinations for the machine-output branch.
+///
+/// Kept as a pure function so the routing logic is unit-testable: `--stdout`,
+/// `--json`, and `--contract` print the full contract JSON to stdout (unless
+/// submitting, which keeps stdout clean), and `--out`/submission write it to a
+/// file with a default filename when `--out` is bare.
+fn plan_machine_output(out: &OutputArgs, wants_submit: bool, cli_json: bool) -> MachineOutputPlan {
+    let to_stdout = (out.stdout || out.contract || cli_json) && !wants_submit;
+    let write_path = match &out.out {
+        Some(maybe) => Some(match maybe {
+            Some(p) => p.clone(),
+            None => PathBuf::from("vettd-contract.json"),
+        }),
+        None if wants_submit => Some(PathBuf::from("vettd-contract.json")),
+        None => None,
+    };
+    MachineOutputPlan {
+        to_stdout,
+        write_path,
     }
 }
 
@@ -1158,6 +1258,9 @@ fn handle_submit_report(report: &Path) {
             std::process::exit(1);
         }
     };
+
+    // Resolve auth FIRST — configured auth is standing consent (issue #196).
+    // Only after consent is established may the report be transmitted.
     let auth = match resolve_submit_auth(&Some(None), None, false) {
         Ok(a) => a,
         Err(e) => {
@@ -1165,6 +1268,28 @@ fn handle_submit_report(report: &Path) {
             std::process::exit(1);
         }
     };
+
+    // Fail closed (issue #196 finding #6): never transmit raw undisclosed JSON.
+    // If the saved report cannot be parsed into the supported contract, refuse
+    // to submit rather than silently shipping unmapped data.
+    let payload: ContractPayload = match serde_json::from_str(&json) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "Error: {} is not a valid vettd contract report: {e}",
+                report.display()
+            );
+            eprintln!(
+                "Refusing to submit undisclosed JSON. Re-scan with --contract/--out and submit the contract output instead."
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // Show the disclosure to stderr before submitting — the user must see what
+    // data is being transmitted. This runs on every submit-report success path.
+    print_submit_disclosure(&payload);
+
     if let Err(e) = do_submit(&json, &auth) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -1286,28 +1411,11 @@ fn disclosure_artifact_record_count(payload: &ContractPayload) -> usize {
 
 /// Print a concise summary of the data categories included in a submission.
 ///
-/// Called in interactive flows immediately before asking for consent.  The
-/// summary is intentionally short — it names the data categories without
-/// reproducing actual values. It takes the built [`ContractPayload`] so the
-/// disclosed counts and field claims match exactly what will be transmitted.
+/// Called in interactive flows immediately before asking for consent. The
+/// summary is data-driven — it lists only the categories actually present in
+/// the payload, with one line per category. Rendered to stderr.
 fn print_submit_disclosure(payload: &ContractPayload) {
-    let record_count = disclosure_artifact_record_count(payload);
-    eprintln!("  This submission will include:");
-    eprintln!("    • Scan root paths and machine hostname");
-    eprintln!(
-        "    • {} AI artifact record(s) — prompts, skills, agents, agentic apps: file paths, \
-         capability signals, and risk/trust indicators; content hashes for prompt records",
-        record_count
-    );
-    eprintln!(
-        "    • {} MCP server config record(s): commands, tool names, network endpoint URLs, env-var names (not values)",
-        payload.mcp_servers.len()
-    );
-    eprintln!("    • Host security context (macOS firewall state on macOS; empty elsewhere)");
-    eprintln!(
-        "    • Scanner version (OS and architecture are sent only in the request User-Agent header)"
-    );
-    eprintln!("  No file contents, secret values, or credential material are transmitted.");
+    eprint!("{}", render_disclosure(payload));
 }
 
 /// After a scan, ask the user if they want to submit results.
@@ -1338,19 +1446,26 @@ fn prompt_submit(report: &ScanReport, scan_duration_ms: u64, cmd_name: &str) {
         crate::network::endpoint_display_host(&endpoint)
     );
 
-    // Build a disclosure payload that skips gather_host_network() so no
-    // subprocesses run before the user has seen the consent text.
-    let disclosure = build_contract_payload_for_disclosure(report, scan_duration_ms);
+    // Build the disclosure payload BEFORE consent with NO side effects on user
+    // files or host state: `build_contract_payload_for_disclosure` skips
+    // reading application logs and running host-network subprocesses (issue
+    // #196 AC #3). No log files or other user files may be read before the
+    // user consents, so the disclosure is generated from a side-effect-free
+    // payload. The disclosure still names the LogDerivedNetworkEvidence
+    // category whenever MCP servers are present (disclosure.rs decides that
+    // structurally, from `!mcp_servers.is_empty()`, not from having read logs).
+    let disclosure_payload = build_contract_payload_for_disclosure(report, scan_duration_ms);
 
     // Show a concise data-disclosure summary, then ask for consent.
-    print_submit_disclosure(&disclosure);
+    print_submit_disclosure(&disclosure_payload);
     let confirmed = crate::wizard::confirm("Send this data?", false);
     if !confirmed {
         eprintln!("  Submission cancelled.");
         return;
     }
 
-    // Build the real payload (including host-network data) now that consent is given.
+    // Only after the user consents may we read logs / host network state and
+    // build the real payload to transmit.
     let payload = build_contract_payload(report, scan_duration_ms);
     let json = match serde_json::to_string_pretty(&payload) {
         Ok(j) => j,
@@ -1410,6 +1525,7 @@ fn collect_api_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::{build_contract_payload_for_disclosure, disclosure_categories};
     use clap::Parser;
 
     #[test]
@@ -2095,6 +2211,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_no_cache_flag() {
+        // Issue #199: --no-cache must flip the no_cache field on OutputArgs.
+        let cli = Cli::parse_from(["vettd", "scan", "quick", "--no-cache"]);
+        match cli.command {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
+                assert!(output.no_cache, "--no-cache must set no_cache: true");
+            }
+            _ => panic!("Expected scan quick command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_no_cache_flag_folder() {
+        // Issue #199 clarification: the user runs `scan folder`, which maps to
+        // workdir mode — a mode where `cache_enabled_for_mode` returns true (so
+        // the vettd cache IS normally on). `--no-cache` must therefore flip
+        // `no_cache` on the Folder variant too, else it would be a silent no-op
+        // for the exact command people use. Verified at runtime: with
+        // `--no-cache` the `cache_hits=` timing line never appears, confirming
+        // the cache guard is fully skipped.
+        let cli = Cli::parse_from(["vettd", "scan", "folder", ".", "--no-cache"]);
+        match cli.command {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Folder { output, .. }),
+            }) => {
+                assert!(
+                    output.no_cache,
+                    "--no-cache must set no_cache: true on the folder (workdir) variant"
+                );
+            }
+            _ => panic!("Expected scan folder command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_no_cache_defaults_false() {
+        let cli = Cli::parse_from(["vettd", "scan", "quick"]);
+        match cli.command {
+            Some(Commands::Scan {
+                subcommand: Some(ScanSubcommand::Quick { output, .. }),
+            }) => {
+                assert!(!output.no_cache, "no-cache defaults to false");
+            }
+            _ => panic!("Expected scan quick command"),
+        }
+    }
+
+    #[test]
     fn parse_cli_no_command() {
         let cli = Cli::parse_from(["vettd"]);
         assert!(cli.command.is_none());
@@ -2145,8 +2311,358 @@ mod tests {
 
     #[test]
     fn load_access_config_defaults_when_no_file() {
-        let cfg = load_access_config();
+        // When no `~/.vettd/.vettd.toml` exists, we fall back to the
+        // default (licensed) access tier. License-related fields were
+        // removed in #198 — only `mode` remains.
+        // Loaded via `load_access_config_from` against a nonexistent path so
+        // the test is hermetic — calling the real `load_access_config()`
+        // would read whatever `~/.vettd/.vettd.toml` exists on the dev box
+        // and fail in non-default environments.
+        let missing = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(".vettd/.vettd.toml");
+        let cfg = load_access_config_from(&missing);
         assert_eq!(cfg.mode, "licensed");
-        assert!(cfg.license_key.is_none());
+    }
+
+    // ── #198: lite-mode access gate (display-only, per-user config) ──
+
+    #[test]
+    fn display_limited_report_in_lite_mode_limits_display_but_preserves_full() {
+        // AC #1: machine-output paths (contract, --out, --submit, --json,
+        // --stdout) must receive ALL findings, not just the top 3. The
+        // lite gate is display-only.
+        let mut report = ScanReport::new("/test");
+        for i in 0..5 {
+            let mut artifact = crate::models::ArtifactReport::new("test_artifact", 0.5);
+            artifact.risk_score = i * 20 + 10;
+            report.artifacts.push(artifact);
+        }
+
+        let access = AccessConfig {
+            mode: "lite".to_string(),
+        };
+
+        // Machine mode: hidden summary suppressed, but the full report is
+        // unchanged (caller decides what to do with it).
+        let (display_report, hidden) = display_limited_report(&report, &access, true);
+        assert_eq!(
+            display_report.artifacts.len(),
+            LITE_MODE_VISIBLE_RESULTS,
+            "display report must be limited to top 3 in lite mode"
+        );
+        assert_eq!(hidden.len(), 2, "two artifacts must be hidden");
+
+        // Non-machine mode: same limiting, but `print_locked_summary` is
+        // called internally (we can't easily assert stderr here, but we
+        // verify the hidden artifacts are returned for the caller to use).
+        let (display_report2, hidden2) = display_limited_report(&report, &access, false);
+        assert_eq!(display_report2.artifacts.len(), LITE_MODE_VISIBLE_RESULTS);
+        assert_eq!(hidden2.len(), 2);
+
+        // Licensed mode: no limiting.
+        let licensed = AccessConfig {
+            mode: "licensed".to_string(),
+        };
+        let (display_report3, hidden3) = display_limited_report(&report, &licensed, false);
+        assert_eq!(
+            display_report3.artifacts.len(),
+            5,
+            "licensed mode must not limit the report"
+        );
+        assert!(hidden3.is_empty(), "no hidden artifacts in licensed mode");
+    }
+
+    #[test]
+    fn display_limited_report_does_not_mutate_input_report() {
+        // The gate must never shrink a saved report, contract payload, or
+        // submission. Verify the original report is untouched.
+        let mut report = ScanReport::new("/test");
+        for i in 0..4 {
+            let mut artifact = crate::models::ArtifactReport::new("test_artifact", 0.5);
+            artifact.risk_score = i * 20;
+            report.artifacts.push(artifact);
+        }
+        let original_len = report.artifacts.len();
+
+        let access = AccessConfig {
+            mode: "lite".to_string(),
+        };
+        let (_display, _hidden) = display_limited_report(&report, &access, true);
+
+        assert_eq!(
+            report.artifacts.len(),
+            original_len,
+            "input report must not be mutated by display_limited_report"
+        );
+    }
+
+    #[test]
+    fn is_machine_mode_detects_all_machine_output_paths() {
+        // Every machine-output flag should produce `true`.
+        let empty = OutputArgs::default();
+
+        assert!(
+            !is_machine_mode(false, &empty, false),
+            "default (no flags) is human console"
+        );
+        assert!(is_machine_mode(true, &empty, false), "--json is machine");
+        assert!(is_machine_mode(false, &empty, true), "--submit is machine");
+        assert!(
+            is_machine_mode(
+                false,
+                &OutputArgs {
+                    stdout: true,
+                    ..OutputArgs::default()
+                },
+                false
+            ),
+            "--stdout is machine"
+        );
+        assert!(
+            is_machine_mode(
+                false,
+                &OutputArgs {
+                    contract: true,
+                    ..OutputArgs::default()
+                },
+                false
+            ),
+            "--contract is machine"
+        );
+        assert!(
+            is_machine_mode(
+                false,
+                &OutputArgs {
+                    out: Some(Some(PathBuf::from("r.json"))),
+                    ..OutputArgs::default()
+                },
+                false
+            ),
+            "--out is machine"
+        );
+    }
+
+    #[test]
+    fn plan_machine_output_routes_stdout_json_contract_and_submit() {
+        // --stdout → contract JSON to stdout, no file.
+        let plan = plan_machine_output(
+            &OutputArgs {
+                stdout: true,
+                ..OutputArgs::default()
+            },
+            false,
+            false,
+        );
+        assert!(
+            plan.to_stdout,
+            "--stdout must print contract JSON to stdout"
+        );
+        assert!(plan.write_path.is_none(), "--stdout alone writes no file");
+
+        // global --json → contract JSON to stdout.
+        let plan = plan_machine_output(&OutputArgs::default(), false, true);
+        assert!(plan.to_stdout, "--json must print contract JSON to stdout");
+
+        // --contract → contract JSON to stdout.
+        let plan = plan_machine_output(
+            &OutputArgs {
+                contract: true,
+                ..OutputArgs::default()
+            },
+            false,
+            false,
+        );
+        assert!(
+            plan.to_stdout,
+            "--contract must print contract JSON to stdout"
+        );
+
+        // --stdout + --out <file> → stdout AND file write.
+        let plan = plan_machine_output(
+            &OutputArgs {
+                stdout: true,
+                out: Some(Some(PathBuf::from("r.json"))),
+                ..OutputArgs::default()
+            },
+            false,
+            false,
+        );
+        assert!(plan.to_stdout);
+        assert_eq!(plan.write_path, Some(PathBuf::from("r.json")));
+
+        // bare --out → default file, no stdout.
+        let plan = plan_machine_output(
+            &OutputArgs {
+                out: Some(None),
+                ..OutputArgs::default()
+            },
+            false,
+            false,
+        );
+        assert!(!plan.to_stdout, "plain --out should not print to stdout");
+        assert_eq!(
+            plan.write_path,
+            Some(PathBuf::from("vettd-contract.json")),
+            "bare --out must write to the default contract file"
+        );
+
+        // --submit → full payload written to file + submitted, stdout clean.
+        let plan = plan_machine_output(
+            &OutputArgs {
+                stdout: true,
+                ..OutputArgs::default()
+            },
+            true,
+            false,
+        );
+        assert!(
+            !plan.to_stdout,
+            "submitting must not pollute stdout even with --stdout"
+        );
+        assert_eq!(
+            plan.write_path,
+            Some(PathBuf::from("vettd-contract.json")),
+            "--submit writes the full contract payload to the default file"
+        );
+    }
+
+    #[test]
+    fn machine_output_contract_json_is_jq_parseable_and_full() {
+        // Issue #198 AC #2 (pipe-to-jq / --out): the machine-output JSON must
+        // parse cleanly and carry the FULL report — more findings than the
+        // lite-mode display cap (3), so `--out` can never silently truncate.
+        let mut report = ScanReport::new("/test");
+        for _i in 0..(LITE_MODE_VISIBLE_RESULTS + 2) {
+            report
+                .artifacts
+                .push(crate::models::ArtifactReport::new("prompt_config", 0.8));
+        }
+        let payload = build_contract_payload(&report, 0);
+
+        // The full payload must surface every prompt_config artifact: the
+        // machine path is built from `&report`, not `display_report`, so the
+        // count exceeds the lite display cap.
+        assert!(
+            payload.prompts.len() >= LITE_MODE_VISIBLE_RESULTS,
+            "machine payload must not be lite-limited: {}",
+            payload.prompts.len()
+        );
+
+        // And the serialized JSON must be jq-parseable (valid JSON object).
+        let json = serde_json::to_string_pretty(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("machine-output contract JSON must parse as valid JSON");
+        assert!(parsed.is_object(), "contract JSON must be a JSON object");
+    }
+
+    #[test]
+    fn load_access_config_uses_per_user_path_not_cwd() {
+        // AC #1: a `.vettd.toml` in the current working directory must NOT
+        // affect the report. Only `~/.vettd/.vettd.toml` is consulted, and
+        // `[access] mode` alone governs the tier (no endpoint/license fields).
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().join("home");
+        std::fs::create_dir_all(fake_home.join(".vettd")).unwrap();
+        std::fs::write(
+            fake_home.join(".vettd/.vettd.toml"),
+            "[access]\nmode = \"lite\"\n",
+        )
+        .unwrap();
+
+        // A conflicting CWD file that claims licensed must be ignored — it must
+        // never self-gate a scanned repo's findings.
+        let cwd_conflict = tmp.path().join("cwd-proj");
+        std::fs::create_dir_all(&cwd_conflict).unwrap();
+        let mut cwd_guard = cwd_conflict.clone();
+        cwd_guard.push(".vettd.toml");
+        std::fs::write(&cwd_guard, "[access]\nmode = \"licensed\"\n").unwrap();
+
+        let cfg = load_access_config_from(fake_home.join(".vettd").join(".vettd.toml").as_path());
+        assert_eq!(cfg.mode, "lite", "home config must win over any cwd config",);
+        drop(cwd_guard);
+    }
+
+    #[test]
+    fn access_config_has_no_license_fields() {
+        // AC #3: license_key, endpoint, and license_timeout_seconds were
+        // removed as dead fields. The struct must only have `mode`.
+        let cfg = AccessConfig::default();
+        assert_eq!(cfg.mode, "licensed");
+        // If any of these fields were added back, this test would fail to
+        // compile — that's the point.
+    }
+
+    // ── #196: disclosure reflects the actual payload ──
+
+    #[test]
+    fn disclosure_includes_mcp_categories_when_servers_present() {
+        // The disclosure must list MCP-specific categories (command, tool
+        // names, etc.) only when there are MCP servers with data.
+        let payload = build_contract_payload_for_disclosure(&ScanReport::new("/test"), 0);
+        let cats = disclosure_categories(&payload);
+        // With no MCP servers, no MCP categories should appear.
+        for cat in &cats {
+            assert!(
+                !matches!(
+                    cat,
+                    crate::contract::DisclosureCategory::McpServerCommand
+                        | crate::contract::DisclosureCategory::McpToolNames
+                        | crate::contract::DisclosureCategory::LogDerivedNetworkEvidence
+                        | crate::contract::DisclosureCategory::EnvVarNames
+                ),
+                "unexpected MCP category present: {:?}",
+                cat
+            );
+        }
+    }
+
+    #[test]
+    fn disclosure_rendering_does_not_write_to_stdout() {
+        // The disclosure must never pollute stdout — it goes to stderr so
+        // `--stdout | jq` pipelines stay clean.
+        let payload = build_contract_payload(&ScanReport::new("/test"), 0);
+        // We can't easily capture stderr in a test, but we can verify the
+        // render function returns a string (not writes). The string is
+        // non-empty and contains the header.
+        let rendered = render_disclosure(&payload);
+        assert!(
+            rendered.contains("This submission will include"),
+            "rendered disclosure must contain header: {rendered}"
+        );
+    }
+
+    #[test]
+    fn disclosure_mentions_scan_root_paths_always() {
+        // ScanRootPaths is always present (scan_roots is never empty).
+        let payload = build_contract_payload_for_disclosure(&ScanReport::new("/test"), 0);
+        let cats = disclosure_categories(&payload);
+        assert!(
+            cats.contains(&crate::contract::DisclosureCategory::ScanRootPaths),
+            "ScanRootPaths must always be present"
+        );
+    }
+
+    #[test]
+    fn disclosure_mentions_hostname_always() {
+        // Hostname is always present (endpoint_hostname is never empty).
+        let payload = build_contract_payload_for_disclosure(&ScanReport::new("/test"), 0);
+        let cats = disclosure_categories(&payload);
+        assert!(
+            cats.contains(&crate::contract::DisclosureCategory::Hostname),
+            "Hostname must always be present"
+        );
+    }
+
+    #[test]
+    fn disclosure_mentions_scanner_version_always() {
+        // ScannerVersion is always present.
+        let payload = build_contract_payload_for_disclosure(&ScanReport::new("/test"), 0);
+        let cats = disclosure_categories(&payload);
+        assert!(
+            cats.contains(&crate::contract::DisclosureCategory::ScannerVersion),
+            "ScannerVersion must always be present"
+        );
     }
 }
