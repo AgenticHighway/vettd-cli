@@ -42,5 +42,10 @@ dispatch2 = "0.3"
 fsevent-sys = "5.2"
 
 [dev-dependencies]
-httpmock = "0.8.3"
+httpmock = "=0.8.2"
+# Pin url to 2.4.x (pure-Rust idna 0.x). httpmock pulls `url`, and url 2.5.x
+# switches to the icu-based idna 1.0 which requires rustc >= 1.86 — above the
+# toolchain pinned in rust-toolchain.toml (1.85.1). Keep this in sync with
+# Cargo.lock.
+url = "=2.4.1"
 tempfile = "3"
