@@ -62,8 +62,9 @@ fn directory_response_basic() -> Value {
 }
 
 /// What the exact same CLI call prints to stdout for `directory_response_basic()`:
-/// allow-listed fields only, with the new fields present as `null` since the
-/// server didn't send them.
+/// allow-listed fields only. `language`/`agentCompatibility`/`rankings` are
+/// skipped entirely (not even `null`) since the server didn't send them —
+/// `--json` output must be byte-identical to the pre-beta shape.
 fn expected_directory_output_basic() -> Value {
     json!({
         "skills": [{
@@ -76,10 +77,7 @@ fn expected_directory_output_basic() -> Value {
             "badgeStatus": "verified",
             "overallGrade": "A",
             "sourceType": "github",
-            "scannerRunCount": 12,
-            "language": null,
-            "agentCompatibility": null,
-            "rankings": null
+            "scannerRunCount": 12
         }],
         "total": 1,
         "page": 1,
@@ -181,10 +179,7 @@ fn expected_inventory_output_basic() -> Value {
             "badgeStatus": "unlisted",
             "overallGrade": "B",
             "sourceType": "local",
-            "scannerRunCount": 1,
-            "language": null,
-            "agentCompatibility": null,
-            "rankings": null
+            "scannerRunCount": 1
         }],
         "total": 1,
         "page": 1,
@@ -659,4 +654,85 @@ fn search_beta_testing_still_appends_table_when_json_flag_passed() {
     assert!(out.contains("--- SEARCH_BETA_TESTING: raw json ---"));
     // --json doesn't suppress the formatted table once beta mode is on.
     assert!(out.contains("[B]"));
+}
+
+// ---------------------------------------------------------------------------
+// Manual testing helper — not run by `cargo test` (see #[ignore]). Stands up
+// the same httpmock server the automated tests use and blocks, so you can
+// drive the real `vettd` binary against it by hand from another terminal.
+// ---------------------------------------------------------------------------
+
+/// Run with:
+///
+/// ```text
+/// cargo test -p vettd-cli --test search_integration \
+///     manual_mock_server_for_local_testing -- --ignored --nocapture
+/// ```
+///
+/// It prints the mock's base URL and ready-to-paste `vettd` invocations,
+/// then blocks for 10 minutes (Ctrl-C to stop early). Requests are logged to
+/// this terminal by httpmock as they arrive, so you can see the real request
+/// the CLI sent — including the POST body for `SEARCH_BETA_TESTING` calls —
+/// compared against the mocks registered below.
+#[test]
+#[ignore = "manual-only: starts a live mock server and blocks; run explicitly"]
+fn manual_mock_server_for_local_testing() {
+    let server = MockServer::start();
+
+    // Same mocks the automated tests use — old GET shape, new POST shape
+    // (with and without filters), and the inventory auth check. Extend this
+    // list if you need to manually exercise something else.
+    mount_directory_get(&server, &directory_response_basic());
+    mount_directory_post(
+        &server,
+        &default_search_body("pdf"),
+        &directory_response_beta(),
+    );
+    mount_directory_post(
+        &server,
+        &json!({
+            "search": "pdf",
+            "page": 1,
+            "sort": "newest",
+            "reverse": false,
+            "languages": ["python"],
+            "agentCompatibility": ["claude-code"],
+            "rankings": {"stars": 50}
+        }),
+        &directory_response_beta(),
+    );
+    mount_inventory_get(&server, &inventory_response_basic());
+    mount_inventory_post(
+        &server,
+        &default_search_body("notes"),
+        &inventory_response_basic(),
+    );
+
+    let ingest = ingest_endpoint(&server);
+
+    eprintln!("\n=== manual mock server is live ===");
+    eprintln!("base url: {}", server.base_url());
+    eprintln!("ingest endpoint: {ingest}\n");
+    eprintln!(
+        "Run these from the repo root, using the locally built binary (not `vettd` on PATH)."
+    );
+    eprintln!(
+        "Set HOME to a scratch dir first so `vettd auth` below never touches your real saved config:\n"
+    );
+    eprintln!("  export HOME=/tmp/vettd-manual-home\n");
+    eprintln!("Old shape (SEARCH_BETA_TESTING unset), against a saved config endpoint:");
+    eprintln!("  ./target/debug/vettd auth --endpoint {ingest} --key {MOCK_API_KEY}");
+    eprintln!("  ./target/debug/vettd directory search pdf --json\n");
+    eprintln!("New shape (SEARCH_BETA_TESTING=1), via the env var override — no config needed:");
+    eprintln!("  export SEARCH_BETA_TESTING=1");
+    eprintln!("  export VETTD_DIRECTORY_ENDPOINT={ingest}");
+    eprintln!("  ./target/debug/vettd directory search pdf --json");
+    eprintln!("  ./target/debug/vettd directory search pdf --language python --agent-compatibility claude-code --rankings '{{\"stars\": 50}}' --json\n");
+    eprintln!(
+        "  export VETTD_INVENTORY_ENDPOINT={ingest}   # inventory also needs the `auth` step above for its api key"
+    );
+    eprintln!("  ./target/debug/vettd inventory search notes --json\n");
+    eprintln!("Blocking for 10 minutes — Ctrl-C to stop early.\n");
+
+    std::thread::sleep(std::time::Duration::from_secs(600));
 }

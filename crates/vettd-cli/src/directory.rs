@@ -63,11 +63,18 @@ pub struct DirectoryCard {
     pub overall_grade: Option<String>,
     pub source_type: Option<String>,
     pub scanner_run_count: Option<u32>,
-    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
+    /// serialize when absent, so `--json` output is byte-identical to the
+    /// pre-beta shape unless the server actually sent this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
+    /// serialize when absent — see `language` above.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_compatibility: Option<Vec<String>>,
-    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
+    /// serialize when absent — see `language` above.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rankings: Option<SkillRankings>,
 }
 
