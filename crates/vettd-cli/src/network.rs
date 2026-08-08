@@ -1,19 +1,26 @@
 use std::net::IpAddr;
 
-/// Gates the `VETTD_DIRECTORY_ENDPOINT` / `VETTD_INVENTORY_ENDPOINT` test
-/// overrides (and their extra output dumping) behind an explicit opt-in, so
-/// a stray env var left set in a shell can't silently redirect production
-/// skill search. Truthy values: `1`, `true` (case-insensitive); anything
-/// else, including unset, is off.
+/// Returns `true` if the beta search filters (`--language`, `--agent-compatibility`,
+/// `--rankings`) and POST request shape should be enabled.
+///
+/// Enabled when **either** of the following is true:
+/// - The user has `search_beta_testing = true` in `~/.vettd/.vettd.toml`
+///   under the `[access]` table.
+/// - The `SEARCH_BETA_TESTING` environment variable is set to a truthy value
+///   (`1`, `true`, case-insensitive).
+///
+/// The env var wins in the sense that it independently enables the feature;
+/// it never disables it if the config already has it on.
 pub fn search_beta_testing_enabled() -> bool {
-    matches!(
-        std::env::var("SEARCH_BETA_TESTING")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true"
-    )
+    crate::cli::search_beta_testing_from_config()
+        || matches!(
+            std::env::var("SEARCH_BETA_TESTING")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true"
+        )
 }
 
 /// Returns `true` when the hostname refers to the local machine or a
@@ -190,6 +197,28 @@ mod tests {
         }
     }
 
+    /// Sets HOME to a temp directory for the duration of the test, then
+    /// restores the original HOME in Drop. Used by tests that read the
+    /// per-user config via [`crate::cli::load_access_config`] so they don't
+    /// accidentally pick up the developer's real `~/.vettd/.vettd.toml`.
+    struct ScopedEnvHome {
+        _var: ScopedEnvVar,
+        dir: tempfile::TempDir,
+    }
+
+    impl ScopedEnvHome {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let var = ScopedEnvVar::set("HOME", dir.path().to_str().unwrap());
+            Self { _var: var, dir }
+        }
+
+        /// Returns the path to the temporary home directory.
+        fn home_path(&self) -> &std::path::Path {
+            self.dir.path()
+        }
+    }
+
     impl Drop for ScopedEnvVar {
         fn drop(&mut self) {
             // SAFETY: Environment mutation is serialized by ENV_LOCK for the
@@ -238,6 +267,68 @@ mod tests {
                 "expected {value:?} to disable"
             );
         }
+    }
+
+    // ---- search_beta_testing_enabled (config + env) ----
+
+    #[test]
+    fn search_beta_testing_enabled_from_config() {
+        // When the config has search_beta_testing = true and no env var is
+        // set, the function should return true (the config is consulted).
+        // The config file must live under the `HOME`-isolated dir so
+        // `load_access_config()` (which uses `dirs::home_dir()`) finds it.
+        let home = ScopedEnvHome::new();
+        let vettd_dir = home.home_path().join(".vettd");
+        std::fs::create_dir_all(&vettd_dir).unwrap();
+        std::fs::write(
+            vettd_dir.join(".vettd.toml"),
+            "[access]\nsearch_beta_testing = true\n",
+        )
+        .unwrap();
+
+        assert!(
+            search_beta_testing_enabled(),
+            "should be enabled when config file says so"
+        );
+    }
+
+    #[test]
+    fn search_beta_testing_config_false_no_env() {
+        // When the config has search_beta_testing = false and no env var is
+        // set, the function should return false.
+        let home = ScopedEnvHome::new();
+        let vettd_dir = home.home_path().join(".vettd");
+        std::fs::create_dir_all(&vettd_dir).unwrap();
+        std::fs::write(
+            vettd_dir.join(".vettd.toml"),
+            "[access]\nsearch_beta_testing = false\n",
+        )
+        .unwrap();
+
+        assert!(
+            !search_beta_testing_enabled(),
+            "should be disabled when config is false and no env var"
+        );
+    }
+
+    #[test]
+    fn search_beta_testing_env_overrides_config_false() {
+        // When the config is false but the env var is truthy, the feature is
+        // still enabled (env var wins).
+        let home = ScopedEnvHome::new();
+        let _var = ScopedEnvVar::set("SEARCH_BETA_TESTING", "1");
+        let vettd_dir = home.home_path().join(".vettd");
+        std::fs::create_dir_all(&vettd_dir).unwrap();
+        std::fs::write(
+            vettd_dir.join(".vettd.toml"),
+            "[access]\nsearch_beta_testing = false\n",
+        )
+        .unwrap();
+
+        assert!(
+            search_beta_testing_enabled(),
+            "env var should override config when truthy"
+        );
     }
 
     // ---- is_local_or_private_host ----

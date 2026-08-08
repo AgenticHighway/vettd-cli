@@ -344,12 +344,16 @@ impl Default for OutputArgs {
 #[derive(Debug)]
 pub(crate) struct AccessConfig {
     mode: String,
+    /// Opt-in to the beta search filters (`--language`, `--agent-compatibility`,
+    /// `--rankings`) and the POST request shape. See [`search_beta_testing_enabled`].
+    search_beta_testing: bool,
 }
 
 impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             mode: "licensed".into(),
+            search_beta_testing: false,
         }
     }
 }
@@ -397,7 +401,23 @@ fn load_access_config_from(path: &Path) -> AccessConfig {
         cfg.mode = v.clone();
     }
 
+    // `search_beta_testing` opts into the beta search filters and POST request
+    // shape. Env var `SEARCH_BETA_TESTING` takes precedence; this is the
+    // per-user config fallback. See `search_beta_testing_enabled`.
+    if let Some(toml::Value::Boolean(v)) = access.get("search_beta_testing") {
+        cfg.search_beta_testing = *v;
+    }
+
     cfg
+}
+
+/// Returns the `search_beta_testing` value from the user's per-user config
+/// (`~/.vettd/.vettd.toml`).
+///
+/// The actual decision used by the network layer is [`search_beta_testing_enabled`],
+/// which ORs this value with the `SEARCH_BETA_TESTING` env var.
+pub(crate) fn search_beta_testing_from_config() -> bool {
+    load_access_config().search_beta_testing
 }
 
 // ---------------------------------------------------------------------------
@@ -2386,6 +2406,7 @@ mod tests {
 
         let access = AccessConfig {
             mode: "lite".to_string(),
+            search_beta_testing: false,
         };
 
         // Machine mode: hidden summary suppressed, but the full report is
@@ -2408,6 +2429,7 @@ mod tests {
         // Licensed mode: no limiting.
         let licensed = AccessConfig {
             mode: "licensed".to_string(),
+            search_beta_testing: false,
         };
         let (display_report3, hidden3) = display_limited_report(&report, &licensed, false);
         assert_eq!(
@@ -2432,6 +2454,7 @@ mod tests {
 
         let access = AccessConfig {
             mode: "lite".to_string(),
+            search_beta_testing: false,
         };
         let (_display, _hidden) = display_limited_report(&report, &access, true);
 
@@ -2636,6 +2659,62 @@ mod tests {
         assert_eq!(cfg.mode, "licensed");
         // If any of these fields were added back, this test would fail to
         // compile — that's the point.
+    }
+
+    #[test]
+    fn access_config_parses_search_beta_testing_true() {
+        // search_beta_testing = true in the [access] table must be parsed as true.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[access]\nsearch_beta_testing = true\nmode = \"lite\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(
+            cfg.search_beta_testing,
+            "search_beta_testing must be true when set in config"
+        );
+        assert_eq!(cfg.mode, "lite", "mode must still be parsed alongside it");
+    }
+
+    #[test]
+    fn access_config_search_beta_testing_defaults_to_false() {
+        // When search_beta_testing is absent (or the config only has `mode`),
+        // it must default to false.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[access]\nmode = \"lite\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(
+            !cfg.search_beta_testing,
+            "search_beta_testing must default to false when missing from config"
+        );
+    }
+
+    #[test]
+    fn access_config_parses_search_beta_testing_explicit_false() {
+        // Explicit `search_beta_testing = false` must be parsed as false.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[access]\nsearch_beta_testing = false\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(
+            !cfg.search_beta_testing,
+            "search_beta_testing = false must be parsed as false"
+        );
     }
 
     // ── #196: disclosure reflects the actual payload ──

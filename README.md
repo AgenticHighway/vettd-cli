@@ -185,7 +185,16 @@ visible artifacts, create `~/.vettd/.vettd.toml` (per-user location):
 ```toml
 [access]
 mode = "lite"
+# search_beta_testing = true  # opt into --language, --agent-compatibility,
+#                              # and --rankings filters (POST request shape)
 ```
+
+> **Beta search filters:** `search_beta_testing = true` in the config enables
+> the `--language`, `--agent-compatibility`, and `--rankings` search filters
+> and switches the directory request to POST with a JSON body. The
+> `SEARCH_BETA_TESTING` environment variable (set to `1` or `true`) takes
+> precedence over this config entry and can enable the same behavior without
+> touching the config file.
 
 When the file is absent, vettd keeps full output enabled.
 
@@ -377,7 +386,15 @@ Optional `~/.vettd/.vettd.toml`:
 ```toml
 [access]
 mode = "lite"                   # limit terminal console findings to the top three artifacts
+# search_beta_testing = false   # opt into --language, --agent-compatibility,
+#                               # and --rankings beta search filters
 ```
+
+> **Beta search filters:** `search_beta_testing = true` enables the `--language`,
+> `--agent-compatibility`, and `--rankings` search filters (and switches the
+> directory request to POST with a JSON body). The `SEARCH_BETA_TESTING` env var
+> (`1` or `true`) takes precedence and can enable the same behavior without
+> modifying the config file.
 
 > **Per-user location only.** A `.vettd.toml` in a scanned project directory
 > is never consulted — a scanned repo must never be able to self-gate its

@@ -433,17 +433,7 @@ pub fn handle_search(
 
     match result {
         Ok(resp) => {
-            // SEARCH_BETA_TESTING dumps both raw and formatted output on every
-            // call, regardless of --json, so a tester can diff the two.
-            if beta {
-                println!("--- SEARCH_BETA_TESTING: raw json ---");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&resp).unwrap_or_default()
-                );
-                println!("--- SEARCH_BETA_TESTING: formatted ---");
-            }
-            if json && !beta {
+            if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
