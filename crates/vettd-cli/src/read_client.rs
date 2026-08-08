@@ -85,6 +85,49 @@ pub fn fetch_json<T: DeserializeOwned>(url: &str) -> Result<T, ReadError> {
     }
 }
 
+/// Perform an unauthenticated POST with a JSON body and decode the JSON
+/// response body as `T`. Used by the `SEARCH_BETA_TESTING` search filters
+/// (`--language`/`--agent-compatibility`/`--rankings`), which don't fit
+/// cleanly into a query string. Same status handling as `fetch_json`.
+///
+/// # No auth header
+///
+/// See `fetch_json` — this never sets `Authorization` either.
+pub fn post_json<T: DeserializeOwned>(url: &str, body: &serde_json::Value) -> Result<T, ReadError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    match agent
+        .post(url)
+        .header("User-Agent", &crate::updater::user_agent_string())
+        .send_json(body)
+    {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            if status == 429 {
+                eprintln!(
+                    "Error: rate limited by the server (HTTP 429). Please wait and try again."
+                );
+                std::process::exit(1);
+            }
+            if status == 404 {
+                return Err(ReadError::NotFound);
+            }
+            if status != 200 {
+                return Err(ReadError::ServerError(status));
+            }
+            response
+                .body_mut()
+                .read_json::<T>()
+                .map_err(|e| ReadError::Decode(e.to_string()))
+        }
+        Err(e) => Err(ReadError::Unreachable(e.to_string())),
+    }
+}
+
 /// Perform an unauthenticated GET and return the raw response body string.
 ///
 /// Handles 404/429/non-200 the same way as `fetch_json`. Use this when you

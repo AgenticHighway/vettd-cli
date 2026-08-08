@@ -63,6 +63,24 @@ pub struct DirectoryCard {
     pub overall_grade: Option<String>,
     pub source_type: Option<String>,
     pub scanner_run_count: Option<u32>,
+    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    pub language: Option<String>,
+    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    pub agent_compatibility: Option<Vec<String>>,
+    /// Present only from `SEARCH_BETA_TESTING` search responses.
+    pub rankings: Option<SkillRankings>,
+}
+
+/// External ranking signals for a skill — used both as the `--rankings`
+/// input filter (minimum thresholds) and as the actual values on a
+/// `SEARCH_BETA_TESTING` search response. See `docs/SEARCH_INTERFACE.md`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRankings {
+    pub stars: Option<u32>,
+    pub skills_sh_leaderboard_rank: Option<u32>,
+    pub number_of_aggregators: Option<u32>,
+    pub official_claude_marketplace: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -116,9 +134,19 @@ pub struct ScannerRun {
 // ---------------------------------------------------------------------------
 
 /// Derive the directory API base URL from the configured ingest endpoint.
+///
+/// `VETTD_DIRECTORY_ENDPOINT` overrides the ingest endpoint used for
+/// derivation, for pointing directory search at a test/staging API. Only
+/// honored when `SEARCH_BETA_TESTING` is enabled (see
+/// [`crate::network::search_beta_testing_enabled`]).
 fn directory_base_url() -> String {
-    let endpoint = crate::submit::load_auth_config()
-        .map(|c| c.endpoint)
+    let override_endpoint = crate::network::search_beta_testing_enabled()
+        .then(|| std::env::var("VETTD_DIRECTORY_ENDPOINT").ok())
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let endpoint = override_endpoint
+        .or_else(|| crate::submit::load_auth_config().map(|c| c.endpoint))
         .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
     crate::network::derive_api_url(&endpoint, "directory")
 }
@@ -311,16 +339,104 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bool) {
-    let url = format!(
-        "{}?search={}&{}&page={page}",
-        directory_base_url(),
-        percent_encode(query),
-        api_sort_params(sort, reverse),
-    );
-    match read_client::fetch_json::<DirectoryListResponse>(&url) {
+/// Validate the beta-gated search filters and parse `--rankings` JSON.
+///
+/// Exits the process with a clear error if filters are supplied without
+/// `SEARCH_BETA_TESTING` enabled, or if `--rankings` isn't valid JSON. See
+/// `docs/SEARCH_INTERFACE.md`.
+pub(crate) fn validate_search_filters(
+    languages: &[String],
+    agent_compatibility: &[String],
+    rankings_raw: Option<&str>,
+    beta: bool,
+) -> Option<serde_json::Value> {
+    let has_filters =
+        !languages.is_empty() || !agent_compatibility.is_empty() || rankings_raw.is_some();
+    if has_filters && !beta {
+        eprintln!(
+            "Error: --language/--agent-compatibility/--rankings require SEARCH_BETA_TESTING=1."
+        );
+        std::process::exit(1);
+    }
+    rankings_raw.map(|raw| match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error: --rankings is not valid JSON: {e}");
+            std::process::exit(1);
+        }
+    })
+}
+
+/// Build the POST body for a `SEARCH_BETA_TESTING` search request. See
+/// `docs/SEARCH_INTERFACE.md` for the shape.
+pub(crate) fn build_search_body(
+    query: &str,
+    page: u32,
+    sort: &str,
+    reverse: bool,
+    languages: &[String],
+    agent_compatibility: &[String],
+    rankings: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "search": query,
+        "page": page,
+        "sort": sort,
+        "reverse": reverse,
+        "languages": languages,
+        "agentCompatibility": agent_compatibility,
+        "rankings": rankings,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_search(
+    query: &str,
+    page: u32,
+    sort: &str,
+    reverse: bool,
+    json: bool,
+    languages: &[String],
+    agent_compatibility: &[String],
+    rankings: Option<&str>,
+) {
+    let beta = crate::network::search_beta_testing_enabled();
+    let rankings_value = validate_search_filters(languages, agent_compatibility, rankings, beta);
+
+    let result = if beta {
+        let body = build_search_body(
+            query,
+            page,
+            sort,
+            reverse,
+            languages,
+            agent_compatibility,
+            rankings_value,
+        );
+        read_client::post_json::<DirectoryListResponse>(&directory_base_url(), &body)
+    } else {
+        let url = format!(
+            "{}?search={}&{}&page={page}",
+            directory_base_url(),
+            percent_encode(query),
+            api_sort_params(sort, reverse),
+        );
+        read_client::fetch_json::<DirectoryListResponse>(&url)
+    };
+
+    match result {
         Ok(resp) => {
-            if json {
+            // SEARCH_BETA_TESTING dumps both raw and formatted output on every
+            // call, regardless of --json, so a tester can diff the two.
+            if beta {
+                println!("--- SEARCH_BETA_TESTING: raw json ---");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+                println!("--- SEARCH_BETA_TESTING: formatted ---");
+            }
+            if json && !beta {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_default()

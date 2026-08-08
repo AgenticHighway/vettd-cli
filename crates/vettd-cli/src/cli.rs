@@ -177,6 +177,16 @@ pub enum DirectorySubcommand {
         /// Reverse the sort order
         #[arg(long, short = 'r')]
         reverse: bool,
+        /// Filter by implementation language (repeatable). Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "language")]
+        languages: Vec<String>,
+        /// Filter by agent/runtime compatibility (repeatable). Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "agent-compatibility")]
+        agent_compatibility: Vec<String>,
+        /// Minimum-threshold ranking filter as a JSON object, e.g.
+        /// '{"stars": 50, "officialClaudeMarketplace": true}'. Requires SEARCH_BETA_TESTING=1.
+        #[arg(long)]
+        rankings: Option<String>,
     },
     /// List directory entries
     List {
@@ -230,6 +240,16 @@ pub enum InventorySubcommand {
         /// Reverse the sort order
         #[arg(long, short = 'r')]
         reverse: bool,
+        /// Filter by implementation language (repeatable). Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "language")]
+        languages: Vec<String>,
+        /// Filter by agent/runtime compatibility (repeatable). Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "agent-compatibility")]
+        agent_compatibility: Vec<String>,
+        /// Minimum-threshold ranking filter as a JSON object, e.g.
+        /// '{"stars": 50, "officialClaudeMarketplace": true}'. Requires SEARCH_BETA_TESTING=1.
+        #[arg(long)]
+        rankings: Option<String>,
     },
     /// List the authenticated user's skills (published and unpublished)
     List {
@@ -934,6 +954,9 @@ pub fn run() {
                 page,
                 sort,
                 reverse,
+                languages,
+                agent_compatibility,
+                rankings,
             } => {
                 if query.len() > 1 {
                     eprintln!(
@@ -942,7 +965,16 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::directory::handle_search(&query[0], *page, sort, *reverse, json)
+                crate::directory::handle_search(
+                    &query[0],
+                    *page,
+                    sort,
+                    *reverse,
+                    json,
+                    languages,
+                    agent_compatibility,
+                    rankings.as_deref(),
+                )
             }
             DirectorySubcommand::List {
                 page,
@@ -969,6 +1001,9 @@ pub fn run() {
                 page,
                 sort,
                 reverse,
+                languages,
+                agent_compatibility,
+                rankings,
             } => {
                 if query.len() > 1 {
                     eprintln!(
@@ -977,7 +1012,16 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::inventory::handle_search(&query[0], *page, sort, *reverse, json)
+                crate::inventory::handle_search(
+                    &query[0],
+                    *page,
+                    sort,
+                    *reverse,
+                    json,
+                    languages,
+                    agent_compatibility,
+                    rankings.as_deref(),
+                )
             }
             InventorySubcommand::List {
                 page,
