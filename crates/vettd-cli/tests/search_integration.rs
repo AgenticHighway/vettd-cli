@@ -321,6 +321,12 @@ fn run_vettd(args: &[&str], home: &std::path::Path, extra_env: &[(&str, &str)]) 
     cmd.env_remove("SEARCH_BETA_TESTING");
     cmd.env_remove("VETTD_DIRECTORY_ENDPOINT");
     cmd.env_remove("VETTD_INVENTORY_ENDPOINT");
+    // Force the CLI to resolve config from $HOME/.config (the path
+    // `seed_home` writes), not from whatever XDG_CONFIG_HOME the CI or
+    // dev shell happens to have set — otherwise the seeded config is
+    // missed and the CLI falls through to the real production endpoint.
+    cmd.env_remove("XDG_CONFIG_HOME");
+    cmd.env_remove("XDG_CONFIG_DIRS");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
