@@ -140,10 +140,10 @@ pub fn handle_search(
     agent_compatibility: &[String],
     rankings: Option<&str>,
 ) {
-    require_auth_or_exit();
     let beta = crate::network::search_beta_testing_enabled();
     let rankings_value =
         directory::validate_search_filters(languages, agent_compatibility, rankings, beta);
+    require_auth_or_exit();
 
     let result = if beta {
         let body = directory::build_search_body(
@@ -168,17 +168,7 @@ pub fn handle_search(
 
     match result {
         Ok(resp) => {
-            // SEARCH_BETA_TESTING dumps both raw and formatted output on every
-            // call, regardless of --json, so a tester can diff the two.
-            if beta {
-                println!("--- SEARCH_BETA_TESTING: raw json ---");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&resp).unwrap_or_default()
-                );
-                println!("--- SEARCH_BETA_TESTING: formatted ---");
-            }
-            if json && !beta {
+            if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
