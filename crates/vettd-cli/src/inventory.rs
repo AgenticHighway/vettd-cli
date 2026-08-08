@@ -13,9 +13,19 @@ use crate::directory::{self, DirectoryFinding, DirectoryListResponse, DirectoryS
 use crate::inventory_client::{self, InventoryError};
 
 /// Derive the inventory API base URL from the configured ingest endpoint.
+///
+/// `VETTD_INVENTORY_ENDPOINT` overrides the ingest endpoint used for
+/// derivation, for pointing inventory search at a test/staging API. Only
+/// honored when `SEARCH_BETA_TESTING` is enabled (see
+/// [`crate::network::search_beta_testing_enabled`]).
 fn inventory_base_url() -> String {
-    let endpoint = crate::submit::load_auth_config()
-        .map(|c| c.endpoint)
+    let override_endpoint = crate::network::search_beta_testing_enabled()
+        .then(|| std::env::var("VETTD_INVENTORY_ENDPOINT").ok())
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let endpoint = override_endpoint
+        .or_else(|| crate::submit::load_auth_config().map(|c| c.endpoint))
         .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
     crate::network::derive_api_url(&endpoint, "inventory")
 }
@@ -119,17 +129,56 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bool) {
+#[allow(clippy::too_many_arguments)]
+pub fn handle_search(
+    query: &str,
+    page: u32,
+    sort: &str,
+    reverse: bool,
+    json: bool,
+    languages: &[String],
+    agent_compatibility: &[String],
+    rankings: Option<&str>,
+) {
     require_auth_or_exit();
-    let url = format!(
-        "{}?search={}&{}&page={page}",
-        inventory_base_url(),
-        directory::percent_encode(query),
-        directory::api_sort_params(sort, reverse),
-    );
-    match inventory_client::fetch_json::<DirectoryListResponse>(&url) {
+    let beta = crate::network::search_beta_testing_enabled();
+    let rankings_value =
+        directory::validate_search_filters(languages, agent_compatibility, rankings, beta);
+
+    let result = if beta {
+        let body = directory::build_search_body(
+            query,
+            page,
+            sort,
+            reverse,
+            languages,
+            agent_compatibility,
+            rankings_value,
+        );
+        inventory_client::post_json::<DirectoryListResponse>(&inventory_base_url(), &body)
+    } else {
+        let url = format!(
+            "{}?search={}&{}&page={page}",
+            inventory_base_url(),
+            directory::percent_encode(query),
+            directory::api_sort_params(sort, reverse),
+        );
+        inventory_client::fetch_json::<DirectoryListResponse>(&url)
+    };
+
+    match result {
         Ok(resp) => {
-            if json {
+            // SEARCH_BETA_TESTING dumps both raw and formatted output on every
+            // call, regardless of --json, so a tester can diff the two.
+            if beta {
+                println!("--- SEARCH_BETA_TESTING: raw json ---");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+                println!("--- SEARCH_BETA_TESTING: formatted ---");
+            }
+            if json && !beta {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_default()

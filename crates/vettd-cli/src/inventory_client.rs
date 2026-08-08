@@ -86,6 +86,57 @@ pub fn fetch_json<T: DeserializeOwned>(url: &str) -> Result<T, InventoryError> {
     }
 }
 
+/// Perform an authenticated POST with a JSON body against the user's
+/// inventory and decode the JSON response body as `T`. Used by the
+/// `SEARCH_BETA_TESTING` search filters (`--language`/`--agent-compatibility`
+/// /`--rankings`), which don't fit cleanly into a query string.
+///
+/// Requires a configured API key (`vettd auth`). If none is configured,
+/// returns `InventoryError::Unauthenticated` without making a network call.
+pub fn post_json<T: DeserializeOwned>(
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<T, InventoryError> {
+    let auth = match crate::submit::load_auth_config() {
+        Some(a) => a,
+        None => return Err(InventoryError::Unauthenticated),
+    };
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    match agent
+        .post(url)
+        .header("User-Agent", &crate::updater::user_agent_string())
+        .header("Authorization", &format!("Bearer {}", auth.api_key))
+        .send_json(body)
+    {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            if status == 429 {
+                eprintln!(
+                    "Error: rate limited by the server (HTTP 429). Please wait and try again."
+                );
+                std::process::exit(1);
+            }
+            if status == 404 {
+                return Err(InventoryError::NotFound);
+            }
+            if status != 200 {
+                return Err(InventoryError::ServerError(status));
+            }
+            response
+                .body_mut()
+                .read_json::<T>()
+                .map_err(|e| InventoryError::Decode(e.to_string()))
+        }
+        Err(e) => Err(InventoryError::Unreachable(e.to_string())),
+    }
+}
+
 /// Returns true if an API key is currently configured (used by the CLI to
 /// fail fast with exit code 3 before attempting any inventory subcommand).
 pub fn is_authenticated() -> bool {

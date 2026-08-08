@@ -1,5 +1,21 @@
 use std::net::IpAddr;
 
+/// Gates the `VETTD_DIRECTORY_ENDPOINT` / `VETTD_INVENTORY_ENDPOINT` test
+/// overrides (and their extra output dumping) behind an explicit opt-in, so
+/// a stray env var left set in a shell can't silently redirect production
+/// skill search. Truthy values: `1`, `true` (case-insensitive); anything
+/// else, including unset, is off.
+pub fn search_beta_testing_enabled() -> bool {
+    matches!(
+        std::env::var("SEARCH_BETA_TESTING")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true"
+    )
+}
+
 /// Returns `true` when the hostname refers to the local machine or a
 /// private / link-local address range.
 pub fn is_local_or_private_host(hostname: &str) -> bool {
@@ -152,6 +168,77 @@ fn strip_port(authority: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct ScopedEnvVar {
+        name: &'static str,
+        original: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(name: &'static str, value: &str) -> Self {
+            let original = env::var(name).ok();
+            // SAFETY: Environment mutation is process-global, so tests serialize
+            // access with ENV_LOCK and restore the original value in Drop.
+            unsafe {
+                env::set_var(name, value);
+            }
+            Self { name, original }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            // SAFETY: Environment mutation is serialized by ENV_LOCK for the
+            // lifetime of ScopedEnvVar, so restoration is scoped and ordered.
+            unsafe {
+                if let Some(value) = &self.original {
+                    env::set_var(self.name, value);
+                } else {
+                    env::remove_var(self.name);
+                }
+            }
+        }
+    }
+
+    // ---- search_beta_testing_enabled ----
+
+    #[test]
+    fn search_beta_testing_unset_is_disabled() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe {
+            env::remove_var("SEARCH_BETA_TESTING");
+        }
+        assert!(!search_beta_testing_enabled());
+    }
+
+    #[test]
+    fn search_beta_testing_accepts_1_and_true_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        for value in ["1", "true", "TRUE", "True"] {
+            let _var = ScopedEnvVar::set("SEARCH_BETA_TESTING", value);
+            assert!(
+                search_beta_testing_enabled(),
+                "expected {value:?} to enable"
+            );
+        }
+    }
+
+    #[test]
+    fn search_beta_testing_rejects_other_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        for value in ["0", "false", "yes", "", " "] {
+            let _var = ScopedEnvVar::set("SEARCH_BETA_TESTING", value);
+            assert!(
+                !search_beta_testing_enabled(),
+                "expected {value:?} to disable"
+            );
+        }
+    }
 
     // ---- is_local_or_private_host ----
 
