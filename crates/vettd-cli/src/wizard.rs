@@ -11,7 +11,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal,
 };
 
@@ -31,11 +31,30 @@ fn is_tty() -> bool {
     io::stdin().is_terminal()
 }
 
+/// Returns `true` if `ev` is a key-press event (not Release or Repeat).
+///
+/// crossterm 0.29 on Windows emits both Press and Release events for every
+/// physical key press (via `ReadConsoleInputW` bKeyDown records). We only
+/// want to act on Press; on Unix only Press events are delivered by default.
+fn is_key_press(ev: &Event) -> bool {
+    matches!(
+        ev,
+        Event::Key(KeyEvent {
+            kind: KeyEventKind::Press,
+            ..
+        })
+    )
+}
+
 fn read_key() -> String {
     loop {
-        if let Ok(Event::Key(KeyEvent {
+        let Ok(ev) = event::read() else { continue };
+        if !is_key_press(&ev) {
+            continue;
+        }
+        if let Event::Key(KeyEvent {
             code, modifiers, ..
-        })) = event::read()
+        }) = ev
         {
             if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
                 return "ctrl-c".to_string();
@@ -91,10 +110,15 @@ pub(crate) fn ask_secret(prompt: &str) -> String {
     let mut secret = String::new();
 
     loop {
-        match event::read() {
-            Ok(Event::Key(KeyEvent {
-                code, modifiers, ..
-            })) => match code {
+        let Ok(ev) = event::read() else { break };
+        if !is_key_press(&ev) {
+            continue;
+        }
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = ev
+        {
+            match code {
                 KeyCode::Enter => break,
                 KeyCode::Backspace => {
                     secret.pop();
@@ -109,9 +133,7 @@ pub(crate) fn ask_secret(prompt: &str) -> String {
                 }
                 KeyCode::Char(c) => secret.push(c),
                 _ => {}
-            },
-            Ok(_) => {}
-            Err(_) => break,
+            }
         }
     }
 
@@ -284,5 +306,70 @@ pub fn pick_scan() -> ScanSubcommand {
             }
         }
         _ => ScanSubcommand::Default { output },
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEventState, MouseButton};
+
+    fn press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    fn release(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    fn repeat(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    #[test]
+    fn press_event_is_recognised() {
+        assert!(is_key_press(&press(KeyCode::Enter)));
+        assert!(is_key_press(&press(KeyCode::Char('a'))));
+        assert!(is_key_press(&press(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn release_event_is_ignored() {
+        assert!(!is_key_press(&release(KeyCode::Enter)));
+        assert!(!is_key_press(&release(KeyCode::Char('a'))));
+        assert!(!is_key_press(&release(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn repeat_event_is_ignored() {
+        assert!(!is_key_press(&repeat(KeyCode::Char('a'))));
+    }
+
+    #[test]
+    fn non_key_event_is_ignored() {
+        let mouse = Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(!is_key_press(&mouse));
     }
 }
