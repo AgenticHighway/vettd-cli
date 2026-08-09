@@ -291,6 +291,12 @@ const SKILL_FIELDS: &[&str] = &[
     "severity",
     "label",
     "detail",
+    // DetectedSkillSource (issue #219)
+    "detectedSource",
+    "repoUrl",
+    "branch",
+    "path",
+    "remoteUrl",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -784,6 +790,7 @@ mod tests {
                         detail: Some("d".into()),
                     }]),
                 }]),
+                detected_source: None,
             }],
             mcp_servers: vec![McpServer {
                 id: "s1".into(),

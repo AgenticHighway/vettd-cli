@@ -2,7 +2,9 @@
 
 use crate::models::ArtifactReport;
 
-use super::helpers::{declared_tools, first_path, make_id, qualified_name, read_artifact_head};
+use super::helpers::{
+    declared_tools, detect_skill_source, first_path, make_id, qualified_name, read_artifact_head,
+};
 use super::mcp::build_command_string;
 use super::types::{
     Agent, ExternalScannerResult, Skill, SkillConsumer, SkillDependencies, SkillPermission,
@@ -46,6 +48,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let id = make_id(source_path, &artifact.artifact_hash);
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
+    let detected_source = detect_skill_source(source_path);
 
     let scanner_result = artifact
         .cached_scan_result
@@ -70,6 +73,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
         external_scanner_results: scanner_result.map(|r| vec![r]),
+        detected_source,
     }
 }
 
@@ -294,6 +298,7 @@ fn extract_mcp_command_skills(
             },
             consumers: find_skill_consumers(&skill_name, agents),
             external_scanner_results: None,
+            detected_source: None,
         });
     }
 }
@@ -335,6 +340,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         },
         consumers: find_skill_consumers(tool_name, agents),
         external_scanner_results: None,
+        detected_source: None,
     }
 }
 
