@@ -2,8 +2,8 @@
 
 use sha2::{Digest, Sha256};
 
+use super::types::DetectedSkillSource;
 use crate::models::ArtifactReport;
-
 pub fn first_path(a: &ArtifactReport) -> &str {
     a.metadata
         .get("paths")
@@ -75,19 +75,89 @@ pub fn detect_source_repo(file_path: &str) -> String {
     while let Some(d) = dir {
         let git_config = d.join(".git").join("config");
         if git_config.exists() {
-            if let Ok(content) = std::fs::read_to_string(&git_config) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("url = ") {
-                        let raw = trimmed.strip_prefix("url = ").unwrap_or("");
-                        return sanitize_git_remote_url(raw);
-                    }
-                }
+            if let Some(raw) = read_remote_url(&git_config) {
+                return sanitize_git_remote_url(&raw);
             }
         }
         dir = d.parent();
     }
     "unknown".to_string()
+}
+
+/// Detect a candidate source for a skill by walking up from its path to find
+/// an enclosing git working tree, then extracting the remote URL, current
+/// branch, and the skill's path relative to the repo root.
+///
+/// Local-only, informational detection — see [`DetectedSkillSource`]'s doc
+/// comment for why this must never be treated as verified. Returns `None`
+/// when no usable git remote is found, so `Skill.detected_source` is omitted
+/// entirely rather than set to a placeholder.
+pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
+    let raw_path = std::path::Path::new(skill_path);
+    // Skills are often reported by their SKILL.md file path; detection
+    // should walk from the skill's directory, not treat the file as a root.
+    let start = if raw_path.is_file() {
+        raw_path.parent()?
+    } else {
+        raw_path
+    };
+
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let git_dir = d.join(".git");
+        if git_dir.is_dir() {
+            let raw_remote = read_remote_url(&git_dir.join("config"))?;
+            let sanitized = sanitize_git_remote_url(&raw_remote);
+            if sanitized == "unknown" {
+                return None;
+            }
+
+            let relative_path = start
+                .strip_prefix(d)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+
+            return Some(if is_github_remote(&sanitized) {
+                DetectedSkillSource::GitHub {
+                    repo_url: sanitized,
+                    branch: read_current_branch(&git_dir).unwrap_or_else(|| "main".to_string()),
+                    path: relative_path,
+                }
+            } else {
+                DetectedSkillSource::UnsupportedRemote {
+                    remote_url: sanitized,
+                }
+            });
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Extract the raw (unsanitized) `url = ` line from a `.git/config` file.
+fn read_remote_url(git_config: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(git_config).ok()?;
+    for line in content.lines() {
+        if let Some(raw) = line.trim().strip_prefix("url = ") {
+            return Some(raw.to_string());
+        }
+    }
+    None
+}
+
+fn is_github_remote(sanitized_url: &str) -> bool {
+    sanitized_url.contains("github.com")
+}
+
+/// Read the current branch name from `.git/HEAD`. Returns `None` for a
+/// detached HEAD (bare commit SHA) rather than fabricating a branch name;
+/// callers fall back to a sensible default.
+fn read_current_branch(git_dir: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    content
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(|s| s.to_string())
 }
 
 /// Strip credentials and normalize a raw Git remote URL so it is safe to include
@@ -468,5 +538,123 @@ mod tests {
             sanitize_git_remote_url("https://github.com/org/repo@v2.git"),
             "https://github.com/org/repo@v2.git"
         );
+    }
+
+    fn write_git_remote(repo_dir: &std::path::Path, url: &str) {
+        let git_dir = repo_dir.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            format!("[remote \"origin\"]\n\turl = {url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"),
+        )
+        .unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    #[test]
+    fn detect_skill_source_github_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let skill_dir = dir.path().join("skills").join("foo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let result = detect_skill_source(skill_dir.to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub {
+                repo_url,
+                branch,
+                path,
+            }) => {
+                assert_eq!(repo_url, "https://github.com/acme/skills-repo.git");
+                assert_eq!(branch, "main");
+                assert_eq!(path, "skills/foo");
+            }
+            other => panic!("expected GitHub variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_skill_source_from_skill_md_file_path() {
+        // Detection should walk from the skill's directory even when given
+        // the SKILL.md file path directly, not the directory.
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let skill_dir = dir.path().join("skills").join("foo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_md, "# foo").unwrap();
+
+        let result = detect_skill_source(skill_md.to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub { path, .. }) => {
+                assert_eq!(path, "skills/foo");
+            }
+            other => panic!("expected GitHub variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_skill_source_non_github_remote_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://gitlab.com/acme/skills-repo.git");
+        let skill_dir = dir.path().join("skills").join("foo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let result = detect_skill_source(skill_dir.to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::UnsupportedRemote { remote_url }) => {
+                assert_eq!(remote_url, "https://gitlab.com/acme/skills-repo.git");
+            }
+            other => panic!("expected UnsupportedRemote variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_skill_source_no_git_repo_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills").join("foo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        assert!(detect_skill_source(skill_dir.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn detect_skill_source_detached_head_falls_back_to_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/repo.git\n",
+        )
+        .unwrap();
+        // Detached HEAD: a bare SHA, no "ref:" prefix.
+        std::fs::write(git_dir.join("HEAD"), "a1b2c3d4e5f6\n").unwrap();
+
+        let result = detect_skill_source(dir.path().to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub { branch, .. }) => {
+                assert_eq!(branch, "main");
+            }
+            other => panic!("expected GitHub variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_skill_source_credentials_are_sanitized() {
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(
+            dir.path(),
+            "https://user:s3cr3t@github.com/acme/skills-repo.git",
+        );
+
+        let result = detect_skill_source(dir.path().to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub { repo_url, .. }) => {
+                assert!(!repo_url.contains("s3cr3t"));
+                assert_eq!(repo_url, "https://github.com/acme/skills-repo.git");
+            }
+            other => panic!("expected GitHub variant, got {other:?}"),
+        }
     }
 }

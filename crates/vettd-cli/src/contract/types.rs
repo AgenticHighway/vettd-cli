@@ -78,6 +78,18 @@ pub struct InjectionSurface {
 // ═══════════════════════════════════════════════════════════════════════════
 // skills
 // ═══════════════════════════════════════════════════════════════════════════
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum DetectedSkillSource {
+    #[serde(rename_all = "camelCase")]
+    GitHub {
+        repo_url: String,
+        branch: String,
+        path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    UnsupportedRemote { remote_url: String },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +107,8 @@ pub struct Skill {
     pub consumers: Vec<SkillConsumer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_scanner_results: Option<Vec<ExternalScannerResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_source: Option<DetectedSkillSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
