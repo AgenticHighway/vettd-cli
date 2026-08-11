@@ -23,4 +23,6 @@ results.json
 
 .local/
 .opencode/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/settings.json
