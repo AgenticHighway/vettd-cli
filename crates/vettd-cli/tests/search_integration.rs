@@ -62,10 +62,9 @@ fn directory_response_basic() -> Value {
     })
 }
 
-/// What the exact same CLI call prints to stdout for `directory_response_basic()`:
-/// allow-listed fields only. `language`/`agentCompatibility`/`rankings` are
-/// skipped entirely (not even `null`) since the server didn't send them —
-/// `--json` output must be byte-identical to the pre-beta shape.
+/// What the exact same CLI call prints to stdout for `directory_response_basic()`.
+/// `freshness` is omitted entirely (not even `null`) since the server didn't
+/// send it — `--json` output must be byte-identical to the pre-slice shape.
 fn expected_directory_output_basic() -> Value {
     json!({
         "skills": [{
@@ -118,8 +117,9 @@ fn directory_response_beta() -> Value {
 }
 
 /// What the exact same CLI call prints to stdout for `directory_response_beta()`:
-/// allow-listed fields only (`internalRiskScore` dropped), everything else
-/// forwarded as-is.
+/// allow-listed fields plus `language`/`agentCompatibility`/`rankings` from
+/// the beta response, `internalRiskScore` dropped. `freshness` is omitted
+/// since the server didn't send it.
 fn expected_directory_output_beta() -> Value {
     json!({
         "skills": [{
