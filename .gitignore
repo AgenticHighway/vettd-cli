@@ -1,4 +1,5 @@
 target/
+.cargo/
 **/*.rs.bk
 *.pdb
 .env

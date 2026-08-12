@@ -17,6 +17,20 @@ use crate::submit::{save_auth_config, AuthConfig, SaveOutcome, DEFAULT_PRODUCTIO
 // CLI argument definitions
 // ---------------------------------------------------------------------------
 
+/// Build the two-line version string at runtime.
+///
+/// `vettd_skill_scanner::VERSION` is a `pub const`, not a string literal, so
+/// it cannot be used in `concat!()` inside a `#[command(...)]` attribute (only
+/// literals are accepted there). This function constructs the string at runtime
+/// and is used by the manual `--version` handler in `main.rs`.
+pub fn long_version_string() -> String {
+    format!(
+        "vettd {}\nskill-scanner {}",
+        env!("CARGO_PKG_VERSION"),
+        vettd_skill_scanner::VERSION
+    )
+}
+
 #[derive(Parser)]
 #[command(
     name = "vettd",

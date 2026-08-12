@@ -139,7 +139,4 @@ For broader CLI smoke coverage, run:
 - Machine-readable output belongs on stdout.
 - Human-oriented logs and progress output belong on stderr.
 - Update public docs when behavior or CLI flows change.
-- **Known gotcha:** `parity_adapter.rs` and `parity/` are a testing tool only
-  (cross-language Rust-vs-TS output parity checks). They are not a production
-  integration path — do not treat this subprocess/JSON boundary as how any
-  real consumer (vettd-cli, the scanner suite) talks to a scanner in prod.
+- `vettd-skill-scanner` is a pinned Cargo git dependency (by tag), not an in-tree crate. Scanner logic changes belong in AgenticHighway/vettd-skill-scanner; vettd-cli only edits the pinned tag. To co-develop locally against a local scanner checkout without creating a new upstream tag, use a `[patch."https://github.com/AgenticHighway/vettd-skill-scanner"]` entry pointing at the local path in an uncommitted `.cargo/config.toml` (see CONTRIBUTING.md "Updating vettd-skill-scanner"). The existing "Known gotcha" about `parity_adapter.rs` / `parity/` no longer applies (they were deleted); do not reference those files.
