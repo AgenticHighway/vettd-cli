@@ -2321,7 +2321,8 @@ dependencies = [
 
 [[package]]
 name = "vettd-skill-scanner"
-version = "0.9.2"
+version = "0.1.4"
+source = "git+https://github.com/AgenticHighway/vettd-skill-scanner?tag=v0.1.4#7b389d72c0b418903fb6c955c9f869ea9e80f0a4"
 dependencies = [
  "base64",
  "regex",
