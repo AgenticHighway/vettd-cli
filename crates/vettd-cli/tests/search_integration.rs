@@ -101,7 +101,7 @@ fn directory_response_beta() -> Value {
             "sourceType": "github",
             "scannerRunCount": 12,
             "internalRiskScore": 0.02,
-            "language": "python",
+            "docLanguage": "python",
             "agentCompatibility": ["claude-code", "cursor"],
             "rankings": {
                 "stars": 812,
@@ -112,13 +112,15 @@ fn directory_response_beta() -> Value {
         }],
         "total": 1,
         "page": 1,
-        "totalPages": 1
+        "totalPages": 1,
+        "mock": false
     })
 }
 
 /// What the exact same CLI call prints to stdout for `directory_response_beta()`:
-/// allow-listed fields only (`internalRiskScore` dropped), everything else
-/// forwarded as-is.
+/// allow-listed fields only (`internalRiskScore` dropped), the server's
+/// `docLanguage` surfaced under the CLI's own `language` key, everything
+/// else forwarded as-is.
 fn expected_directory_output_beta() -> Value {
     json!({
         "skills": [{
@@ -143,7 +145,8 @@ fn expected_directory_output_beta() -> Value {
         }],
         "total": 1,
         "page": 1,
-        "totalPages": 1
+        "totalPages": 1,
+        "mock": false
     })
 }
 

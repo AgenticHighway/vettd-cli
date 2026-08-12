@@ -48,6 +48,11 @@ pub struct DirectoryListResponse {
     pub total: u32,
     pub page: u32,
     pub total_pages: u32,
+    /// Set on `SEARCH_BETA_TESTING` search responses to flag mock vs. real
+    /// data (`SEARCH_BETA_MOCK_DATA` on the server). Skipped on serialize
+    /// when absent, matching `language` below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -66,7 +71,11 @@ pub struct DirectoryCard {
     /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
     /// serialize when absent, so `--json` output is byte-identical to the
     /// pre-beta shape unless the server actually sent this field.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// The server field is `docLanguage` (named that way deliberately to
+    /// avoid implying a programming language — see openapi.ts). The alias
+    /// keeps accepting the older `language` key too.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "docLanguage")]
     pub language: Option<String>,
     /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
     /// serialize when absent — see `language` above.
