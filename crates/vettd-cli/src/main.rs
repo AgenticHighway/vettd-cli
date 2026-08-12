@@ -11,6 +11,7 @@ mod detectors;
 mod directory;
 mod discovery;
 mod formatters;
+mod freshness;
 mod identity;
 mod inventory;
 mod inventory_client;

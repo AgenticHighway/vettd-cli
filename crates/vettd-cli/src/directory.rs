@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::freshness::{self, PublicFreshness};
 use crate::read_client::{self, ReadError};
 
 // ── ANSI helpers (mirrors formatters.rs palette) ──────────────────────────
@@ -76,6 +77,14 @@ pub struct DirectoryCard {
     /// serialize when absent — see `language` above.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rankings: Option<SkillRankings>,
+    /// Slice 2 freshness field (public directory only). `None` when no
+    /// freshness row exists on the server (asset never verified against
+    /// upstream). Omitted on serialize when absent (`skip_serializing_if`) so
+    /// the JSON shape stays identical to the pre-slice output — no synthesized
+    /// `freshness: null`. Forward-compatible: unknown fields on the wire are
+    /// silently dropped. Inventory reuses this struct unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<PublicFreshness>,
 }
 
 /// External ranking signals for a skill — used both as the `--rankings`
@@ -110,6 +119,13 @@ pub struct DirectorySkillDetail {
     pub completed_at: Option<String>,
     pub findings: Vec<DirectoryFinding>,
     pub scanner_runs: Vec<ScannerRun>,
+    /// Slice 2 freshness field (public directory view only). `None` when no
+    /// freshness row exists on the server. Omitted on serialize when absent
+    /// (`skip_serializing_if`) so JSON shape stays lossless: fields received
+    /// are forwarded, synthesized `freshness: null` is not added when the
+    /// server omitted the field. Inventory view/compare reuse this unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<PublicFreshness>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -321,7 +337,7 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
                 );
             } else {
-                print_cards(&resp.skills);
+                print_cards(&resp.skills, true);
                 let shown = resp.skills.len();
                 if resp.page < resp.total_pages {
                     println!(
@@ -441,7 +457,7 @@ pub fn handle_search(
             } else if resp.skills.is_empty() {
                 println!("No results for \"{}\".", query);
             } else {
-                print_cards(&resp.skills);
+                print_cards(&resp.skills, true);
                 let shown = resp.skills.len();
                 if resp.page < resp.total_pages {
                     println!(
@@ -579,6 +595,10 @@ pub fn handle_view(slug: &str, json: bool) {
             .as_deref()
             .unwrap_or("—")
     );
+    // Slice 2 freshness detail.
+    for line in freshness::fmt_freshness_detail(&detail.freshness.as_ref()) {
+        println!("  {line}");
+    }
     println!();
     println!("  {DIM}Run `vettd directory findings {display_slug}` to see finding details.{RESET}");
 }
@@ -814,6 +834,64 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
         col(&files_a),
         col(&files_b)
     );
+
+    // Slice 2 freshness rows. The status line always uses colored compact
+    // labels; subsequent timestamp/hash rows are symmetric — each row is
+    // emitted when EITHER side has a value, with `—` for the missing side
+    // (see `freshness::compare_row`). Hashes are abbreviated only here, for
+    // column fit; the JSON output retains full hashes.
+    let fa = detail_a.freshness.as_ref();
+    let fb = detail_b.freshness.as_ref();
+    let status_a = freshness::fmt_freshness_colored(&fa);
+    let status_b = freshness::fmt_freshness_colored(&fb);
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
+        "Freshness:",
+        truncate_to_display(&status_a, val_w),
+        truncate_to_display(&status_b, val_w)
+    );
+
+    let mut freshness_rows: Vec<(&str, Option<String>, Option<String>)> = Vec::new();
+    freshness_rows.push((
+        "Checked:",
+        fa.and_then(|f| f.last_checked_at.clone()),
+        fb.and_then(|f| f.last_checked_at.clone()),
+    ));
+    freshness_rows.push((
+        "Verified:",
+        fa.and_then(|f| f.last_verified_at.clone()),
+        fb.and_then(|f| f.last_verified_at.clone()),
+    ));
+    freshness_rows.push((
+        "Last change:",
+        fa.and_then(|f| f.last_change_detected_at.clone()),
+        fb.and_then(|f| f.last_change_detected_at.clone()),
+    ));
+    freshness_rows.push((
+        "Scanned hash:",
+        fa.and_then(|f| f.scanned_hash.as_deref())
+            .map(freshness::abbrev_hash),
+        fb.and_then(|f| f.scanned_hash.as_deref())
+            .map(freshness::abbrev_hash),
+    ));
+    freshness_rows.push((
+        "Upstream:",
+        fa.and_then(|f| f.latest_upstream_hash.as_deref())
+            .map(freshness::abbrev_hash),
+        fb.and_then(|f| f.latest_upstream_hash.as_deref())
+            .map(freshness::abbrev_hash),
+    ));
+
+    for (label, left, right) in freshness_rows {
+        if let Some((l, r)) = freshness::compare_row(left, right) {
+            println!(
+                "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
+                label,
+                truncate_to_display(&l, val_w),
+                truncate_to_display(&r, val_w)
+            );
+        }
+    }
 }
 
 pub fn handle_trending() {
@@ -824,7 +902,7 @@ pub fn handle_trending() {
                 "Trending by downloads ({} skills, page {}/{}):",
                 resp.total, resp.page, resp.total_pages
             );
-            print_cards(&resp.skills);
+            print_cards(&resp.skills, true);
         }
         Err(ReadError::Unreachable(msg)) => {
             eprintln!("Error: could not reach the vettd directory: {msg}");
@@ -856,7 +934,7 @@ pub fn handle_random(json: bool) {
                 );
             } else {
                 match resp.skill {
-                    Some(card) => print_cards(std::slice::from_ref(&card)),
+                    Some(card) => print_cards(std::slice::from_ref(&card), true),
                     None => println!("No public skills available."),
                 }
             }
@@ -878,9 +956,13 @@ pub fn handle_random(json: bool) {
 
 /// Print a slice of cards as a padded, single-line-per-card table with a header.
 ///
+/// `show_freshness` controls whether the slice-2 freshness column is rendered.
+/// Directory calls pass `true`; inventory reuses this renderer with `false` so
+/// authenticated inventory output is byte-identical to its pre-freshness shape.
+///
 /// Slug column width is computed from the batch so all rows align. Description
 /// is truncated to fit the remaining terminal width.
-pub(crate) fn print_cards(cards: &[DirectoryCard]) {
+pub(crate) fn print_cards(cards: &[DirectoryCard], show_freshness: bool) {
     let slug_w = cards
         .iter()
         .map(|c| c.slug.as_deref().unwrap_or(&c.name).len())
@@ -888,22 +970,34 @@ pub(crate) fn print_cards(cards: &[DirectoryCard]) {
         .unwrap_or(0);
     let term_w = terminal_width();
 
-    println!(
-        "{BOLD}{:<6}  {:<w$}  {:<10}  {:<12}  description{RESET}",
-        "rating",
-        "name",
-        "source",
-        "scanned by",
-        w = slug_w,
-    );
+    if show_freshness {
+        println!(
+            "{BOLD}{:<6}{:<6} {:<w$}  {:<10}  {:<12}  description{RESET}",
+            "rating",
+            "fresh.",
+            "name",
+            "source",
+            "scanned by",
+            w = slug_w,
+        );
+    } else {
+        println!(
+            "{BOLD}{:<6}  {:<w$}  {:<10}  {:<12}  description{RESET}",
+            "rating",
+            "name",
+            "source",
+            "scanned by",
+            w = slug_w,
+        );
+    }
     println!("{DIM}{}{RESET}", "─".repeat(term_w.saturating_sub(5)));
 
     for card in cards {
-        print_card_row(card, slug_w, term_w);
+        print_card_row(card, slug_w, term_w, show_freshness);
     }
 }
 
-fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize) {
+fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_freshness: bool) {
     let grade = card.overall_grade.as_deref().unwrap_or("?");
     let gc = grade_color(grade);
     // Grade badge visual text (no ANSI) — always 3 chars like "[A]"
@@ -926,10 +1020,22 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize) {
     let desc = card.description.as_deref().unwrap_or("");
 
     // Compute desc budget from visual widths (ANSI codes are invisible).
-    let visual_prefix_w = 6 + 2 + slug_w + 2 + 10 + 2 + 12 + 2;
+    // Width depends on whether the freshness column is present.
+    let freshness_col_w = if show_freshness { 6 + 2 } else { 0 };
+    let visual_prefix_w = 6 + 2 + freshness_col_w + slug_w + 2 + 10 + 2 + 12 + 2;
     let desc_budget = term_w.saturating_sub(visual_prefix_w).saturating_sub(5);
     let desc_display = truncate_to_display(desc, desc_budget);
-    println!("{grade_display}  {slug_padded}  {asset_type:<10}  {scanners:<12}  {DIM}{desc_display}{RESET}");
+
+    if show_freshness {
+        let freshness_label = freshness::fmt_freshness_colored(&card.freshness.as_ref());
+        println!(
+            "{grade_display}  {freshness_label}  {slug_padded}  {asset_type:<10}  {scanners:<12}  {DIM}{desc_display}{RESET}"
+        );
+    } else {
+        println!(
+            "{grade_display}  {slug_padded}  {asset_type:<10}  {scanners:<12}  {DIM}{desc_display}{RESET}"
+        );
+    }
 }
 
 /// Read terminal width from `$COLUMNS`, falling back to 120.
@@ -1076,5 +1182,90 @@ mod tests {
         assert!(s.contains("2 high"));
         assert!(s.contains("3 info"));
         assert!(!s.contains("medium"));
+    }
+
+    /// A minimal `DirectoryCard` with a name and a freshness field.
+    fn card_with_freshness(freshness: Option<PublicFreshness>) -> DirectoryCard {
+        DirectoryCard {
+            slug: Some("pdf-summarizer".into()),
+            name: "PDF Summarizer".into(),
+            description: None,
+            version: None,
+            author: None,
+            category: None,
+            badge_status: None,
+            overall_grade: None,
+            source_type: None,
+            scanner_run_count: None,
+            language: None,
+            agent_compatibility: None,
+            rankings: None,
+            freshness,
+        }
+    }
+
+    #[test]
+    fn directory_card_json_omits_freshness_when_absent() {
+        // Inventory reuses this struct. When the server sends no freshness
+        // row, `--json` output must NOT synthesize `freshness: null` — it must
+        // be byte-identical to the pre-slice shape.
+        let card = card_with_freshness(None);
+        let val: serde_json::Value = serde_json::to_value(&card).unwrap();
+        assert!(
+            val.get("freshness").is_none(),
+            "absent freshness must be omitted, not null: {}",
+            val
+        );
+    }
+
+    #[test]
+    fn directory_card_json_forwards_freshness_when_present() {
+        // Directory (public) responses that DO carry freshness must forward it
+        // losslessly.
+        let card = card_with_freshness(Some(PublicFreshness {
+            status: "changed".into(),
+            reason: None,
+            retryable: false,
+            renamed_to: None,
+            last_checked_at: None,
+            last_verified_at: None,
+            last_change_detected_at: None,
+            scanned_hash: None,
+            latest_upstream_hash: None,
+        }));
+        let val: serde_json::Value = serde_json::to_value(&card).unwrap();
+        assert_eq!(val["freshness"]["status"], "changed");
+    }
+
+    #[test]
+    fn directory_detail_json_omits_freshness_when_absent() {
+        let detail = DirectorySkillDetail {
+            slug: None,
+            name: "PDF Summarizer".into(),
+            description: None,
+            version: None,
+            author: None,
+            category: None,
+            overall_grade: None,
+            license: None,
+            source_type: None,
+            source_url: None,
+            has_skill_md: None,
+            has_scripts: None,
+            has_evals: None,
+            file_count: None,
+            completed_at: None,
+            findings: vec![],
+            scanner_runs: vec![],
+            freshness: None,
+        };
+        let val: serde_json::Value = serde_json::to_value(&detail).unwrap();
+        // Inventory view/compare reuse this struct — absent freshness must be
+        // omitted, preserving the pre-slice JSON shape.
+        assert!(
+            val.get("freshness").is_none(),
+            "absent freshness must be omitted from detail JSON: {}",
+            val
+        );
     }
 }
