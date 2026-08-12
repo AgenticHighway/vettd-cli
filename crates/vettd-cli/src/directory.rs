@@ -840,15 +840,17 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     // emitted when EITHER side has a value, with `—` for the missing side
     // (see `freshness::compare_row`). Hashes are abbreviated only here, for
     // column fit; the JSON output retains full hashes.
+    //
+    // The status cell is colored, so it must be padded to `val_w` by VISIBLE
+    // width (ANSI bytes are invisible) to keep the right-hand column aligned
+    // with the rest of compare, which pads plain text via `{:<val_w$}`.
     let fa = detail_a.freshness.as_ref();
     let fb = detail_b.freshness.as_ref();
-    let status_a = freshness::fmt_freshness_colored(&fa);
-    let status_b = freshness::fmt_freshness_colored(&fb);
+    let status_a = pad_to_visible(&freshness::fmt_freshness_colored(&fa), val_w);
+    let status_b = pad_to_visible(&freshness::fmt_freshness_colored(&fb), val_w);
     println!(
-        "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
-        "Freshness:",
-        truncate_to_display(&status_a, val_w),
-        truncate_to_display(&status_b, val_w)
+        "  {DIM}{:<label_w$}{RESET}  {}  {}",
+        "Freshness:", status_a, status_b
     );
 
     let mut freshness_rows: Vec<(&str, Option<String>, Option<String>)> = Vec::new();
@@ -954,6 +956,18 @@ pub fn handle_random(json: bool) {
 // Card display helpers
 // ---------------------------------------------------------------------------
 
+/// Fixed visible width of the rating column in the directory table.
+const RATING_COL_W: usize = 6;
+/// Fixed visible width of the slice-2 freshness column. Anchored to the widest
+/// compact label (`[offline]` = 9 chars) so the name column never shifts.
+const FRESH_COL_W: usize = 9;
+/// Fixed visible width of the source column.
+const SOURCE_COL_W: usize = 10;
+/// Fixed visible width of the "scanned by" column.
+const SCANNED_COL_W: usize = 12;
+/// Separator width between table columns (two spaces).
+const COL_GAP: usize = 2;
+
 /// Print a slice of cards as a padded, single-line-per-card table with a header.
 ///
 /// `show_freshness` controls whether the slice-2 freshness column is rendered.
@@ -972,22 +986,29 @@ pub(crate) fn print_cards(cards: &[DirectoryCard], show_freshness: bool) {
 
     if show_freshness {
         println!(
-            "{BOLD}{:<6}{:<6} {:<w$}  {:<10}  {:<12}  description{RESET}",
+            "{BOLD}{:<rating$}  {:<fresh$}  {:<w$}  {:<src$}  {:<scan$}  description{RESET}",
             "rating",
             "fresh.",
             "name",
             "source",
             "scanned by",
+            rating = RATING_COL_W,
+            fresh = FRESH_COL_W,
             w = slug_w,
+            src = SOURCE_COL_W,
+            scan = SCANNED_COL_W,
         );
     } else {
         println!(
-            "{BOLD}{:<6}  {:<w$}  {:<10}  {:<12}  description{RESET}",
+            "{BOLD}{:<rating$}  {:<w$}  {:<src$}  {:<scan$}  description{RESET}",
             "rating",
             "name",
             "source",
             "scanned by",
+            rating = RATING_COL_W,
             w = slug_w,
+            src = SOURCE_COL_W,
+            scan = SCANNED_COL_W,
         );
     }
     println!("{DIM}{}{RESET}", "─".repeat(term_w.saturating_sub(5)));
@@ -1021,19 +1042,38 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_fresh
 
     // Compute desc budget from visual widths (ANSI codes are invisible).
     // Width depends on whether the freshness column is present.
-    let freshness_col_w = if show_freshness { 6 + 2 } else { 0 };
-    let visual_prefix_w = 6 + 2 + freshness_col_w + slug_w + 2 + 10 + 2 + 12 + 2;
+    let freshness_col_w = if show_freshness {
+        FRESH_COL_W + COL_GAP
+    } else {
+        0
+    };
+    let visual_prefix_w = RATING_COL_W
+        + COL_GAP
+        + freshness_col_w
+        + slug_w
+        + COL_GAP
+        + SOURCE_COL_W
+        + COL_GAP
+        + SCANNED_COL_W
+        + COL_GAP;
     let desc_budget = term_w.saturating_sub(visual_prefix_w).saturating_sub(5);
     let desc_display = truncate_to_display(desc, desc_budget);
 
     if show_freshness {
-        let freshness_label = freshness::fmt_freshness_colored(&card.freshness.as_ref());
+        let freshness_display = pad_to_visible(
+            &freshness::fmt_freshness_colored(&card.freshness.as_ref()),
+            FRESH_COL_W,
+        );
         println!(
-            "{grade_display}  {freshness_label}  {slug_padded}  {asset_type:<10}  {scanners:<12}  {DIM}{desc_display}{RESET}"
+            "{grade_display}  {freshness_display}  {slug_padded}  {asset_type:<src$}  {scanners:<scan$}  {DIM}{desc_display}{RESET}",
+            src = SOURCE_COL_W,
+            scan = SCANNED_COL_W,
         );
     } else {
         println!(
-            "{grade_display}  {slug_padded}  {asset_type:<10}  {scanners:<12}  {DIM}{desc_display}{RESET}"
+            "{grade_display}  {slug_padded}  {asset_type:<src$}  {scanners:<scan$}  {DIM}{desc_display}{RESET}",
+            src = SOURCE_COL_W,
+            scan = SCANNED_COL_W,
         );
     }
 }
@@ -1047,6 +1087,10 @@ fn terminal_width() -> usize {
 }
 
 /// Truncate a string to at most `max` display characters, appending `…` if cut.
+///
+/// This counts raw characters and so MUST only be given visible text (no ANSI
+/// escape sequences) — pass the plain portion of a colored cell, never the
+/// colored string itself (see `pad_to_visible` for ANSI-aware padding).
 pub(crate) fn truncate_to_display(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -1059,6 +1103,48 @@ pub(crate) fn truncate_to_display(s: &str, max: usize) -> String {
         // String fit within max — return without the ellipsis slot we reserved.
         s.to_string()
     }
+}
+
+/// Strip ANSI escape sequences (CSI `ESC [ … ]` blocks) from `s`, returning
+/// only the visible text. Used to compute display widths of colored cells.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // CSI sequence: consume `[ … ]` through the final byte in @–~.
+            // Any other lone escape is dropped wholesale.
+            if chars.next() == Some('[') {
+                for n in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&n) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Number of visible characters in `s` once ANSI escape codes are removed.
+fn visible_width(s: &str) -> usize {
+    strip_ansi(s).chars().count()
+}
+
+/// Pad `s` on the right with plain spaces to `width` visible columns, ignoring
+/// ANSI escape sequences in the width calculation.
+///
+/// Keeps colored cells (which carry invisible ANSI bytes) aligned with the
+/// plain-text cells that other table/compare columns pad via `{:<width$}`.
+/// Returns `s` unchanged if it is already at or wider than `width`.
+fn pad_to_visible(s: &str, width: usize) -> String {
+    let cur = visible_width(s);
+    if cur >= width {
+        return s.to_string();
+    }
+    format!("{s}{}", " ".repeat(width - cur))
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,5 +1353,103 @@ mod tests {
             "absent freshness must be omitted from detail JSON: {}",
             val
         );
+    }
+
+    // ── ANSI-aware width helpers ──────────────────────────────────────
+
+    #[test]
+    fn visible_width_ignores_ansi_escape_sequences() {
+        // A colored cell's visible width must exclude the ESC[..m codes, or
+        // the table columns would misalign.
+        let colored = "\x1b[32m[ok]\x1b[0m";
+        assert_eq!(visible_width(colored), 4);
+        assert_eq!(colored.len(), 13, "raw length is polluted by ANSI bytes");
+    }
+
+    #[test]
+    fn pad_to_visible_pads_to_visible_width_not_raw_len() {
+        // `[offline]` is 9 visible chars (== FRESH_COL_W), filling the column
+        // exactly; colored it carries ~9 extra ANSI bytes. Padding must add
+        // ZERO spaces despite the raw byte length being far larger than the
+        // target — the count is by VISIBLE width, not raw bytes.
+        let colored = "\x1b[31m[offline]\x1b[0m";
+        assert_eq!(visible_width(colored), FRESH_COL_W);
+        assert_eq!(pad_to_visible(colored, FRESH_COL_W), colored);
+
+        // `[ok]` is 4 visible chars — pad to 9 visible (5 trailing spaces).
+        let colored_ok = "\x1b[32m[ok]\x1b[0m";
+        let padded_ok = pad_to_visible(colored_ok, FRESH_COL_W);
+        assert_eq!(visible_width(&padded_ok), FRESH_COL_W);
+        assert!(
+            padded_ok.ends_with("     "),
+            "expected 5 trailing spaces, got: {:?}",
+            padded_ok
+        );
+    }
+
+    #[test]
+    fn pad_to_visible_does_not_shrink_wide_content() {
+        // When content already exceeds the target, it's returned unchanged —
+        // the caller truncates separately (`truncate_to_display` on visible text).
+        let long = "abcdefghijkl"; // 12 visible chars
+        assert_eq!(pad_to_visible(long, FRESH_COL_W), long);
+    }
+
+    #[test]
+    fn freshness_rows_align_name_column_across_statuses() {
+        // The whole point of the fixed freshness column: a colored `[ok]` and
+        // colored `[offline]` row must place the slug at the SAME column so the
+        // name/description column is stable regardless of freshness label.
+        // We reproduce the layout prefix used by `print_card_row`.
+        let grade = "[A]";
+        let grade_pad = " ".repeat(RATING_COL_W - grade.len());
+        let cases = [
+            "\x1b[32m[ok]\x1b[0m",
+            "\x1b[31m[offline]\x1b[0m",
+            "\x1b[2m[? ]\x1b[0m",
+        ];
+        let mut slug_cols = Vec::new();
+        for c in cases {
+            let fresh = pad_to_visible(c, FRESH_COL_W);
+            let prefix = format!("{grade}{grade_pad}  {fresh}  ");
+            slug_cols.push(visible_width(&prefix));
+        }
+        assert_eq!(
+            slug_cols[0], slug_cols[1],
+            "[ok] and [offline] rows must put slug at same column"
+        );
+        assert_eq!(
+            slug_cols[1], slug_cols[2],
+            "[offline] and [? ] rows must put slug at same column"
+        );
+    }
+
+    #[test]
+    fn describe_distinct_freshness_labels() {
+        // Sanity: the compact status labels are all distinct and ≤ the fixed
+        // column width, so no freshness cell overflows into the name column.
+        let fresh = |status: &str| {
+            crate::freshness::fmt_freshness_compact(&Some(&crate::freshness::PublicFreshness {
+                status: status.into(),
+                reason: None,
+                retryable: false,
+                renamed_to: None,
+                last_checked_at: None,
+                last_verified_at: None,
+                last_change_detected_at: None,
+                scanned_hash: None,
+                latest_upstream_hash: None,
+            }))
+        };
+        let labels = [
+            fresh("verified_unchanged"),
+            fresh("changed"),
+            fresh("unreachable"),
+            fresh("check_failed"),
+        ];
+        for l in &labels {
+            assert!(l.len() <= FRESH_COL_W, "{l} exceeds fresh column width");
+        }
+        assert!(labels.windows(2).all(|w| w[0] != w[1]));
     }
 }

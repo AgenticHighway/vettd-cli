@@ -89,14 +89,16 @@ pub fn fmt_freshness_colored(dto: &Option<&PublicFreshness>) -> String {
 /// Lines:
 ///  1. Freshness status (colored)
 ///  2. Reason (if any)
-///  3. Retryable (if set — lets the user know a failed check can be retried)
-///  4. Renamed → X (if any)
-///  5. Timestamps (last checked / last verified / last change)
-///  6. Hashes (scanned / upstream) — never abbreviated here (lossless)
+///  3. Renamed → X (if any)
+///  4. Timestamps (last checked / last verified / last change)
+///  5. Hashes (scanned / upstream) — never abbreviated here (lossless)
 ///
 /// Empty sections are omitted so unchanged assets don't show a blank block.
 /// When no freshness row exists at all (`None`), an explicit "unknown" line is
 /// still rendered — missing data must never be silently mistaken for current.
+///
+/// Note: the `retryable` flag is deliberately NOT rendered as a line — the
+/// user explicitly does not want the "Retryable:" detail emitted.
 pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>) -> Vec<String> {
     let reset = "\x1b[0m";
     let dim = "\x1b[2m";
@@ -140,13 +142,6 @@ pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>) -> Vec<String> {
     if let Some(ts) = d.last_change_detected_at.as_deref() {
         lines.push(format!("{dim}Last change:{reset} {ts}"));
     }
-
-    // Retryable — always present so a check_failed/unreachable state is
-    // actionable for the user (tells them whether re-checking is possible).
-    lines.push(format!(
-        "{dim}Retryable:{reset} {}",
-        if d.retryable { "yes" } else { "no" }
-    ));
 
     // Hashes — full values (no abbreviation here; callers abbreviate if they
     // need to fit a compare column).
@@ -515,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_renders_reason_and_retryable_for_check_failed() {
+    fn detail_renders_reason_but_omits_retryable_for_check_failed() {
         let f = PublicFreshness {
             status: "check_failed".into(),
             reason: Some("upstream timed out".into()),
@@ -529,7 +524,7 @@ mod tests {
         };
         let lines = fmt_freshness_detail(&Some(&f));
         let text: String = lines.join("\n");
-        // check_failed is non-current (unknown), reason and retryable preserved.
+        // check_failed is non-current (unknown), reason preserved.
         assert!(text.contains("[unknown]"), "got: {text}");
         assert!(
             !text.contains("[current]"),
@@ -539,11 +534,15 @@ mod tests {
             text.contains("upstream timed out"),
             "reason preserved: {text}"
         );
-        assert!(text.contains("Retryable:"), "retryable rendered: {text}");
+        // The user explicitly does not want a Retryable detail line.
+        assert!(
+            !text.contains("Retryable:"),
+            "retryable must not be rendered: {text}"
+        );
     }
 
     #[test]
-    fn detail_renders_not_retryable_when_false() {
+    fn detail_never_renders_retryable_even_when_false() {
         let f = PublicFreshness {
             status: "unreachable".into(),
             reason: None,
@@ -556,10 +555,12 @@ mod tests {
             latest_upstream_hash: None,
         };
         let text: String = fmt_freshness_detail(&Some(&f)).join("\n");
-        // The dim/reset ANSI codes wrap "Retryable:" — assert on the dimmed
-        // label plus the plain trailing value.
-        assert!(text.contains("\x1b[2mRetryable:\x1b[0m no"), "got: {text}");
-        assert!(!text.contains("Retryable: yes"), "got: {text}");
+        // Status honesty retained; retryable is never surfaced.
+        assert!(text.contains("[unreachable]"), "got: {text}");
+        assert!(
+            !text.contains("Retryable:"),
+            "retryable must not be rendered: {text}"
+        );
     }
 
     // ── Compare pairing ─────────────────────────────────────────────────
