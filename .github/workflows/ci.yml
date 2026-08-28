@@ -85,6 +85,8 @@ jobs:
                       rust:
                         - 'crates/**'
                         - 'scanner-data-contract.json'
+                        - 'scanner-field-gate.json'
+                        - 'scripts/check-scanner-field-gate.sh'
                         - 'Cargo.toml'
                         - 'Cargo.lock'
                         - 'rust-toolchain.toml'
@@ -126,6 +128,15 @@ jobs:
             # issues before waiting for a full compile.
             - name: Formatting
               run: cargo fmt --check
+
+            # ~2s — scanner field gate (vettd-cli#243 / epic #879). Runs
+            # before clippy/test so a tag bump carrying unclassified crate
+            # output fields fails fast. Inspects the pinned crate's real
+            # SkillScanResult via `cargo metadata` (fetches the git
+            # dependency on first run) and enforces the surface-or-gate
+            # decisions recorded in scanner-field-gate.json.
+            - name: Scanner field gate
+              run: scripts/check-scanner-field-gate.sh
 
             # ~30s — compiles all targets AND lints in a single pass.
             # No separate `cargo build` step needed — clippy does both.

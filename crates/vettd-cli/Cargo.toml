@@ -11,6 +11,13 @@ name = "vettd"
 path = "src/main.rs"
 
 [dependencies]
+# ⚠️ TAG-BUMP GATE (vettd-cli#243 / epic #879) — read before changing this pin:
+#   Bumping `tag` changes the crate output surface that lands in
+#   scanner-data-contract.json. Every field on the pinned crate's
+#   SkillScanResult must be classified (surface|gate) in the repo-root
+#   scanner-field-gate.json BEFORE the bump; unclassified fields fail CI
+#   via scripts/check-scanner-field-gate.sh. Default leaning (D4 ruling):
+#   ADDITIVE surfacing for optional additively-shaped fields.
 vettd-skill-scanner = { git = "https://github.com/AgenticHighway/vettd-skill-scanner", tag = "v0.1.4" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }

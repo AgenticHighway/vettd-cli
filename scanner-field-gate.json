@@ -1,0 +1,34 @@
+{
+  "title": "vettd-cli scanner field gate manifest",
+  "description": "Records the surface-or-gate decision for every field on the pinned vettd-skill-scanner SkillScanResult. Governed by vettd-cli#243 (epic #879). The gate script scripts/check-scanner-field-gate.sh fails a tag bump unless every new crate output field is classified here.",
+  "pinTag": "v0.1.4",
+  "defaultLeaning": "surface-additive",
+  "defaultLeaningNote": "Optional, additively-shaped fields (per the epic convention: additive, optional, open strings, no closed enums, required unchanged, byte-identical when empty) are surfaced additively into scanner-data-contract.json when the bump author explicitly classifies them. Anything unclassified fails the bump.",
+  "fields": {
+    "findings": {
+      "decision": "surface",
+      "contractPath": "skills[].externalScannerResults[].findings",
+      "reason": "Already surfaced: mapped into ExternalScannerResult.findings by contract/skill_scan.rs and present in scanner-data-contract.json."
+    },
+    "has_skill_md": {
+      "decision": "gate",
+      "reason": "Structural flag consumed internally for directory display (directory.rs); not part of the published scanner-data-contract.json surface."
+    },
+    "has_scripts": {
+      "decision": "gate",
+      "reason": "Structural flag consumed internally for directory display (directory.rs); not part of the published scanner-data-contract.json surface."
+    },
+    "has_references": {
+      "decision": "gate",
+      "reason": "Structural flag consumed internally; not part of the published scanner-data-contract.json surface."
+    },
+    "has_evals": {
+      "decision": "gate",
+      "reason": "Structural flag consumed internally for directory display (directory.rs); not part of the published scanner-data-contract.json surface."
+    },
+    "file_count": {
+      "decision": "gate",
+      "reason": "Internal metric consumed by directory display (directory.rs); not part of the published scanner-data-contract.json surface."
+    }
+  }
+}
