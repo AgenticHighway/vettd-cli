@@ -1,6 +1,7 @@
-# BLOCKED — vettd-cli#243 gate rule undecided
+# vettd-cli#243 — gate rule DECIDED; implementation pending
 
-Status: BLOCKED (undecided design point — do not improvise)
+Status: DECIDED (recorded 2026-08-28) — mechanism not yet implemented (deferred by
+follow-up scope: no new implementation outside the #925 signal-emission branches).
 
 ## What this branch is for
 
@@ -15,22 +16,28 @@ counterpart of [AgenticHighway/vettd#925]("Signal emission path: scanner crate t
 CLI until the pin is bumped; when it is bumped they arrive at `scanner-data-contract.json`
 and its 26 `additionalProperties: false` sites.
 
-## Why this is blocked
+## The decision (resolved 2026-08-28)
 
-Issue #243's **gate rule is unspecified** in the issue body and its sole comment. The issue
-asks for a decision (surface vs gate) and a mechanism that makes the answer hold at
-tag-bump time, but does not state:
+**Mechanism + recorded additive leaning.** Chosen for low regret + high agility.
 
-- **which fields** the gate applies to (only `signals` today, or any future crate-side
-  output field), and
-- **under what condition** the CLI's published contract either surfaces them
-  (additively into `scanner-data-contract.json`) or gates them (keeps them out).
+- **Rule:** a bump-time gate (CI/script check) forces an explicit surface-or-gate
+  decision per new crate output field before the pin can be bumped. Nothing is surfaced
+  silently.
+- **Default leaning:** optional, additively-shaped fields (per the epic's own convention
+  — `AssetSignal` in `suite-contract.json` is additive, optional, open strings, no closed
+  enums, `required` unchanged, byte-identical when empty) are surfaced additively into
+  `scanner-data-contract.json` when the bump author explicitly classifies them.
+- **Ungated fields fail the bump** — the mechanism, not the bump author's awareness, is
+  what makes the answer hold.
+- **Rationale:** no permanent public-contract commitment before real signal data exists
+  (the crate's `signals` vector is always-empty until #915/#916); the additive path is
+  sanctioned and low-friction when real signals arrive.
 
-Per the working constraint "do not invent design", this rule must not be guessed. The
-issue ACs ("Decision recorded: new crate output fields are surfaced, or gated, with the
-reasoning"; "A routine tag bump cannot silently widen this CLI's published contract
-surface"; "The constraint is documented where the dependency pin is declared, not only in
-an issue") are all contingent on that decision.
+## Why it was blocked, and the resolution path
+
+The issue body asked for the decision but did not state which fields / under what
+condition. Per "do not invent design", the rule was raised as an open question; the
+decision above was chosen by the dispatcher.
 
 ## What is NOT undecided
 
@@ -39,14 +46,14 @@ an issue") are all contingent on that decision.
   of #243; the file currently exists at the repo root and is served publicly).
 - `scanner-data-contract.json` has 26 `additionalProperties: false` sites and a drift
   alarm that auto-files a P0 on divergence — these are the enforcement surface the
-  decision must plug into, but they do not choose surface-vs-gate.
+  mechanism must plug into.
 
-## To unblock
+## Remaining work (NOT started — deferred by follow-up scope)
 
-Decide and record the field-level gate rule (which fields, under what condition, with
-reasoning), then implement:
-1. The mechanism that makes the answer hold at tag-bump time (not depending on the bump
-   author knowing the rule).
-2. Documentation at the dependency pin (`crates/vettd-cli/Cargo.toml:14`).
+1. Implement the bump-time gate mechanism (CI/script) that fails a bump carrying
+   unclassified new crate output fields.
+2. Document the rule at the dependency pin (`crates/vettd-cli/Cargo.toml:14`), not only
+   in this issue/file.
+3. Record the decision on the issue itself (#243) with the reasoning above.
 
-Until then this branch carries only this file.
+Until then this branch carries only this record.
