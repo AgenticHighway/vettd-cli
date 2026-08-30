@@ -237,6 +237,19 @@ pub enum DirectorySubcommand {
         /// Second entry slug
         slug_b: String,
     },
+    /// Download a skill's scanned source from GitHub
+    ///
+    /// Resolves the slug via the vettd directory, fetches the exact commit the
+    /// skill was scanned against from GitHub codeload, and writes only the
+    /// scanned subtree locally. Public (unauthenticated); works for public
+    /// GitHub sources.
+    Download {
+        /// Entry slug
+        slug: String,
+        /// Destination directory (defaults to ./<slug>)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1061,6 +1074,9 @@ pub fn run() {
             }
             DirectorySubcommand::Compare { slug_a, slug_b } => {
                 crate::directory::handle_compare(slug_a, slug_b, json)
+            }
+            DirectorySubcommand::Download { slug, out } => {
+                crate::directory_download::handle_download(slug, out.clone(), json)
             }
         }
         return;
