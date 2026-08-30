@@ -63,6 +63,7 @@ struct DownloadOutput {
 }
 
 /// The successfully resolved + extracted download.
+#[derive(Debug)]
 struct DownloadOutcome {
     resolve: DownloadResolveResponse,
     parts: GitHubTreeParts,
@@ -79,7 +80,8 @@ struct GitHubTreeParts {
     repo: String,
     branch: String,
     /// The scanned subtree path within the repo (everything after
-    /// `tree/<branch>/`).
+    /// `tree/<branch>/`) — empty for a root-path skill, where the whole repo
+    /// IS the skill.
     path: String,
 }
 
@@ -151,11 +153,13 @@ fn resolve_download(base_url: &str, slug: &str) -> Result<DownloadResolveRespons
 // ---------------------------------------------------------------------------
 
 /// Parse a canonical GitHub tree URL
-/// `https://github.com/{owner}/{repo}/tree/{branch}/{path}` into its parts.
+/// `https://github.com/{owner}/{repo}/tree/{branch}[/{path}]` into its parts.
 ///
-/// Fails loudly on anything that is not this exact shape — the server only ever
-/// emits tree URLs for downloadable skills, so a non-matching URL means the
-/// resolved source is not what we expected and must not be silently misparsed.
+/// The path segment is optional: a root-path skill is a valid, supported shape
+/// (the whole repo IS the skill — `path` comes back empty). Fails loudly on
+/// anything that is not this shape — the server only ever emits tree URLs for
+/// downloadable skills, so a non-matching URL means the resolved source is not
+/// what we expected and must not be silently misparsed.
 fn parse_github_tree_url(url: &str) -> Result<GitHubTreeParts, String> {
     let rest = url
         .strip_prefix(GITHUB_TREE_PREFIX)
@@ -166,7 +170,7 @@ fn parse_github_tree_url(url: &str) -> Result<GitHubTreeParts, String> {
         .ok_or_else(|| format!("source URL has no /tree/ segment: {url}"))?;
 
     let repo_path = &rest[..tree_pos]; // {owner}/{repo}
-    let branch_path = &rest[tree_pos + "/tree/".len()..]; // {branch}/{path}
+    let branch_path = &rest[tree_pos + "/tree/".len()..]; // {branch}[/{path}]
 
     let mut repo_parts = repo_path.splitn(2, '/');
     let owner = repo_parts.next().unwrap_or("");
@@ -179,14 +183,10 @@ fn parse_github_tree_url(url: &str) -> Result<GitHubTreeParts, String> {
 
     let mut branch_parts = branch_path.splitn(2, '/');
     let branch = branch_parts.next().unwrap_or("");
+    // Empty path is allowed: a root-path skill has nothing after the branch.
     let path = branch_parts.next().unwrap_or("");
     if branch.is_empty() {
         return Err(format!("source URL has an empty git branch: {url}"));
-    }
-    if path.is_empty() {
-        return Err(format!(
-            "source URL has no subtree path after the branch (expected …/tree/{branch}/<path>): {url}"
-        ));
     }
 
     Ok(GitHubTreeParts {
@@ -202,7 +202,13 @@ fn parse_github_tree_url(url: &str) -> Result<GitHubTreeParts, String> {
 // ---------------------------------------------------------------------------
 
 /// Whether a tar entry (relative to the archive root) lives under `skill_path`.
+///
+/// An empty `skill_path` is a root-path skill: every entry in the archive
+/// belongs to the skill, so everything matches.
 fn is_subtree_entry(rel: &str, skill_path: &str) -> bool {
+    if skill_path.is_empty() {
+        return true;
+    }
     rel == skill_path || rel.starts_with(&format!("{skill_path}/"))
 }
 
@@ -258,8 +264,12 @@ fn safe_join(dest: &Path, rel: &Path) -> Result<PathBuf, String> {
 /// Returns the archive's root directory name (`{repo}-<sha>`) when the archive
 /// is non-empty, so the caller can derive the embedded commit SHA. Directory and
 /// regular-file entries are written; symlinks and other special entries are
-/// skipped. Traversal-safe: each target is checked with [`safe_join`] before it
-/// is created, so a `../` entry can never escape `dest` (it fails loudly).
+/// skipped. Traversal-safe: a `..` component anywhere in an entry's full path is
+/// unconditionally invalid (GitHub-generated tarballs never contain one) and
+/// aborts the extraction rather than being lexically relocated by [`safe_join`].
+/// If no entry matches the subtree at all, the extraction fails with a
+/// "source unavailable" error — an empty output directory must never be
+/// reported as success.
 fn extract_subtree<R: Read>(
     reader: R,
     skill_path: &str,
@@ -272,6 +282,7 @@ fn extract_subtree<R: Read>(
     let mut archive = Archive::new(decoder);
 
     let mut root_name: Option<String> = None;
+    let mut written = 0usize;
 
     let entries = archive
         .entries()
@@ -290,6 +301,19 @@ fn extract_subtree<R: Read>(
             .path()
             .map_err(|e| format!("bad path in tar entry: {e}"))?
             .into_owned();
+
+        // Reject any `..` component in the FULL archive-relative path before any
+        // subtree matching: a crafted entry like
+        // `skills/azure-prepare/../azure-deploy/SKILL.md` passes the string-prefix
+        // check for `skills/azure-prepare` while lexically resolving to a sibling
+        // directory outside the intended subtree. GitHub codeload archives never
+        // contain `..` paths, so any entry that has one is invalid outright.
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err(format!(
+                "path traversal detected in archive entry: {}",
+                path.display()
+            ));
+        }
 
         if root_name.is_none() {
             if let Some(first) = path.components().next() {
@@ -318,6 +342,7 @@ fn extract_subtree<R: Read>(
                 std::fs::create_dir_all(&target)
                     .map_err(|e| format!("failed to create {target_disp}: {e}"))?;
                 set_permissions(&target, entry.header().mode().unwrap_or(0o755))?;
+                written += 1;
             }
             EntryType::Regular => {
                 if let Some(parent) = target.parent() {
@@ -330,9 +355,21 @@ fn extract_subtree<R: Read>(
                 io::copy(&mut entry, &mut file)
                     .map_err(|e| format!("failed to extract {target_disp}: {e}"))?;
                 set_permissions(&target, entry.header().mode().unwrap_or(0o644))?;
+                written += 1;
             }
             _ => {}
         }
+    }
+
+    // The resolved path matched nothing in the archive — report failure rather
+    // than a silent success with an empty output directory (issue #169: "fails
+    // clearly when… no downloadable source"). Same "source unavailable" contract
+    // as a codeload fetch failure; the caller maps it to exit code 1.
+    if written == 0 {
+        return Err(format!(
+            "source unavailable: the archive contains no files under '{skill_path}' — \
+             the scanned path may have moved or been renamed upstream"
+        ));
     }
 
     Ok(root_name)
@@ -390,7 +427,10 @@ fn extract_archive_sha(root_name: &str, repo: &str) -> Option<String> {
 fn set_permissions(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let path_disp = path.display();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777))
+    // Mask to the rwx bits only — git's object model cannot carry setuid/setgid/
+    // sticky bits anyway, so retaining `& 0o7777` would only ever re-apply bits
+    // the archive could never legitimately claim.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o777))
         .map_err(|e| format!("failed to set permissions on {path_disp}: {e}"))
 }
 
@@ -511,6 +551,36 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
 
+    // Environment mutation is process-global; serialize access across tests and
+    // restore the original value in Drop, same convention as network.rs's
+    // ScopedEnvVar.
+    static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    struct ScopedEnv(&'static str, Option<String>);
+    impl ScopedEnv {
+        fn set(name: &'static str, value: &str) -> ScopedEnv {
+            let _guard = ENV_LOCK.lock().unwrap();
+            let prev = std::env::var(name).ok();
+            // SAFETY: environment mutation is serialized by ENV_LOCK, and the
+            // original value is restored in Drop.
+            unsafe { std::env::set_var(name, value) };
+            ScopedEnv(name, prev)
+        }
+    }
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            // SAFETY: this value was created under ENV_LOCK, so restoration is
+            // ordered with respect to other env-mutating tests.
+            unsafe {
+                match &self.1 {
+                    Some(v) => std::env::set_var(self.0, v),
+                    None => std::env::remove_var(self.0),
+                }
+            }
+        }
+    }
+
     /// Build a raw (uncompressed) tarball from `(path, bytes)` pairs.
     fn build_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
@@ -616,10 +686,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_branch_without_path() {
-        let err = parse_github_tree_url("https://github.com/microsoft/azure-skills/tree/main")
-            .unwrap_err();
-        assert!(err.contains("no subtree path"), "{err}");
+    fn parse_accepts_root_path_url_without_a_subtree_path() {
+        // A canonical root-path skill URL has nothing after the branch — the
+        // whole repo IS the skill (the server, the backfill guard, and #169 all
+        // support root-path audits).
+        let parts =
+            parse_github_tree_url("https://github.com/microsoft/azure-skills/tree/main").unwrap();
+        assert_eq!(parts.owner, "microsoft");
+        assert_eq!(parts.repo, "azure-skills");
+        assert_eq!(parts.branch, "main");
+        assert_eq!(parts.path, "");
     }
 
     #[test]
@@ -638,6 +714,10 @@ mod tests {
             "skills/azure-prepare"
         ));
         assert!(!is_subtree_entry("README.md", "skills/azure-prepare"));
+        // A root-path skill (empty path) matches every entry in the archive.
+        assert!(is_subtree_entry("README.md", ""));
+        assert!(is_subtree_entry("skills/azure-prepare/SKILL.md", ""));
+        assert!(is_subtree_entry("skills/azure-prepare/", ""));
     }
 
     #[test]
@@ -743,6 +823,124 @@ mod tests {
         assert!(err.contains("path traversal"), "unexpected error: {err}");
         // The malicious file was never written inside the destination either.
         assert!(!dest.join("etc").exists(), "traversal wrote inside dest");
+    }
+
+    #[test]
+    fn extract_subtree_rejects_parent_dir_entries_outright() {
+        // A crafted entry like `skills/azure-prepare/../azure-deploy/SKILL.md`
+        // passes the string-prefix subtree check while lexically resolving
+        // (after `..` handling) to a SIBLING directory outside the intended
+        // subtree. `..` never appears in a real GitHub codeload archive, so the
+        // entry is rejected outright — NOT silently relocated to its lexical
+        // destination. The high-level tar builder refuses `..` paths, so we
+        // append raw bytes to exercise the reader's guard.
+        let mut buf = Vec::new();
+        append_raw_entry(
+            &mut buf,
+            &format!("{ROOT}/skills/azure-prepare/../azure-deploy/SKILL.md"),
+            b"# deploy\n",
+        );
+        let gz = gzip(&buf);
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+
+        let result = extract_subtree(&gz[..], "skills/azure-prepare", &dest);
+        assert!(result.is_err(), "expected rejection, got {result:?}");
+        let err = result.unwrap_err();
+        assert!(err.contains("path traversal"), "unexpected error: {err}");
+        // The entry appears neither in the correct subtree location nor
+        // anywhere else under dest — it was rejected, not relocated.
+        assert!(!dest.join("skills/azure-prepare/SKILL.md").exists());
+        assert!(!dest.join("skills/azure-deploy/SKILL.md").exists());
+        assert!(!dest.exists(), "nothing should be written under dest");
+    }
+
+    #[test]
+    fn extract_subtree_fails_when_no_subtree_entry_matches() {
+        // A stale/mismatched resolved path: the archive contains sibling
+        // content only, so nothing matches the subtree. The command must fail
+        // clearly ("source unavailable") rather than report success with an
+        // empty output directory (issue #169: "fails clearly when… no
+        // downloadable source").
+        let raw = build_tarball(&[
+            (format!("{ROOT}/README.md").as_str(), b"root readme"),
+            (
+                format!("{ROOT}/skills/azure-deploy/SKILL.md").as_str(),
+                b"# deploy",
+            ),
+        ]);
+        let gz = gzip(&raw);
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+
+        let result = extract_subtree(&gz[..], "skills/azure-prepare", &dest);
+        assert!(result.is_err(), "expected failure, got {result:?}");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("source unavailable"),
+            "unexpected error: {err}"
+        );
+        // Nothing was written anywhere.
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn root_path_skill_extracts_the_whole_repo() {
+        // End to end for a root-path skill: the canonical URL parses with an
+        // empty path, and extraction with that empty path treats every archive
+        // entry as part of the skill (the whole repo IS the skill).
+        let parts =
+            parse_github_tree_url("https://github.com/microsoft/azure-skills/tree/main").unwrap();
+        assert_eq!(parts.path, "");
+
+        let raw = build_tarball(&[
+            (format!("{ROOT}/README.md").as_str(), b"root readme"),
+            (
+                format!("{ROOT}/skills/azure-prepare/SKILL.md").as_str(),
+                b"# prepare",
+            ),
+        ]);
+        let gz = gzip(&raw);
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+
+        let root = extract_subtree(&gz[..], &parts.path, &dest).unwrap();
+        assert_eq!(root.as_deref(), Some(ROOT));
+        assert!(dest.join("README.md").exists());
+        assert!(dest.join("skills/azure-prepare/SKILL.md").exists());
+    }
+
+    #[test]
+    fn run_download_refuses_non_empty_destination_before_any_network_call() {
+        // If the destination-check ordering ever regressed and a request was
+        // made, the env override would point it at the mock server (never
+        // production), where the catch-all mock below counts it.
+        let server = MockServer::start();
+        let _beta = ScopedEnv::set("SEARCH_BETA_TESTING", "1");
+        let _endpoint = ScopedEnv::set("VETTD_DIRECTORY_ENDPOINT", &server.base_url());
+        // Catch-all POST mock: ANY request reaching the server is a regression.
+        let any_request = server.mock(|when, then| {
+            when.method(httpmock::Method::POST);
+            then.status(200).json_body(json!({
+                "slug": "ok", "name": "OK", "sourceType": "github",
+                "sourceUrl": "https://github.com/o/r/tree/main/skills/ok",
+                "sourceHash": "abc123",
+                "commitSha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            }));
+        });
+
+        // Pre-populate a non-empty destination BEFORE running the orchestration.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("existing.txt"), b"x").unwrap();
+
+        let result = run_download("ok", Some(dest.clone()));
+
+        let err = result.unwrap_err();
+        assert!(err.contains("not empty"), "unexpected error: {err}");
+        // The destination check ran first: the server received zero requests.
+        assert_eq!(any_request.calls(), 0);
     }
 
     #[test]
