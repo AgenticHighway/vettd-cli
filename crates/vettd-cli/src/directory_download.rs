@@ -423,6 +423,20 @@ fn extract_archive_sha(root_name: &str, repo: &str) -> Option<String> {
         .map(|sha| sha.to_string())
 }
 
+/// Derive the drift-check comparison value from an archive's root directory name.
+///
+/// Kept as its own function (rather than inlined at the `run_download` call site)
+/// specifically so this composition is unit-testable: `extract_archive_sha` alone
+/// was already covered by a passing test, but `run_download` never actually called
+/// it — the raw `{repo}-{sha}` root name flowed straight into the drift comparison
+/// unstripped, so every download printed a false-positive drift warning (e.g.
+/// `aws-agent-skills-4ab904a6...` vs the resolved bare `4ab904a6...`). A test that
+/// only exercised `extract_archive_sha` in isolation could not catch that — this
+/// function is the seam a regression test can actually reach.
+fn resolve_archive_sha(root_name: Option<String>, repo: &str) -> Option<String> {
+    root_name.and_then(|name| extract_archive_sha(&name, repo))
+}
+
 #[cfg(unix)]
 fn set_permissions(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -463,13 +477,14 @@ fn run_download(slug: &str, out: Option<PathBuf>) -> Result<DownloadOutcome, Str
     }
 
     let parts = parse_github_tree_url(&resolve.source_url)?;
-    let archive_sha = fetch_and_extract_subtree(
+    let root_name = fetch_and_extract_subtree(
         &parts.owner,
         &parts.repo,
         &resolve.commit_sha,
         &parts.path,
         &dest,
     )?;
+    let archive_sha = resolve_archive_sha(root_name, &parts.repo);
 
     Ok(DownloadOutcome {
         resolve,
@@ -743,6 +758,27 @@ mod tests {
         );
         // A root name that does not carry the `{repo}-` prefix yields None.
         assert_eq!(extract_archive_sha("unexpected", "azure-skills"), None);
+    }
+
+    #[test]
+    fn resolve_archive_sha_strips_the_root_prefix_before_the_drift_comparison() {
+        // Regression test for a real false-positive drift warning: `run_download`
+        // was passing the raw `{repo}-{sha}` root name straight through as
+        // `archive_sha` without ever calling `extract_archive_sha`, so the drift
+        // check compared "aws-agent-skills-4ab904a6..." against the bare resolved
+        // "4ab904a6..." and always reported a mismatch. Exercises the exact
+        // composition `run_download` calls — `extract_archive_sha_strips_repo_prefix`
+        // above only proved the stripper works in isolation, which is exactly what
+        // let this ship: the seam between "fetch returns a root name" and "the
+        // drift check gets a bare SHA" was never actually tested.
+        let root_name = "aws-agent-skills-4ab904a69cda893b5c98f97966bf9a48311823e9".to_string();
+        assert_eq!(
+            resolve_archive_sha(Some(root_name), "aws-agent-skills"),
+            Some("4ab904a69cda893b5c98f97966bf9a48311823e9".to_string())
+        );
+        // No archive entries were extracted at all (empty repo/path) — nothing to
+        // compare, so no false drift warning either.
+        assert_eq!(resolve_archive_sha(None, "aws-agent-skills"), None);
     }
 
     #[test]
