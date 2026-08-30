@@ -9,6 +9,7 @@ mod contract;
 mod contract_sync;
 mod detectors;
 mod directory;
+mod directory_download;
 mod discovery;
 mod formatters;
 mod freshness;

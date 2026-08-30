@@ -162,7 +162,7 @@ pub struct ScannerRun {
 /// derivation, for pointing directory search at a test/staging API. Only
 /// honored when `SEARCH_BETA_TESTING` is enabled (see
 /// [`crate::network::search_beta_testing_enabled`]).
-fn directory_base_url() -> String {
+pub(crate) fn directory_base_url() -> String {
     let override_endpoint = crate::network::search_beta_testing_enabled()
         .then(|| std::env::var("VETTD_DIRECTORY_ENDPOINT").ok())
         .flatten()
