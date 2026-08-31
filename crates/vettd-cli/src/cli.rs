@@ -161,6 +161,12 @@ pub enum ContractSubcommand {
     Status,
 }
 
+// The `Search` variant carries the full beta search-filter surface
+// (language / agent-compat / rankings / source / rank-filter / asset-type /
+// mcp-category / deployment / registry-type) inline, which dwarfs the other
+// variants. Boxing clap arg fields isn't ergonomic and the enum is parsed
+// exactly once per process, so the size asymmetry is deliberate.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum DirectorySubcommand {
     /// Search the directory
@@ -187,6 +193,29 @@ pub enum DirectorySubcommand {
         /// '{"stars": 50, "officialClaudeMarketplace": true}'. Requires SEARCH_BETA_TESTING=1.
         #[arg(long)]
         rankings: Option<String>,
+        /// Which catalog to search: skill (default) or mcp. `mcp` requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "asset-type", default_value = "skill", value_parser = ["skill", "mcp"])]
+        asset_type: String,
+        /// Filter by discovery source, e.g. marketplace|seed|search|manual (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        /// Per-source search-rank ceiling as key=N (repeatable), e.g.
+        /// --rank-filter search_rank_skills_sh_rank=100. Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "rank-filter")]
+        rank_filters: Vec<String>,
+        /// MCP-only: filter by category server|client|framework|tooling (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "mcp-category")]
+        mcp_category: Vec<String>,
+        /// MCP-only: filter by deployment local|remote|hybrid (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "deployment")]
+        deployment: Vec<String>,
+        /// MCP-only: filter by registry type npm|pypi|oci|… (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "registry-type")]
+        registry_type: Vec<String>,
     },
     /// List directory entries
     List {
@@ -224,6 +253,9 @@ pub enum DirectorySubcommand {
     },
 }
 
+// See the note on `DirectorySubcommand` — the `Search` variant's inline
+// filter surface makes it much larger than the sibling variants by design.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum InventorySubcommand {
     /// Search within your own skills
@@ -250,6 +282,30 @@ pub enum InventorySubcommand {
         /// '{"stars": 50, "officialClaudeMarketplace": true}'. Requires SEARCH_BETA_TESTING=1.
         #[arg(long)]
         rankings: Option<String>,
+        /// Which catalog to search: skill (default). `mcp` is rejected here —
+        /// the MCP catalog is not user-scoped; use `directory search --asset-type mcp`.
+        #[arg(long = "asset-type", default_value = "skill", value_parser = ["skill", "mcp"])]
+        asset_type: String,
+        /// Filter by discovery source, e.g. marketplace|seed|search|manual (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        /// Per-source search-rank ceiling as key=N (repeatable), e.g.
+        /// --rank-filter search_rank_skills_sh_rank=100. Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "rank-filter")]
+        rank_filters: Vec<String>,
+        /// MCP-only: filter by category server|client|framework|tooling (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "mcp-category")]
+        mcp_category: Vec<String>,
+        /// MCP-only: filter by deployment local|remote|hybrid (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "deployment")]
+        deployment: Vec<String>,
+        /// MCP-only: filter by registry type npm|pypi|oci|… (repeatable).
+        /// Requires SEARCH_BETA_TESTING=1.
+        #[arg(long = "registry-type")]
+        registry_type: Vec<String>,
     },
     /// List the authenticated user's skills (published and unpublished)
     List {
@@ -957,6 +1013,12 @@ pub fn run() {
                 languages,
                 agent_compatibility,
                 rankings,
+                asset_type,
+                sources,
+                rank_filters,
+                mcp_category,
+                deployment,
+                registry_type,
             } => {
                 if query.len() > 1 {
                     eprintln!(
@@ -965,16 +1027,18 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::directory::handle_search(
-                    &query[0],
-                    *page,
-                    sort,
-                    *reverse,
-                    json,
-                    languages,
-                    agent_compatibility,
-                    rankings.as_deref(),
-                )
+                let filters = crate::directory::SearchFilters {
+                    asset_type: asset_type.clone(),
+                    languages: languages.clone(),
+                    agent_compatibility: agent_compatibility.clone(),
+                    sources: sources.clone(),
+                    rank_filters: rank_filters.clone(),
+                    mcp_category: mcp_category.clone(),
+                    deployment: deployment.clone(),
+                    registry_type: registry_type.clone(),
+                    rankings: rankings.clone(),
+                };
+                crate::directory::handle_search(&query[0], *page, sort, *reverse, json, &filters)
             }
             DirectorySubcommand::List {
                 page,
@@ -1004,6 +1068,12 @@ pub fn run() {
                 languages,
                 agent_compatibility,
                 rankings,
+                asset_type,
+                sources,
+                rank_filters,
+                mcp_category,
+                deployment,
+                registry_type,
             } => {
                 if query.len() > 1 {
                     eprintln!(
@@ -1012,16 +1082,18 @@ pub fn run() {
                     );
                     std::process::exit(1);
                 }
-                crate::inventory::handle_search(
-                    &query[0],
-                    *page,
-                    sort,
-                    *reverse,
-                    json,
-                    languages,
-                    agent_compatibility,
-                    rankings.as_deref(),
-                )
+                let filters = crate::directory::SearchFilters {
+                    asset_type: asset_type.clone(),
+                    languages: languages.clone(),
+                    agent_compatibility: agent_compatibility.clone(),
+                    sources: sources.clone(),
+                    rank_filters: rank_filters.clone(),
+                    mcp_category: mcp_category.clone(),
+                    deployment: deployment.clone(),
+                    registry_type: registry_type.clone(),
+                    rankings: rankings.clone(),
+                };
+                crate::inventory::handle_search(&query[0], *page, sort, *reverse, json, &filters)
             }
             InventorySubcommand::List {
                 page,

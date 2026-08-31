@@ -9,7 +9,9 @@
 //! `directory`'s response structs and display helpers rather than duplicating
 //! them.
 
-use crate::directory::{self, DirectoryFinding, DirectoryListResponse, DirectorySkillDetail};
+use crate::directory::{
+    self, DirectoryFinding, DirectoryListResponse, DirectorySkillDetail, SearchFilters,
+};
 use crate::inventory_client::{self, InventoryError};
 
 /// Derive the inventory API base URL from the configured ingest endpoint.
@@ -129,32 +131,31 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn handle_search(
     query: &str,
     page: u32,
     sort: &str,
     reverse: bool,
     json: bool,
-    languages: &[String],
-    agent_compatibility: &[String],
-    rankings: Option<&str>,
+    filters: &SearchFilters,
 ) {
+    // The MCP catalog is not user-scoped, so the backend 400s
+    // `assetType: "mcp"` on the inventory path. Reject it client-side with a
+    // clear pointer rather than round-tripping to a 400.
+    if filters.asset_type == "mcp" {
+        eprintln!(
+            "Error: --asset-type mcp is not supported for `inventory search` — the MCP catalog \
+is not user-scoped. Use `vettd directory search --asset-type mcp` instead."
+        );
+        std::process::exit(1);
+    }
+
     require_auth_or_exit();
     let beta = crate::network::search_beta_testing_enabled();
-    let rankings_value =
-        directory::validate_search_filters(languages, agent_compatibility, rankings, beta);
+    let validated = directory::validate_search_filters(filters, beta);
 
     let result = if beta {
-        let body = directory::build_search_body(
-            query,
-            page,
-            sort,
-            reverse,
-            languages,
-            agent_compatibility,
-            rankings_value,
-        );
+        let body = directory::build_search_body(query, page, sort, reverse, filters, &validated);
         inventory_client::post_json::<DirectoryListResponse>(&inventory_base_url(), &body)
     } else {
         let url = format!(

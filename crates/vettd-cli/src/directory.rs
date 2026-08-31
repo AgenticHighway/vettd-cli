@@ -85,6 +85,23 @@ pub struct DirectoryCard {
     /// serialize when absent — see `language` above.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rankings: Option<SkillRankings>,
+    /// Non-deterministic LLM threat-scan verdict for the matched catalog
+    /// entry's SKILL.md. Opaque passthrough — the query service owns this
+    /// shape and it churns, so it is *not* modelled as a typed struct.
+    /// `object | null` on the wire, snake_case key. Present only on
+    /// `SEARCH_BETA_TESTING` (`assetType: "skill"`) search responses;
+    /// skipped on serialize when absent so non-beta `--json` stays
+    /// byte-identical. See `docs/SEARCH_INTERFACE.md`.
+    #[serde(rename = "llm_scan", skip_serializing_if = "Option::is_none")]
+    pub llm_scan: Option<serde_json::Value>,
+    /// OSV-backed security-history grade for the CLI tools the matched
+    /// catalog entry installs. Opaque passthrough — see `llm_scan`.
+    #[serde(rename = "cli_security", skip_serializing_if = "Option::is_none")]
+    pub cli_security: Option<serde_json::Value>,
+    /// Deterministic Vettd scan rollup for the matched catalog entry's repo.
+    /// Opaque passthrough — see `llm_scan`.
+    #[serde(rename = "vettd_scan", skip_serializing_if = "Option::is_none")]
+    pub vettd_scan: Option<serde_json::Value>,
 }
 
 /// External ranking signals for a skill — used both as the `--rankings`
@@ -97,6 +114,162 @@ pub struct SkillRankings {
     pub skills_sh_leaderboard_rank: Option<u32>,
     pub number_of_aggregators: Option<u32>,
     pub official_claude_marketplace: Option<bool>,
+}
+
+/// Response envelope for a `SEARCH_BETA_TESTING` search with
+/// `assetType: "mcp"`. Discriminated from `DirectoryListResponse` by the
+/// `mcpServers` key (vs. `skills`). Thin fail-open proxy of the query
+/// service's `mcp_servers` catalog — see `docs/SEARCH_INTERFACE.md`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListResponse {
+    pub mcp_servers: Vec<McpCard>,
+    pub total: u32,
+    pub page: u32,
+    pub total_pages: u32,
+    /// Always `false` on this path (nothing to fabricate for an external
+    /// catalog) but accepted for forward-compat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock: Option<bool>,
+    /// `false` when the `mcp_servers` collection is empty/absent or the
+    /// query service is unreachable — an onboarding/outage state, *not*
+    /// "no results for this query". Surfaced distinctly by the CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_ready: Option<bool>,
+}
+
+/// Allow-list deserialization for one `mcp_servers` catalog hit. Fields
+/// mirror the query service's `McpHit` (`ah-skills .../openapi.json`) —
+/// snake_case passthrough, every field `Option` for forward-compat. The
+/// `security_*` / `security_direct_deps_*` block is the OSV dependency
+/// vulnerability scan. Unknown fields are ignored.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct McpCard {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_category_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_installable_package: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_remote: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stars: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekly_downloads: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_downloads: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_vuln_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_vuln_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_max_severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_direct_deps_scanned: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_direct_deps_vuln_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_direct_deps_with_vulns: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_direct_deps_max_severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_direct_deps_vuln_ids: Option<Vec<String>>,
+}
+
+/// The raw filter inputs for a `SEARCH_BETA_TESTING` search, assembled by
+/// `cli.rs` from the parsed flags and shared verbatim by the directory and
+/// inventory search handlers.
+#[derive(Debug, Default, Clone)]
+pub struct SearchFilters {
+    /// `"skill"` (default) or `"mcp"`. `cli.rs` constrains the values.
+    pub asset_type: String,
+    pub languages: Vec<String>,
+    pub agent_compatibility: Vec<String>,
+    pub sources: Vec<String>,
+    /// Raw `key=N` strings from `--rank-filter`; parsed by
+    /// [`parse_rank_filters`].
+    pub rank_filters: Vec<String>,
+    pub mcp_category: Vec<String>,
+    pub deployment: Vec<String>,
+    pub registry_type: Vec<String>,
+    /// Raw JSON from `--rankings`.
+    pub rankings: Option<String>,
+}
+
+/// Parsed / validated filters ready for [`build_search_body`].
+#[derive(Debug, Default)]
+pub struct ValidatedFilters {
+    /// Parsed `--rankings` JSON, or `None` if the flag was absent.
+    pub rankings: Option<serde_json::Value>,
+    /// Parsed `--rank-filter` map (`{key: N}`); empty if none given.
+    pub rank_filters: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Parse repeated `--rank-filter key=N` flags into a `{key: N}` map.
+///
+/// Returns `Err(message)` for a missing `=`, an empty key, or a
+/// non-integer value — the caller turns that into an exit-1 CLI error
+/// before any request is sent. Pure (no `process::exit`) so it is unit
+/// testable.
+pub(crate) fn parse_rank_filters(
+    raw: &[String],
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut map = serde_json::Map::new();
+    for entry in raw {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("--rank-filter '{entry}' must be in key=N form"))?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("--rank-filter '{entry}' has an empty key"));
+        }
+        let n: i64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("--rank-filter '{entry}' value must be an integer"))?;
+        map.insert(key.to_string(), serde_json::json!(n));
+    }
+    Ok(map)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -355,80 +528,123 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-/// Validate the beta-gated search filters and parse `--rankings` JSON.
+/// Whether any beta-gated search filter is in use — anything beyond a plain
+/// query/page/sort. `assetType: "mcp"` counts (the MCP catalog is a
+/// beta-only surface).
+fn any_filter_set(f: &SearchFilters) -> bool {
+    f.asset_type == "mcp"
+        || !f.languages.is_empty()
+        || !f.agent_compatibility.is_empty()
+        || !f.sources.is_empty()
+        || !f.rank_filters.is_empty()
+        || !f.mcp_category.is_empty()
+        || !f.deployment.is_empty()
+        || !f.registry_type.is_empty()
+        || f.rankings.is_some()
+}
+
+/// Validate the beta-gated search filters and parse `--rankings` /
+/// `--rank-filter`.
 ///
-/// Exits the process with a clear error if filters are supplied without
-/// `SEARCH_BETA_TESTING` enabled, or if `--rankings` isn't valid JSON. See
-/// `docs/SEARCH_INTERFACE.md`.
-pub(crate) fn validate_search_filters(
-    languages: &[String],
-    agent_compatibility: &[String],
-    rankings_raw: Option<&str>,
-    beta: bool,
-) -> Option<serde_json::Value> {
-    let has_filters =
-        !languages.is_empty() || !agent_compatibility.is_empty() || rankings_raw.is_some();
-    if has_filters && !beta {
+/// Exits the process with a clear error if any filter (or
+/// `--asset-type mcp`) is supplied without `SEARCH_BETA_TESTING` enabled,
+/// if `--rankings` isn't valid JSON, or if a `--rank-filter` is malformed.
+/// See `docs/SEARCH_INTERFACE.md`.
+pub(crate) fn validate_search_filters(f: &SearchFilters, beta: bool) -> ValidatedFilters {
+    if any_filter_set(f) && !beta {
         eprintln!(
-            "Error: --language/--agent-compatibility/--rankings require SEARCH_BETA_TESTING=1."
+            "Error: search filters (--language/--agent-compatibility/--rankings/--source/\
+--rank-filter/--asset-type mcp/--mcp-category/--deployment/--registry-type) require \
+SEARCH_BETA_TESTING=1."
         );
         std::process::exit(1);
     }
-    rankings_raw.map(|raw| match serde_json::from_str(raw) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error: --rankings is not valid JSON: {e}");
+    let rankings = f
+        .rankings
+        .as_deref()
+        .map(|raw| match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Error: --rankings is not valid JSON: {e}");
+                std::process::exit(1);
+            }
+        });
+    let rank_filters = match parse_rank_filters(&f.rank_filters) {
+        Ok(m) => m,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
             std::process::exit(1);
         }
-    })
+    };
+    ValidatedFilters {
+        rankings,
+        rank_filters,
+    }
 }
 
 /// Build the POST body for a `SEARCH_BETA_TESTING` search request. See
 /// `docs/SEARCH_INTERFACE.md` for the shape.
+///
+/// `assetType`, `languages`, `agentCompatibility`, `sources` and
+/// `rankFilters` are always present (arrays empty / object empty when
+/// unset); `rankings` is `null` when `--rankings` was absent. The
+/// mcp-only `mcpCategory` / `deployment` / `registryType` arrays are
+/// included only when `assetType == "mcp"`.
 pub(crate) fn build_search_body(
     query: &str,
     page: u32,
     sort: &str,
     reverse: bool,
-    languages: &[String],
-    agent_compatibility: &[String],
-    rankings: Option<serde_json::Value>,
+    filters: &SearchFilters,
+    validated: &ValidatedFilters,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "search": query,
         "page": page,
         "sort": sort,
         "reverse": reverse,
-        "languages": languages,
-        "agentCompatibility": agent_compatibility,
-        "rankings": rankings,
-    })
+        "assetType": filters.asset_type,
+        "languages": filters.languages,
+        "agentCompatibility": filters.agent_compatibility,
+        "sources": filters.sources,
+        "rankFilters": validated.rank_filters,
+        "rankings": validated.rankings,
+    });
+    if filters.asset_type == "mcp" {
+        let obj = body.as_object_mut().expect("json object");
+        obj.insert(
+            "mcpCategory".into(),
+            serde_json::json!(filters.mcp_category),
+        );
+        obj.insert("deployment".into(), serde_json::json!(filters.deployment));
+        obj.insert(
+            "registryType".into(),
+            serde_json::json!(filters.registry_type),
+        );
+    }
+    body
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn handle_search(
     query: &str,
     page: u32,
     sort: &str,
     reverse: bool,
     json: bool,
-    languages: &[String],
-    agent_compatibility: &[String],
-    rankings: Option<&str>,
+    filters: &SearchFilters,
 ) {
     let beta = crate::network::search_beta_testing_enabled();
-    let rankings_value = validate_search_filters(languages, agent_compatibility, rankings, beta);
+    let validated = validate_search_filters(filters, beta);
+
+    // The MCP catalog is a beta-only surface with a different response
+    // envelope — `validate_search_filters` already exited if it was
+    // requested without the beta flag, so here `beta` is implied.
+    if filters.asset_type == "mcp" {
+        return handle_mcp_search(query, page, sort, reverse, filters, &validated);
+    }
 
     let result = if beta {
-        let body = build_search_body(
-            query,
-            page,
-            sort,
-            reverse,
-            languages,
-            agent_compatibility,
-            rankings_value,
-        );
+        let body = build_search_body(query, page, sort, reverse, filters, &validated);
         read_client::post_json::<DirectoryListResponse>(&directory_base_url(), &body)
     } else {
         let url = format!(
@@ -486,6 +702,126 @@ pub fn handle_search(
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// `directory search --asset-type mcp` — always beta, always `POST`, and a
+/// different response envelope (`mcpServers`, not `skills`). Renders a raw
+/// JSON dump followed by a compact table, matching the skill path's dual
+/// dump. `indexReady: false` is reported distinctly from "no results".
+fn handle_mcp_search(
+    query: &str,
+    page: u32,
+    sort: &str,
+    reverse: bool,
+    filters: &SearchFilters,
+    validated: &ValidatedFilters,
+) {
+    let body = build_search_body(query, page, sort, reverse, filters, validated);
+    let result = read_client::post_json::<McpListResponse>(&directory_base_url(), &body);
+
+    match result {
+        Ok(resp) => {
+            println!("--- SEARCH_BETA_TESTING: raw json ---");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&resp).unwrap_or_default()
+            );
+            println!("--- SEARCH_BETA_TESTING: formatted ---");
+
+            if resp.mcp_servers.is_empty() {
+                if resp.index_ready == Some(false) {
+                    println!(
+                        "The MCP catalog is not ready yet (indexReady=false) — this is an \
+onboarding/outage state, not an empty result. Try again shortly."
+                    );
+                } else {
+                    println!("No MCP servers for \"{}\".", query);
+                }
+                return;
+            }
+
+            print_mcp_cards(&resp.mcp_servers);
+            let shown = resp.mcp_servers.len();
+            if resp.page < resp.total_pages {
+                println!(
+                    "\n{DIM}Showing {} of {} MCP servers for \"{}\" — use --page {} to see more.{RESET}",
+                    shown,
+                    resp.total,
+                    query,
+                    resp.page + 1,
+                );
+            } else {
+                println!(
+                    "\n{DIM}Showing {} of {} MCP servers for \"{}\".{RESET}",
+                    shown, resp.total, query,
+                );
+            }
+        }
+        Err(ReadError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach the vettd directory: {msg}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Compact one-line-per-server table for MCP search results. Deliberately
+/// minimal — the raw JSON dump carries the full `McpHit` shape (OSV block
+/// included). Columns: id, category, registry, stars, dep-vuln count.
+fn print_mcp_cards(cards: &[McpCard]) {
+    let id_w = cards
+        .iter()
+        .map(|c| {
+            c.mcp_id
+                .as_deref()
+                .or(c.name.as_deref())
+                .unwrap_or("—")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(2);
+    let term_w = terminal_width();
+
+    println!(
+        "{BOLD}{:<w$}  {:<10}  {:<9}  {:>7}  {:>9}  description{RESET}",
+        "mcp",
+        "category",
+        "registry",
+        "stars",
+        "dep vulns",
+        w = id_w,
+    );
+    println!("{DIM}{}{RESET}", "─".repeat(term_w.saturating_sub(5)));
+
+    for card in cards {
+        let id = card
+            .mcp_id
+            .as_deref()
+            .or(card.name.as_deref())
+            .unwrap_or("—");
+        let category = card.mcp_category.as_deref().unwrap_or("—");
+        let registry = card.registry_type.as_deref().unwrap_or("—");
+        let stars = card
+            .stars
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let dep_vulns = card
+            .security_direct_deps_vuln_count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let desc = card.description.as_deref().unwrap_or("");
+
+        let visual_prefix_w = id_w + 2 + 10 + 2 + 9 + 2 + 7 + 2 + 9 + 2;
+        let desc_budget = term_w.saturating_sub(visual_prefix_w).saturating_sub(5);
+        let desc_display = truncate_to_display(desc, desc_budget);
+        println!(
+            "{id:<id_w$}  {category:<10}  {registry:<9}  {stars:>7}  {dep_vulns:>9}  {DIM}{desc_display}{RESET}"
+        );
     }
 }
 
@@ -1086,6 +1422,247 @@ mod tests {
     #[test]
     fn fmt_severity_breakdown_empty() {
         assert_eq!(fmt_severity_breakdown(0, 0, 0, 0, 0), "none");
+    }
+
+    // ── build_search_body / filter parsing ────────────────────────────────
+
+    fn skill_filters() -> SearchFilters {
+        SearchFilters {
+            asset_type: "skill".to_string(),
+            ..SearchFilters::default()
+        }
+    }
+
+    #[test]
+    fn build_search_body_skill_default_shape() {
+        let body = build_search_body(
+            "pdf",
+            1,
+            "newest",
+            false,
+            &skill_filters(),
+            &ValidatedFilters::default(),
+        );
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "search": "pdf",
+                "page": 1,
+                "sort": "newest",
+                "reverse": false,
+                "assetType": "skill",
+                "languages": [],
+                "agentCompatibility": [],
+                "sources": [],
+                "rankFilters": {},
+                "rankings": null,
+            })
+        );
+        // mcp-only keys are absent on the skill path.
+        let obj = body.as_object().unwrap();
+        assert!(!obj.contains_key("mcpCategory"));
+        assert!(!obj.contains_key("deployment"));
+        assert!(!obj.contains_key("registryType"));
+    }
+
+    #[test]
+    fn build_search_body_threads_all_skill_filters() {
+        let filters = SearchFilters {
+            asset_type: "skill".to_string(),
+            languages: vec!["python".to_string(), "typescript".to_string()],
+            agent_compatibility: vec!["claude-code".to_string()],
+            sources: vec!["marketplace".to_string()],
+            rank_filters: vec!["search_rank_skills_sh_rank=100".to_string()],
+            ..SearchFilters::default()
+        };
+        let validated = validate_search_filters(&filters, true);
+        let body = build_search_body("pdf", 2, "rating", true, &filters, &validated);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "search": "pdf",
+                "page": 2,
+                "sort": "rating",
+                "reverse": true,
+                "assetType": "skill",
+                "languages": ["python", "typescript"],
+                "agentCompatibility": ["claude-code"],
+                "sources": ["marketplace"],
+                "rankFilters": {"search_rank_skills_sh_rank": 100},
+                "rankings": null,
+            })
+        );
+    }
+
+    #[test]
+    fn build_search_body_mcp_adds_mcp_only_arrays() {
+        let filters = SearchFilters {
+            asset_type: "mcp".to_string(),
+            sources: vec!["glama".to_string()],
+            mcp_category: vec!["server".to_string()],
+            deployment: vec!["hybrid".to_string()],
+            registry_type: vec!["npm".to_string()],
+            ..SearchFilters::default()
+        };
+        let body = build_search_body(
+            "context7",
+            1,
+            "newest",
+            false,
+            &filters,
+            &ValidatedFilters::default(),
+        );
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "search": "context7",
+                "page": 1,
+                "sort": "newest",
+                "reverse": false,
+                "assetType": "mcp",
+                "languages": [],
+                "agentCompatibility": [],
+                "sources": ["glama"],
+                "rankFilters": {},
+                "rankings": null,
+                "mcpCategory": ["server"],
+                "deployment": ["hybrid"],
+                "registryType": ["npm"],
+            })
+        );
+    }
+
+    #[test]
+    fn build_search_body_mcp_empty_filters_still_present() {
+        let filters = SearchFilters {
+            asset_type: "mcp".to_string(),
+            ..SearchFilters::default()
+        };
+        let body = build_search_body(
+            "x",
+            1,
+            "newest",
+            false,
+            &filters,
+            &ValidatedFilters::default(),
+        );
+        let obj = body.as_object().unwrap();
+        assert_eq!(obj["mcpCategory"], serde_json::json!([]));
+        assert_eq!(obj["deployment"], serde_json::json!([]));
+        assert_eq!(obj["registryType"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn build_search_body_passes_rankings_object_through() {
+        let filters = SearchFilters {
+            asset_type: "skill".to_string(),
+            rankings: Some(r#"{"stars": 50, "officialClaudeMarketplace": true}"#.to_string()),
+            ..SearchFilters::default()
+        };
+        let validated = validate_search_filters(&filters, true);
+        let body = build_search_body("q", 1, "newest", false, &filters, &validated);
+        assert_eq!(
+            body["rankings"],
+            serde_json::json!({"stars": 50, "officialClaudeMarketplace": true})
+        );
+    }
+
+    #[test]
+    fn parse_rank_filters_valid() {
+        let got = parse_rank_filters(&[
+            "search_rank_skills_sh_rank=100".to_string(),
+            "search_rank_seed_rank=5".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(got["search_rank_skills_sh_rank"], serde_json::json!(100));
+        assert_eq!(got["search_rank_seed_rank"], serde_json::json!(5));
+    }
+
+    #[test]
+    fn parse_rank_filters_empty_is_empty_map() {
+        assert!(parse_rank_filters(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_rank_filters_rejects_missing_equals() {
+        let err = parse_rank_filters(&["search_rank_seed_rank".to_string()]).unwrap_err();
+        assert!(err.contains("key=N"));
+    }
+
+    #[test]
+    fn parse_rank_filters_rejects_non_integer_value() {
+        let err = parse_rank_filters(&["k=abc".to_string()]).unwrap_err();
+        assert!(err.contains("must be an integer"));
+    }
+
+    #[test]
+    fn parse_rank_filters_rejects_empty_key() {
+        let err = parse_rank_filters(&["=10".to_string()]).unwrap_err();
+        assert!(err.contains("empty key"));
+    }
+
+    #[test]
+    fn any_filter_set_detects_each_filter() {
+        assert!(!any_filter_set(&skill_filters()));
+        assert!(any_filter_set(&SearchFilters {
+            asset_type: "mcp".to_string(),
+            ..SearchFilters::default()
+        }));
+        assert!(any_filter_set(&SearchFilters {
+            asset_type: "skill".to_string(),
+            sources: vec!["seed".to_string()],
+            ..SearchFilters::default()
+        }));
+        assert!(any_filter_set(&SearchFilters {
+            asset_type: "skill".to_string(),
+            rank_filters: vec!["k=1".to_string()],
+            ..SearchFilters::default()
+        }));
+    }
+
+    #[test]
+    fn directory_card_surfaces_scan_verdicts_in_json() {
+        let raw = serde_json::json!({
+            "name": "e2e-testing",
+            "llm_scan": {"max_severity": "LOW", "finding_count": 1},
+            "cli_security": {"grade": "C"},
+            "vettd_scan": {"overall_grade": "B", "trust_level": "cautious"}
+        });
+        let card: DirectoryCard = serde_json::from_value(raw).unwrap();
+        let out = serde_json::to_value(&card).unwrap();
+        assert_eq!(out["llm_scan"]["max_severity"], "LOW");
+        assert_eq!(out["cli_security"]["grade"], "C");
+        assert_eq!(out["vettd_scan"]["overall_grade"], "B");
+    }
+
+    #[test]
+    fn directory_card_without_verdicts_omits_them() {
+        let raw = serde_json::json!({"name": "plain"});
+        let card: DirectoryCard = serde_json::from_value(raw).unwrap();
+        let out = serde_json::to_value(&card).unwrap();
+        let obj = out.as_object().unwrap();
+        assert!(!obj.contains_key("llm_scan"));
+        assert!(!obj.contains_key("cli_security"));
+        assert!(!obj.contains_key("vettd_scan"));
+    }
+
+    #[test]
+    fn mcp_card_is_snake_case_passthrough() {
+        let raw = serde_json::json!({
+            "mcp_id": "github:upstash/context7",
+            "name": "context7",
+            "registry_type": "npm",
+            "stars": 61421,
+            "security_direct_deps_vuln_count": 44,
+            "security_direct_deps_with_vulns": ["zod", "jose"]
+        });
+        let card: McpCard = serde_json::from_value(raw).unwrap();
+        let out = serde_json::to_value(&card).unwrap();
+        assert_eq!(out["mcp_id"], "github:upstash/context7");
+        assert_eq!(out["security_direct_deps_vuln_count"], 44);
+        assert_eq!(out["security_direct_deps_with_vulns"][0], "zod");
+        // absent fields are not serialized as null
+        assert!(!out.as_object().unwrap().contains_key("readme"));
     }
 
     #[test]
