@@ -61,9 +61,16 @@ type SearchRequestBody = {
   page: number;
   sort: "newest" | "rating" | "alpha";
   reverse: boolean;
+  assetType: "skill" | "mcp";        // always present, default "skill"
   languages: string[];              // always present, [] if unfiltered
   agentCompatibility: string[];     // always present, [] if unfiltered
+  sources: string[];                // always present, [] if unfiltered
+  rankFilters: Record<string, number>;  // always present, {} if unfiltered
   rankings: RankingsFilter | null;  // null if --rankings not passed
+  // only present when assetType === "mcp" (always present then, [] if unset):
+  mcpCategory?: string[];
+  deployment?: string[];
+  registryType?: string[];
 };
 
 type RankingsFilter = {
@@ -74,6 +81,14 @@ type RankingsFilter = {
   // additional numeric/boolean keys are omitted-key = unconstrained
 };
 ```
+
+`assetType`, `sources`, `rankFilters` map to the query service's
+`asset_type`, `sources`, `rank_filters` (`QueryRequest`). When
+`assetType === "mcp"` the response is `McpSearchListResponse`
+(`{mcpServers, total, page, totalPages, mock: false, indexReady}`) instead
+of the skill envelope below; `POST /api/inventory` rejects
+`assetType: "mcp"` with a 400. See `vettd/docs/search-beta-api-spec.md`
+"Phase 3".
 
 Validation the handler owns:
 - `languages`/`agentCompatibility` filtering semantics (AND vs OR across
@@ -110,6 +125,11 @@ type DirectoryCard = {
     numberOfAggregators: number;
     officialClaudeMarketplace: boolean;
   };
+  // opaque scan-verdict passthroughs from the query service (snake_case,
+  // object | null) — forwarded verbatim, not modelled by the CLI
+  llm_scan?: object | null;
+  cli_security?: object | null;
+  vettd_scan?: object | null;
 };
 
 type DirectoryListResponse = {
@@ -134,12 +154,19 @@ output field to match.
 
 ## Summary of what's needed in the Next.js app
 
-- [ ] Add a `POST` handler alongside the existing `GET` handler on
+- [x] Add a `POST` handler alongside the existing `GET` handler on
       `/api/directory` and `/api/inventory`, same route file/path.
-- [ ] Parse and validate `SearchRequestBody` (above).
-- [ ] Decide + implement AND/OR semantics for `languages`/`agentCompatibility`.
-- [ ] Decide + implement handling of unknown `rankings` keys.
-- [ ] Extend the search/query layer to filter on language, agent
-      compatibility, and ranking thresholds.
-- [ ] Include `language`/`agentCompatibility`/`rankings` in POST responses
+- [x] Parse and validate `SearchRequestBody` (above), incl. `assetType` /
+      `sources` / `rankFilters` / the mcp-only filters.
+- [x] `assetType: "mcp"` on `POST /api/directory` → proxy the query service's
+      `mcp_servers` catalog, response `McpSearchListResponse`; 400 on
+      `POST /api/inventory`.
+- [x] Extend the search/query layer to filter on language, agent
+      compatibility, ranking thresholds, `sources`, `rankFilters`.
+- [x] Include `language`/`agentCompatibility`/`rankings` and the
+      `llm_scan`/`cli_security`/`vettd_scan` passthroughs in POST responses
       only — never on GET responses.
+
+All of the above are implemented on the `vettd` branch
+`feat/directory-mcp-search-and-verdicts` (see `vettd-e2e/E2E_TEST_PLAN_05.md`).
+The CLI side (this repo) consumes them behind `SEARCH_BETA_TESTING`.
