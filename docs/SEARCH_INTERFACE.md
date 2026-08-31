@@ -40,14 +40,14 @@ GET {base}/directory?search=<query>&sort=<sort>&page=<page>
 {
   "skills": [
     {
-      "slug": "pdf-summarizer",
-      "name": "PDF Summarizer",
-      "description": "Extracts and summarizes long PDF reports.",
-      "version": "2.3.0",
-      "author": "acme-labs",
-      "category": "productivity",
+      "slug": "e2e-testing",
+      "name": "e2e-testing",
+      "description": "Drives end-to-end browser tests with Playwright: installs the runner, generates specs from a user story, runs them headless with retries, and triages failures.",
+      "version": "1.4.0",
+      "author": "affaan-m",
+      "category": "Testing",
       "badgeStatus": "verified",
-      "overallGrade": "A",
+      "overallGrade": "B",
       "sourceType": "github",
       "scannerRunCount": 12
     }
@@ -61,6 +61,12 @@ GET {base}/directory?search=<query>&sort=<sort>&page=<page>
 Deserialization is allow-list only — unknown response fields are silently
 dropped (never printed), so any *new* field the server adds is invisible
 until the CLI's struct is updated to include it.
+
+> The `e2e-testing` skill (`github.com/affaan-m/ECC`, `skills/e2e-testing`) is
+> the shared example subject across the rendered API docs
+> (`vettd/docs/VETTD_API.md`, `ah-skills/search-demo/docs/QUERY_SERVICE_API.md`)
+> — it's the one skill that carries all three catalog scan verdicts. The MCP
+> example subject is `github:upstash/context7` (see "Coming" below).
 
 ## New shape (`SEARCH_BETA_TESTING=1` — always POST + JSON)
 
@@ -132,22 +138,22 @@ top-level `mock` flag.
 {
   "skills": [
     {
-      "slug": "pdf-summarizer",
-      "name": "PDF Summarizer",
-      "description": "Extracts and summarizes long PDF reports.",
-      "version": "2.3.0",
-      "author": "acme-labs",
-      "category": "productivity",
+      "slug": "e2e-testing",
+      "name": "e2e-testing",
+      "description": "Drives end-to-end browser tests with Playwright: installs the runner, generates specs from a user story, runs them headless with retries, and triages failures.",
+      "version": "1.4.0",
+      "author": "affaan-m",
+      "category": "Testing",
       "badgeStatus": "verified",
-      "overallGrade": "A",
+      "overallGrade": "B",
       "sourceType": "github",
       "scannerRunCount": 12,
-      "language": "python",
-      "agentCompatibility": ["claude-code", "cursor"],
+      "language": "en",
+      "agentCompatibility": ["claude-code"],
       "rankings": {
-        "stars": 812,
-        "skillsShLeaderboardRank": 14,
-        "numberOfAggregators": 3,
+        "stars": 240095,
+        "skillsShLeaderboardRank": 142,
+        "numberOfAggregators": 2,
         "officialClaudeMarketplace": true
       }
     }
@@ -159,6 +165,10 @@ top-level `mock` flag.
 }
 ```
 
+Note: `docLanguage` here is the SKILL.md's *spoken/content* language (`"en"`),
+not a programming language — the CLI surfaces it under `language` via a serde
+alias. See `vettd/docs/search-beta-api-spec.md`.
+
 `language`/`agentCompatibility`/`rankings`/`mock` are additive `Option` fields on
 `DirectoryCard` (`crates/vettd-cli/src/directory.rs`) — old clients (without
 the beta flag, or on an older CLI version) simply don't have the field and
@@ -169,6 +179,112 @@ still prints the raw JSON response (now including the new fields) followed
 by the formatted table, regardless of `--json`. The human-readable table
 does not yet render a `rankings` summary column — exact layout TBD; the
 fields are visible today via the raw-JSON dump / `--json`.
+
+## Coming: scan verdicts + MCP servers (backend ready, CLI not built)
+
+The `vettd` backend (branch `feat/directory-mcp-search-and-verdicts`) already
+serves more than the CLI consumes. These land in the CLI via
+`CHANGING_CLI_INTERFACE.md` Recipe B ("Anticipated work" section) — the wire
+shapes are fixed, only the Rust structs are missing.
+
+**Three scan verdicts per skill card** (`POST {base}/directory`, `assetType`
+default `"skill"`) — opaque passthroughs from the query service, snake_case:
+
+```json
+{
+  "slug": "e2e-testing",
+  "name": "e2e-testing",
+  "...": "(the fields above, plus:)",
+  "llm_scan": {
+    "model": "openrouter/deepseek/deepseek-v3.2",
+    "prompt_version": "37243f9d5700",
+    "scanned_at": "2026-08-30T21:41:26.512874+00:00",
+    "content_sha256": "b0e00e7e17cb259101139900816c5528aed18dd10bcf5f9cb42cfc35baf8a755",
+    "max_severity": "LOW",
+    "finding_count": 1,
+    "primary_threats": ["unpinned-dependency-install"],
+    "overall_assessment": "Benign testing skill. One low-severity note ...",
+    "findings": [
+      {"severity": "LOW", "aitech": "AITech-4.3", "title": "Unpinned global CLI install", "description": "...", "remediation": "Pin the version."}
+    ]
+  },
+  "cli_security": {
+    "grade": "C",
+    "scanned_at": "2026-08-30T21:40:47.315190+00:00",
+    "osv_snapshot_date": "2026-08-30",
+    "packages": [
+      {"package": "playwright", "ecosystem": "npm", "classification": "cli",
+       "install_command": "npx playwright test tests/search.spec.ts --repeat-each=10",
+       "vuln_count": 1, "max_severity": "HIGH", "advisory_ids": ["GHSA-7mvr-c777-76hp"]}
+    ]
+  },
+  "vettd_scan": {
+    "scan_id": "scn_01J9Z7Q3K8V2M4N6P8R0T2W4Y6",
+    "overall_grade": "B",
+    "trust_level": "cautious",
+    "has_malicious_findings": false,
+    "finding_count": 4,
+    "severity_counts": {"critical": 0, "high": 0, "medium": 1, "low": 2, "info": 1},
+    "categories_flagged": ["scripts", "best-practices"],
+    "top_findings": [
+      {"rule_id": "shell-exec-unpinned-install", "category": "scripts", "severity": "medium", "label": "..."}
+    ]
+  }
+}
+```
+
+`llm_scan` is the non-deterministic LLM threat scan (reverts to `null` on a
+catalog re-index); `cli_security` is the OSV grade for the CLI tools the skill
+installs; `vettd_scan` is the deterministic Vettd scan rollup for the matched
+repo. All `object | null`.
+
+**MCP-server search** — `POST {base}/directory` with `{"assetType": "mcp", ...}`.
+Different response envelope (`mcpServers`, not `skills`) and a `McpHit`-shaped
+card. The catalog subject is `github:upstash/context7`:
+
+```json
+{
+  "mcpServers": [
+    {
+      "score": 0.75,
+      "rank": 1,
+      "mcp_id": "github:upstash/context7",
+      "name": "io.github.upstash/context7",
+      "description": "A Model Context Protocol server that fetches up-to-date, version-specific documentation and code examples ...",
+      "repo_url": "https://github.com/upstash/context7",
+      "status": "active",
+      "mcp_category": "server",
+      "sources": ["repo_scan", "official_registry", "glama"],
+      "registry_type": "npm",
+      "package_identifier": "@upstash/context7-mcp",
+      "deployment": "hybrid",
+      "transport": "stdio",
+      "has_installable_package": true,
+      "has_remote": true,
+      "license": "MIT License",
+      "stars": 61421,
+      "language": "TypeScript",
+      "weekly_downloads": 867314,
+      "security_source": "osv",
+      "security_vuln_count": 0,
+      "security_max_severity": null,
+      "security_direct_deps_scanned": 8,
+      "security_direct_deps_vuln_count": 44,
+      "security_direct_deps_with_vulns": ["zod", "jose", "undici", "express"],
+      "security_direct_deps_max_severity": "HIGH"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "totalPages": 1,
+  "mock": false,
+  "indexReady": true
+}
+```
+
+The `mcp` path is a thin fail-open proxy of the query service — no CLI
+subcommand exists yet (`DirectorySubcommand` has no MCP arm). Full contract:
+`vettd/docs/VETTD_API.md`, `vettd/docs/search-beta-api-spec.md` "Phase 3".
 
 ## Gating
 
