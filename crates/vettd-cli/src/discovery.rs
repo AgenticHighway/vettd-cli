@@ -16,6 +16,13 @@ use walkdir::WalkDir;
 
 pub const MAX_DEPTH: usize = 5;
 
+/// Hard cap on candidates collected by `discover_root_surfaces` (the
+/// `vettd scan full` walk from `/`). `scan full` has no directory-depth
+/// bound like the other walkers, so this exists purely to keep the
+/// in-memory candidate `Vec` and downstream detector pass bounded on a
+/// very large or unusual filesystem.
+pub const MAX_ROOT_SCAN_FILES: usize = 500_000;
+
 // ---------------------------------------------------------------------------
 // Excluded directory sets
 // ---------------------------------------------------------------------------
@@ -36,7 +43,6 @@ const NON_FORENSIC_EXCLUDED_DIRS: &[&str] = &[
     ".tox",
     ".nox",
     ".idea",
-    ".vscode",
     ".next",
     "target",
     ".cache",
@@ -166,8 +172,57 @@ fn is_excluded_dir(entry: &walkdir::DirEntry, excluded: &HashSet<&str>) -> bool 
         .is_some_and(|name| excluded.contains(name))
 }
 
-fn should_descend(entry: &walkdir::DirEntry, excluded: &HashSet<&str>) -> bool {
-    entry.depth() == 0 || !is_excluded_dir(entry, excluded)
+/// `.vscode` is a targeted exception to directory exclusion: the MCP
+/// detector explicitly looks for `mcp.json`, and VS Code's per-project
+/// config directory is a standard location for it. We still don't want
+/// general editor noise (settings.json, launch.json, extensions/, etc.)
+/// surfacing as candidates, so an organically-discovered `.vscode` is
+/// always descended into (to see its direct children) but nothing *inside*
+/// it is ever descended into further, and `is_vscode_noise_file` filters
+/// its direct children down to `mcp.json` only. An explicitly-targeted
+/// `.vscode` root (depth 0) is unaffected and keeps its full contents,
+/// same as any other explicit root.
+fn is_vscode_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir() && entry.file_name().to_str() == Some(".vscode")
+}
+
+fn is_inside_organic_vscode_dir(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
+    if walk_root.file_name().and_then(|n| n.to_str()) == Some(".vscode") {
+        // The walk root itself is a .vscode directory — it was explicitly
+        // targeted, so scan its full contents (matching the general
+        // explicit-root-is-never-excluded rule) rather than applying the
+        // organic-discovery noise heuristic anywhere within it.
+        return false;
+    }
+    entry
+        .path()
+        .parent()
+        .filter(|parent| *parent != walk_root)
+        .is_some_and(|parent| parent.file_name().and_then(|n| n.to_str()) == Some(".vscode"))
+}
+
+fn should_descend(entry: &walkdir::DirEntry, excluded: &HashSet<&str>, walk_root: &Path) -> bool {
+    // filter_entry runs on every entry (files included) — a `false` here
+    // means "don't yield this entry at all", not just "don't descend into
+    // it". The .vscode-subdirectory rule below must only ever prune
+    // directories; files (e.g. `.vscode/mcp.json` itself) always need to
+    // pass through here so `is_vscode_noise_file` gets a chance to filter
+    // them by name afterward.
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
+        return true;
+    }
+    if is_inside_organic_vscode_dir(entry, walk_root) {
+        // A directory (e.g. `extensions/`, or even a nested `.vscode/`)
+        // inside an organically-found `.vscode`: never descend into it,
+        // only the outer `.vscode`'s direct mcp.json child is ever a
+        // candidate. Checked before is_vscode_dir below so a
+        // pathologically nested `.vscode/.vscode/` doesn't re-open descent.
+        return false;
+    }
+    if is_vscode_dir(entry) {
+        return true;
+    }
+    !is_excluded_dir(entry, excluded)
 }
 
 fn is_regular_file(entry: &walkdir::DirEntry) -> bool {
@@ -182,6 +237,21 @@ fn is_regular_file(entry: &walkdir::DirEntry) -> bool {
             .unwrap_or(false);
     }
     false
+}
+
+/// Filters out non-`mcp.json` direct children of a `.vscode` directory that
+/// was reached organically during a walk (see `is_vscode_dir`), while
+/// leaving an explicitly-targeted `.vscode` root's contents untouched.
+/// Nested subdirectories of an organic `.vscode` never reach this check —
+/// `should_descend`/`is_inside_organic_vscode_dir` already prunes descent
+/// into them.
+fn is_vscode_noise_file(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
+    is_inside_organic_vscode_dir(entry, walk_root)
+        && entry.path().file_name().and_then(|n| n.to_str()) != Some("mcp.json")
+}
+
+fn is_included_file(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
+    is_regular_file(entry) && !is_vscode_noise_file(entry, walk_root)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,13 +379,13 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
     let walker = WalkDir::new(root).max_depth(MAX_DEPTH).follow_links(false);
     let filtered = walker
         .into_iter()
-        .filter_entry(|e| should_descend(e, &excluded));
+        .filter_entry(|e| should_descend(e, &excluded, root));
 
     for entry in filtered.filter_map(|e| e.ok()) {
         if entry.depth() == MAX_DEPTH && entry.file_type().is_dir() {
             depth_cap_hit = true;
         }
-        if !is_regular_file(&entry) {
+        if !is_included_file(&entry, root) {
             continue;
         }
         candidates.push(Candidate {
@@ -350,10 +420,10 @@ pub fn walk_deep_workdir(
     let walker = WalkDir::new(root).follow_links(false);
     let filtered = walker
         .into_iter()
-        .filter_entry(|e| should_descend(e, &excluded));
+        .filter_entry(|e| should_descend(e, &excluded, root));
 
     for entry in filtered.filter_map(|e| e.ok()) {
-        if !is_regular_file(&entry) {
+        if !is_included_file(&entry, root) {
             continue;
         }
         candidates.push(Candidate {
@@ -494,10 +564,10 @@ pub fn discover_filesystem_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candi
         let walker = WalkDir::new(root).follow_links(false);
         let filtered = walker
             .into_iter()
-            .filter_entry(|e| should_descend(e, &excluded));
+            .filter_entry(|e| should_descend(e, &excluded, root));
 
         for entry in filtered.filter_map(|e| e.ok()) {
-            if !is_regular_file(&entry) {
+            if !is_included_file(&entry, root) {
                 continue;
             }
             candidates.push(Candidate {
@@ -522,26 +592,41 @@ pub fn discover_home_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> 
     walk_deep_workdir(&home, "home", on_tick)
 }
 
-pub fn discover_root_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
+// Full scan: prune pseudo-filesystems (/proc, /sys, /dev, ...) and the same
+// low-value dependency/cache/VCS directories every other walker excludes
+// (node_modules, .git, .cargo, vendor, target, ...). Without this, `scan
+// full` enumerates the entire tree — including virtual filesystems that can
+// hang or grow unbounded — into one in-memory Vec, and floods results with
+// vendored copies of files like AGENTS.md/.cursorrules weighted the same as
+// first-party ones. On top of that, `cap` bounds total candidates so a huge
+// disk can't grow the in-memory Vec without limit.
+fn walk_root_with_cap(
+    root: &Path,
+    origin: &str,
+    excluded: &HashSet<&str>,
+    cap: usize,
+    on_tick: Option<&dyn Fn(&str)>,
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let mut count: usize = 0;
 
-    let root = if cfg!(windows) {
-        PathBuf::from("C:\\")
-    } else {
-        PathBuf::from("/")
-    };
+    if cap == 0 {
+        return candidates;
+    }
 
-    // Full scan: no directory exclusions — enumerate everything.
-    let walker = WalkDir::new(&root).follow_links(false);
+    let walker = WalkDir::new(root).follow_links(false);
+    let filtered = walker
+        .into_iter()
+        .filter_entry(|e| should_descend(e, excluded, root));
 
-    for entry in walker.into_iter().filter_map(|e| e.ok()) {
-        if !is_regular_file(&entry) {
+    let mut cap_hit = false;
+    for entry in filtered.filter_map(|e| e.ok()) {
+        if !is_included_file(&entry, root) {
             continue;
         }
         candidates.push(Candidate {
             path: entry.into_path(),
-            origin: "root".to_string(),
+            origin: origin.to_string(),
         });
         count += 1;
         if let Some(tick) = on_tick {
@@ -549,8 +634,30 @@ pub fn discover_root_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> 
                 tick(&format!("{count} files"));
             }
         }
+        if count >= cap {
+            cap_hit = true;
+            break;
+        }
+    }
+
+    if cap_hit {
+        eprintln!(
+            "warning: full scan capped at {cap} files; results may be incomplete (use \
+             `vettd scan repo`/`vettd scan folder` for a bounded, thorough scan of a specific \
+             directory)"
+        );
     }
     candidates
+}
+
+pub fn discover_root_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
+    let excluded = filesystem_excluded_set();
+    let root = if cfg!(windows) {
+        PathBuf::from("C:\\")
+    } else {
+        PathBuf::from("/")
+    };
+    walk_root_with_cap(&root, "root", &excluded, MAX_ROOT_SCAN_FILES, on_tick)
 }
 
 pub fn discover_file_surface(path: &Path) -> Vec<Candidate> {
@@ -582,6 +689,15 @@ mod tests {
         assert!(set.contains("__pycache__"));
         assert!(set.contains(".cargo"));
         assert!(set.contains("vendor"));
+    }
+
+    #[test]
+    fn vscode_is_descended_but_not_dir_excluded() {
+        // .vscode is intentionally absent from the exclusion set: it's a
+        // targeted exception (see `is_vscode_dir`/`is_vscode_noise_file`)
+        // so mcp.json is still found, rather than a general exclusion.
+        let set = nonforensic_excluded_set();
+        assert!(!set.contains(".vscode"));
     }
 
     #[test]
@@ -639,6 +755,124 @@ mod tests {
         let candidates = walk_bounded(&root, "host", None);
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].path.ends_with(".vscode/settings.json"));
+    }
+
+    #[test]
+    fn walk_bounded_preserves_full_explicit_vscode_root_including_nested_subdirs() {
+        // Same invariant as the walk_deep_workdir version, exercised
+        // through the bounded (MAX_DEPTH-limited) walker used by default
+        // workdir/host scans.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".vscode");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("mcp.json"), "{}\n").unwrap();
+        fs::write(root.join("settings.json"), "{}\n").unwrap();
+        let nested = root.join("extensions").join("foo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("package.json"), "{}\n").unwrap();
+        let inner_vscode = root.join(".vscode");
+        fs::create_dir(&inner_vscode).unwrap();
+        fs::write(inner_vscode.join("settings.json"), "{}\n").unwrap();
+
+        let candidates = walk_bounded(&root, "host", None);
+        assert_eq!(candidates.len(), 4, "found: {candidates:?}");
+    }
+
+    #[test]
+    fn walk_deep_workdir_preserves_full_explicit_vscode_root_including_nested_subdirs() {
+        // The organic-.vscode noise heuristic must not leak into an
+        // explicitly-targeted `.vscode` root: if a user explicitly points
+        // the scanner at `.vscode` (e.g. `vettd scan folder ~/.vscode`),
+        // they want its full contents, including nested subdirectories and
+        // even a pathological nested `.vscode/.vscode`, not just mcp.json.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".vscode");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("mcp.json"), "{}\n").unwrap();
+        fs::write(root.join("settings.json"), "{}\n").unwrap();
+        let nested = root.join("extensions").join("foo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("package.json"), "{}\n").unwrap();
+        let inner_vscode = root.join(".vscode");
+        fs::create_dir(&inner_vscode).unwrap();
+        fs::write(inner_vscode.join("settings.json"), "{}\n").unwrap();
+
+        let candidates = walk_deep_workdir(&root, "host", None);
+        assert_eq!(candidates.len(), 4, "found: {candidates:?}");
+    }
+
+    #[test]
+    fn walk_bounded_finds_nested_vscode_mcp_json() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}\n").unwrap();
+
+        let candidates = walk_bounded(tmp.path(), "workdir", None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].path.ends_with(".vscode/mcp.json"));
+    }
+
+    #[test]
+    fn walk_bounded_ignores_other_files_in_nested_vscode_dir() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}\n").unwrap();
+        fs::write(tmp.path().join(".vscode").join("settings.json"), "{}\n").unwrap();
+        fs::write(tmp.path().join(".vscode").join("launch.json"), "{}\n").unwrap();
+
+        let candidates = walk_bounded(tmp.path(), "workdir", None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].path.ends_with(".vscode/mcp.json"));
+    }
+
+    #[test]
+    fn walk_deep_workdir_finds_nested_vscode_mcp_json() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}\n").unwrap();
+        fs::write(tmp.path().join(".vscode").join("settings.json"), "{}\n").unwrap();
+
+        let candidates = walk_deep_workdir(tmp.path(), "workdir", None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].path.ends_with(".vscode/mcp.json"));
+    }
+
+    #[test]
+    fn walk_deep_workdir_does_not_descend_into_nested_vscode_subdirectories() {
+        // The .vscode targeted exception must not become a general
+        // un-exclusion: files nested *inside* an organically-discovered
+        // .vscode directory (e.g. .vscode/extensions/foo/package.json)
+        // must stay excluded, not just direct siblings of mcp.json.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}\n").unwrap();
+        let nested = tmp.path().join(".vscode").join("extensions").join("foo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("package.json"), "{}\n").unwrap();
+
+        let candidates = walk_deep_workdir(tmp.path(), "workdir", None);
+        assert_eq!(candidates.len(), 1, "found: {candidates:?}");
+        assert!(candidates[0].path.ends_with(".vscode/mcp.json"));
+    }
+
+    #[test]
+    fn walk_deep_workdir_does_not_treat_pathologically_nested_vscode_as_a_new_root() {
+        // A directory literally named `.vscode` nested inside an
+        // organically-discovered `.vscode` must not re-open descent — the
+        // "always descend into a directory named .vscode" rule is only
+        // meant to apply once, to reach the outer .vscode's own direct
+        // mcp.json, not recursively re-trigger on nested `.vscode/.vscode`.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}\n").unwrap();
+        let inner_vscode = tmp.path().join(".vscode").join(".vscode");
+        fs::create_dir(&inner_vscode).unwrap();
+        fs::write(inner_vscode.join("mcp.json"), "{}\n").unwrap();
+
+        let candidates = walk_deep_workdir(tmp.path(), "workdir", None);
+        assert_eq!(candidates.len(), 1, "found: {candidates:?}");
+        assert!(candidates[0].path.ends_with(".vscode/mcp.json"));
+        assert!(!candidates[0].path.ends_with(".vscode/.vscode/mcp.json"));
     }
 
     #[cfg(unix)]
@@ -725,6 +959,38 @@ mod tests {
         let candidates = walk_deep_workdir(tmp.path(), "test", None);
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].path.ends_with("AGENTS.md"));
+    }
+
+    #[test]
+    fn walk_root_with_cap_excludes_low_value_dirs_and_finds_vscode_mcp_json() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
+        fs::write(tmp.path().join("node_modules").join("agents.md"), "noise").unwrap();
+        fs::create_dir(tmp.path().join(".vscode")).unwrap();
+        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}").unwrap();
+        fs::write(tmp.path().join(".vscode").join("settings.json"), "{}").unwrap();
+        fs::write(tmp.path().join("real.txt"), "real file").unwrap();
+
+        let excluded = filesystem_excluded_set();
+        let candidates = walk_root_with_cap(tmp.path(), "root", &excluded, usize::MAX, None);
+
+        let paths: Vec<_> = candidates.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(candidates.len(), 2, "found: {paths:?}");
+        assert!(paths.iter().any(|p| p.ends_with("real.txt")));
+        assert!(paths.iter().any(|p| p.ends_with(".vscode/mcp.json")));
+    }
+
+    #[test]
+    fn walk_root_with_cap_stops_at_the_cap() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..5 {
+            fs::write(tmp.path().join(format!("file{i}.txt")), "content").unwrap();
+        }
+
+        let excluded = filesystem_excluded_set();
+        let candidates = walk_root_with_cap(tmp.path(), "root", &excluded, 2, None);
+
+        assert_eq!(candidates.len(), 2);
     }
 
     #[test]

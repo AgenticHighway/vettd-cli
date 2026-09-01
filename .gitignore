@@ -1,4 +1,5 @@
 target/
+.cargo/
 **/*.rs.bk
 *.pdb
 .env
@@ -22,3 +23,5 @@ results.json
 *.jsonl
 
 .local/
+.opencode/
+.claude/

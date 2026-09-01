@@ -44,8 +44,8 @@ multiple-versions = "warn"
 wildcards = "allow"
 
 [sources]
-# Only allow crates from the official registry — no random git deps
+# Only allow crates from the official registry and the one vettd-skill-scanner git dependency
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/AgenticHighway/vettd-skill-scanner"] # only AgenticHighway/vettd-skill-scanner, by design

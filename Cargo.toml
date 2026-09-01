@@ -2,12 +2,11 @@
 resolver = "2"
 members = [
     "crates/vettd-cli",
-    "crates/vettd-skill-scanner",
 ]
 exclude = []
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.3"
 edition = "2021"
 
 [workspace.dependencies]

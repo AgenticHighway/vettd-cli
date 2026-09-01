@@ -20,7 +20,7 @@ flowchart TD
         ContractCache["~/.vettd/contract/\n(cached schema + version)"]
         ScanCache["~/.vettd/scan-cache/\n(SQLite scan profiles, file states,\ndetector artifacts for repeated scans,\nfuture root cursors)"]
         UpdateFiles["~/.vettd/downloads/\n~/.vettd/vettd.backup"]
-        AccessFile[".vettd.toml\n(access mode + endpoint overrides)"]
+        AccessFile["~/.vettd/.vettd.toml\n(access mode only — no endpoint/license)"]
         ReportFiles["vettd-report.json /\nvettd-contract.json /\ncustom output path"]
     end
 

@@ -10,8 +10,9 @@
 //! Covers both shapes described in `docs/SEARCH_INTERFACE.md`:
 //! - "old" shape: `GET {base}/directory?search=...` (SEARCH_BETA_TESTING unset).
 //! - "new" shape: `POST {base}/directory` with a JSON body carrying
-//!   `--language`/`--agent-compatibility`/`--rankings` (SEARCH_BETA_TESTING=1),
-//!   plus the dual raw-json + formatted-table dump it triggers.
+//!   `--language`/`--agent-compatibility`/`--rankings` (SEARCH_BETA_TESTING=1).
+//!   Beta mode no longer dumps raw JSON alongside the human table — output is
+//!   driven by `--json`, identical to the non-beta path.
 //!
 //! Every JSON assertion compares a *whole* `serde_json::Value` (request body
 //! or CLI stdout) against one literal built with `serde_json::json!` — no
@@ -61,10 +62,9 @@ fn directory_response_basic() -> Value {
     })
 }
 
-/// What the exact same CLI call prints to stdout for `directory_response_basic()`:
-/// allow-listed fields only. `language`/`agentCompatibility`/`rankings` are
-/// skipped entirely (not even `null`) since the server didn't send them —
-/// `--json` output must be byte-identical to the pre-beta shape.
+/// What the exact same CLI call prints to stdout for `directory_response_basic()`.
+/// `freshness` is omitted entirely (not even `null`) since the server didn't
+/// send it — `--json` output must be byte-identical to the pre-slice shape.
 fn expected_directory_output_basic() -> Value {
     json!({
         "skills": [{
@@ -133,8 +133,9 @@ fn directory_response_beta() -> Value {
 
 /// What the exact same CLI call prints to stdout for `directory_response_beta()`:
 /// allow-listed fields only (`internalRiskScore` dropped), the server's
-/// `docLanguage` surfaced under the CLI's own `language` key, everything
-/// else forwarded as-is.
+/// `docLanguage` surfaced under the CLI's own `language` key, plus
+/// `agentCompatibility`/`rankings`/`llm_scan`/`cli_security`/`vettd_scan`
+/// forwarded as-is. `freshness` is omitted since the server didn't send it.
 fn expected_directory_output_beta() -> Value {
     json!({
         "skills": [{
@@ -468,6 +469,12 @@ fn run_vettd(args: &[&str], home: &std::path::Path, extra_env: &[(&str, &str)]) 
     cmd.env_remove("SEARCH_BETA_TESTING");
     cmd.env_remove("VETTD_DIRECTORY_ENDPOINT");
     cmd.env_remove("VETTD_INVENTORY_ENDPOINT");
+    // Force the CLI to resolve config from $HOME/.config (the path
+    // `seed_home` writes), not from whatever XDG_CONFIG_HOME the CI or
+    // dev shell happens to have set — otherwise the seeded config is
+    // missed and the CLI falls through to the real production endpoint.
+    cmd.env_remove("XDG_CONFIG_HOME");
+    cmd.env_remove("XDG_CONFIG_DIRS");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -505,20 +512,8 @@ fn assert_json_eq(actual_str: &str, expected: &Value) {
     assert_eq!(actual, *expected);
 }
 
-const RAW_JSON_MARKER: &str = "--- SEARCH_BETA_TESTING: raw json ---";
-const FORMATTED_MARKER: &str = "--- SEARCH_BETA_TESTING: formatted ---";
-
-/// Pull the raw-JSON section out of a `SEARCH_BETA_TESTING` dual dump
-/// (raw json, then the formatted table) and parse it — beta mode always
-/// prints both, so stdout is never pure JSON even with `--json`.
-fn extract_beta_raw_json(stdout: &str) -> Value {
-    let out = strip_ansi(stdout);
-    let start = out.find(RAW_JSON_MARKER).expect("raw json marker present") + RAW_JSON_MARKER.len();
-    let end = out
-        .find(FORMATTED_MARKER)
-        .expect("formatted marker present");
-    serde_json::from_str(out[start..end].trim()).expect("raw dump is valid json")
-}
+// (no RAW_JSON_MARKER / FORMATTED_MARKER / extract_beta_raw_json — the
+// mixed dump was removed; see issues #231-#233)
 
 // ---------------------------------------------------------------------------
 // Old shape: GET via the saved config endpoint (SEARCH_BETA_TESTING unset).
@@ -559,6 +554,56 @@ fn inventory_search_without_config_is_rejected_before_any_request() {
 
     assert_eq!(result.status, 3);
     assert!(result.stderr.contains("not authenticated"));
+}
+
+// Regression tests for #231: invalid beta-gated filters must be rejected
+// before the auth check runs. An unauthenticated invocation with a bad filter
+// should exit 1 with the filter-validation error, NOT exit 3 with the auth
+// error.
+#[test]
+fn inventory_search_with_beta_gated_filter_without_flag_exits_before_auth_check() {
+    let home = new_temp_home();
+    // No config seeded — no auth.
+    let result = run_vettd(
+        &["inventory", "search", "notes", "--language", "python"],
+        home.path(),
+        &[],
+    );
+
+    assert_eq!(
+        result.status, 1,
+        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("--language")
+            && result.stderr.contains("require SEARCH_BETA_TESTING=1"),
+        "stderr should mention the beta-gate message: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn inventory_search_with_invalid_rankings_and_beta_flag_exits_before_auth_check() {
+    let home = new_temp_home();
+    // SEARCH_BETA_TESTING is set so the filter-validation step runs, but the
+    // rankings value is invalid JSON → must fail at validation, before auth.
+    let result = run_vettd(
+        &["inventory", "search", "notes", "--rankings", "not-json"],
+        home.path(),
+        &[("SEARCH_BETA_TESTING", "1")],
+    );
+
+    assert_eq!(
+        result.status, 1,
+        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("--rankings is not valid JSON"),
+        "stderr should mention the invalid-JSON message: {}",
+        result.stderr
+    );
 }
 
 #[test]
@@ -631,12 +676,8 @@ fn beta_search_sends_post_with_default_body_when_no_filters_given() {
     );
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    mock.assert(); // fails with a body diff if the POST shape drifts
-                   // Beta mode always dumps raw json + formatted table, even with --json.
-    assert_eq!(
-        extract_beta_raw_json(&result.stdout),
-        expected_directory_output_beta()
-    );
+    mock.assert();
+    assert_json_eq(&result.stdout, &expected_directory_output_beta());
 }
 
 #[test]
@@ -681,10 +722,7 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
     mock.assert();
-    assert_eq!(
-        extract_beta_raw_json(&result.stdout),
-        expected_directory_output_beta()
-    );
+    assert_json_eq(&result.stdout, &expected_directory_output_beta());
 }
 
 #[test]
@@ -850,10 +888,7 @@ fn beta_search_threads_source_and_rank_filter_into_post_body() {
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
     mock.assert();
-    assert_eq!(
-        extract_beta_raw_json(&result.stdout),
-        expected_directory_output_beta()
-    );
+    assert_json_eq(&result.stdout, &expected_directory_output_beta());
 }
 
 #[test]
@@ -876,7 +911,7 @@ fn beta_search_renders_scan_verdicts_in_json_dump() {
     );
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    let raw = extract_beta_raw_json(&result.stdout);
+    let raw: Value = serde_json::from_str(&result.stdout).expect("stdout is valid json");
     assert_eq!(raw["skills"][0]["llm_scan"]["max_severity"], "LOW");
     assert_eq!(raw["skills"][0]["cli_security"]["grade"], "C");
     assert_eq!(raw["skills"][0]["vettd_scan"]["overall_grade"], "B");
@@ -929,9 +964,8 @@ fn mcp_search_sends_asset_type_mcp_body_and_renders_mcp_servers() {
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
     mock.assert();
-    assert_eq!(extract_beta_raw_json(&result.stdout), expected_mcp_output());
-    let out = strip_ansi(&result.stdout);
-    assert!(out.contains("github:upstash/context7"));
+    assert_json_eq(&result.stdout, &expected_mcp_output());
+    assert!(result.stdout.contains("github:upstash/context7"));
 }
 
 #[test]
@@ -1048,7 +1082,7 @@ fn invalid_rankings_json_is_rejected_before_any_request() {
 }
 
 #[test]
-fn search_beta_testing_dumps_raw_json_and_formatted_table_together() {
+fn beta_search_without_json_prints_only_table() {
     let server = MockServer::start();
     mount_directory_post(
         &server,
@@ -1057,38 +1091,31 @@ fn search_beta_testing_dumps_raw_json_and_formatted_table_together() {
     );
     let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
 
-    // No --json passed — beta mode must still emit the raw JSON dump ahead
-    // of the formatted table.
     let result = run_vettd(
         &["directory", "search", "pdf"],
         home.path(),
         &[
             ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
-            ("SEARCH_BETA_TESTING", "true"),
+            ("SEARCH_BETA_TESTING", "1"),
         ],
     );
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
     let out = strip_ansi(&result.stdout);
 
-    let raw_idx = out.find(RAW_JSON_MARKER).expect("raw json marker present");
-    let formatted_idx = out
-        .find(FORMATTED_MARKER)
-        .expect("formatted marker present");
-    assert!(raw_idx < formatted_idx, "raw dump must precede the table");
+    // No SEARCH_BETA_TESTING markers may leak into stdout — output is
+    // driven by --json only, identical to the non-beta path.
+    assert!(!out.contains("SEARCH_BETA_TESTING"));
+    assert!(!out.contains("raw json"));
+    assert!(!out.contains("formatted"));
 
-    assert_eq!(
-        extract_beta_raw_json(&result.stdout),
-        expected_directory_output_beta()
-    );
-
-    let formatted_slice = &out[formatted_idx..];
-    assert!(formatted_slice.contains("[A]"));
-    assert!(formatted_slice.contains("Showing 1 of 1 assets"));
+    // Human table still renders.
+    assert!(out.contains("[A]"));
+    assert!(out.contains("Showing 1 of 1 assets"));
 }
 
 #[test]
-fn search_beta_testing_still_appends_table_when_json_flag_passed() {
+fn beta_inventory_search_json_emits_only_json() {
     let server = MockServer::start();
     mount_inventory_post(
         &server,
@@ -1108,9 +1135,15 @@ fn search_beta_testing_still_appends_table_when_json_flag_passed() {
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
     let out = strip_ansi(&result.stdout);
-    assert!(out.contains("--- SEARCH_BETA_TESTING: raw json ---"));
-    // --json doesn't suppress the formatted table once beta mode is on.
-    assert!(out.contains("[B]"));
+    // No SEARCH_BETA_TESTING markers may leak into stdout — output is
+    // driven by --json only, identical to the non-beta path.
+    assert!(!out.contains("SEARCH_BETA_TESTING"));
+    assert!(!out.contains("raw json"));
+    assert!(!out.contains("formatted"));
+    assert!(!out.contains("[B]"));
+    // The whole stdout must be a single valid JSON document.
+    let parsed: Value = serde_json::from_str(&out).expect("stdout must parse as JSON");
+    assert_eq!(parsed, expected_inventory_output_basic());
 }
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,10 @@ mod contract;
 mod contract_sync;
 mod detectors;
 mod directory;
+mod directory_download;
 mod discovery;
 mod formatters;
+mod freshness;
 mod identity;
 mod inventory;
 mod inventory_client;
@@ -37,5 +39,17 @@ mod verifier;
 mod wizard;
 
 fn main() {
+    // Manual `--version` handler.
+    //
+    // clap's `#[command(version = ...)]` only accepts literals, but we need to
+    // show the pinned `vettd_skill_scanner::VERSION` (a `pub const`, not a
+    // literal) in the long version. So we intercept `--version` / `-V` before
+    // clap sees it, print the two-line version, and exit.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        println!("{}", cli::long_version_string());
+        std::process::exit(0);
+    }
+
     cli::run();
 }

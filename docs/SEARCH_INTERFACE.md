@@ -20,7 +20,7 @@ all gated behind `SEARCH_BETA_TESTING` (see
 
 Skill search responses also now carry three opaque scan-verdict passthroughs
 per card — `llm_scan`, `cli_security`, `vettd_scan` (`object | null`,
-snake_case) — surfaced in `--json` / the raw dump.
+snake_case) — surfaced in `--json`.
 
 The new filters don't fit cleanly into a query string, so enabling the flag
 also switches the request from `GET ?query-string` to `POST` with a JSON
@@ -286,8 +286,7 @@ the skill has no catalog match, or when the query service is unreachable.
 The CLI carries them as `Option<serde_json::Value>` on `DirectoryCard`
 (`#[serde(skip_serializing_if = "Option::is_none")]`), so a GET / non-beta
 response that omits them round-trips byte-identically. The human table does
-not render a verdict column yet (follow-up) — they show in the raw dump /
-`--json`.
+not render a verdict column yet (follow-up) — they show in `--json`.
 
 Note: `docLanguage` here is the SKILL.md's *spoken/content* language (`"en"`),
 not a programming language — the CLI surfaces it under `language` via a serde
@@ -299,11 +298,12 @@ alias. See `vettd/docs/search-beta-api-spec.md`.
 or on an older CLI version) simply don't have the field and continue to
 ignore it, per the existing forward-compatibility contract.
 
-**Dual dump behavior (unchanged):** with `SEARCH_BETA_TESTING=1` the CLI
-still prints the raw JSON response (now including the new fields) followed
-by the formatted table, regardless of `--json`. The human-readable table
-does not yet render a `rankings` / verdict summary column — exact layout
-TBD; the fields are visible today via the raw-JSON dump / `--json`.
+**Output mode:** `--json` prints the raw response as pretty JSON (with the
+new fields when the beta flag is on); without it, the formatted table. This
+is the same on the beta and non-beta paths — there is no separate
+"dual dump" mode (removed upstream, #231–#233). The human-readable table
+does not yet render a `rankings` / verdict summary column — those fields are
+visible via `--json`.
 
 ## MCP search — `--asset-type mcp`
 
@@ -316,8 +316,8 @@ a **different response envelope** (`mcpServers`, not `skills`) of
 - Only on `directory search`. `inventory search --asset-type mcp` is rejected
   client-side (exit 1) — the MCP catalog is not user-scoped and the backend
   400s it.
-- Always beta (requires `SEARCH_BETA_TESTING`), so always `POST` + the dual
-  raw/formatted dump.
+- Always beta (requires `SEARCH_BETA_TESTING`), so always `POST`. `--json`
+  → raw JSON; otherwise the compact MCP table.
 - `--source` is forwarded; `--mcp-category` / `--deployment` /
   `--registry-type` are the mcp-only filters. `--rank-filter` /
   `--language` / `--agent-compatibility` are still sent but ignored
@@ -408,12 +408,8 @@ pre-beta shape. Same mechanism drops a wire `null`.
 
 **Building the output** (`handle_search` / `handle_mcp_search`):
 
-- **Beta always dual-dumps**, regardless of `--json`: it prints
-  `--- SEARCH_BETA_TESTING: raw json ---` + the pretty-printed
-  *re-serialized struct*, then `--- SEARCH_BETA_TESTING: formatted ---` +
-  the table.
-- `--json` only takes effect on the **non-beta** path (`if json && !beta` →
-  print the pretty JSON, no table).
+- `--json` → the pretty-printed *re-serialized struct*, nothing else.
+  Without it → the formatted table. Same on the beta and non-beta paths.
 - **Skill table** (`print_cards`): columns
   `rating · name · source · scanned by · description`. Grade → a color-coded
   `[A]` badge; `sourceType` → `display_source_type`; `scannerRunCount + 1` →
@@ -421,8 +417,8 @@ pre-beta shape. Same mechanism drops a wire `null`.
 - **MCP table** (`print_mcp_cards`): columns
   `mcp · category · registry · stars · dep vulns · description`. "dep vulns"
   is `security_direct_deps_vuln_count`.
-- **The three verdict objects are not rendered in either table** — raw dump /
-  `--json` only (a verdict column is a follow-up).
+- **The three verdict objects are not rendered in either table** — `--json`
+  only (a verdict column is a follow-up).
 - `mcpServers` empty **and** `indexReady == false` → an explicit "catalog is
   not ready yet (indexReady=false)" message, never `No MCP servers for "…"`.
 - Pagination hint (`use --page N to see more`) when `page < totalPages`.
@@ -441,12 +437,14 @@ export VETTD_DIRECTORY_ENDPOINT=http://localhost:3001/api/scans/ingest
 BIN=./target/debug/vettd
 ```
 
+> Captured 2026-08-31, then refreshed for the `upstream/main` merge: `--json`
+> now prints only the JSON block (the `--- SEARCH_BETA_TESTING: … ---`
+> markers were removed upstream, #231–#233). Field values are unchanged.
+
 ### A — skill card with `llm_scan` + `cli_security`
 
 ```
 $ $BIN directory search "e2e-testing" --json
-
---- SEARCH_BETA_TESTING: raw json ---
 {
   "skills": [
     {
@@ -483,14 +481,19 @@ $ $BIN directory search "e2e-testing" --json
   ],
   "total": 1, "page": 1, "totalPages": 1, "mock": false
 }
---- SEARCH_BETA_TESTING: formatted ---
+```
+
+Without `--json`, the same call prints the table (verdicts not shown there —
+`--json` only):
+
+```
+$ $BIN directory search "e2e-testing"
 rating  name         source      scanned by    description
 ────────────────────────────────────────────────────────────────
 [A]     e2e-testing  GitHub      1 scanner     Playwright E2E testing patterns, Page Object Model…
 ```
 
-The verdict objects never reach the table — only the raw dump.
-`vettd_scan` is absent here: this skill's catalog entry carried no
+`vettd_scan` is absent above: this skill's catalog entry carried no
 `vettd_scan_findings` in the test store.
 
 ### B — `vettd_scan` on a skill that has it (`daytona`, verdict block only)
@@ -512,8 +515,6 @@ The verdict objects never reach the table — only the raw dump.
 
 ```
 $ $BIN directory search "context7" --asset-type mcp --json
-
---- SEARCH_BETA_TESTING: raw json ---
 {
   "mcpServers": [
     {
@@ -554,7 +555,12 @@ $ $BIN directory search "context7" --asset-type mcp --json
   ],
   "total": 1, "page": 1, "totalPages": 1, "mock": false, "indexReady": true
 }
---- SEARCH_BETA_TESTING: formatted ---
+```
+
+Without `--json`, the compact MCP table:
+
+```
+$ $BIN directory search "context7" --asset-type mcp
 mcp                      category    registry     stars  dep vulns  description
 ───────────────────────────────────────────────────────────────────────────────
 github:upstash/context7  server      npm          61393         44  A Model Context Protocol server that fetches u…

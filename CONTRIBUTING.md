@@ -181,6 +181,33 @@ The [release workflow](.github/workflows/release.yml) will:
 
 > **Note:** All Actions in the release workflow are pinned to full commit SHAs to prevent supply chain attacks. See the comments in `release.yml` for details.
 
+### Updating vettd-skill-scanner
+
+`vettd-skill-scanner` is a pinned Cargo git dependency (by tag), not an in-tree crate. Scanner logic changes belong in [AgenticHighway/vettd-skill-scanner](https://github.com/AgenticHighway/vettd-skill-scanner); `vettd-cli` only edits the pinned tag.
+
+To update to a new tag:
+
+1. Confirm the target tag exists upstream:
+   ```bash
+   git ls-remote --tags https://github.com/AgenticHighway/vettd-skill-scanner | grep vX.Y
+   ```
+   (the version you want)
+2. Edit `crates/vettd-cli/Cargo.toml` and set `tag = "<vX.Y.Z>"` in the `vettd-skill-scanner` dependency.
+3. Run `cargo update -p vettd-skill-scanner`.
+4. Run the full local gate: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+5. Open a PR. Reviewers MUST verify the recorded `Cargo.lock` SHA for `vettd-skill-scanner` matches the upstream tag's actual commit (`git ls-remote --tags` / the tag object).
+
+#### Local development against scanner changes
+
+To test CLI + uncommitted scanner changes together before any upstream tag exists, add a gitignore'd `.cargo/config.toml` in the repo root:
+
+```toml
+[patch."https://github.com/AgenticHighway/vettd-skill-scanner"]
+vettd-skill-scanner = { path = "/abs/path/to/vettd-skill-scanner/crates/vettd-skill-scanner" }
+```
+
+Run `cargo build`/`cargo test`. Remove the block once the change lands upstream as a tag. The `.cargo/config.toml` file is gitignored — never commit it.
+
 ## CI pipeline
 
 Every PR and push to `main` triggers the [CI workflow](.github/workflows/ci.yml), which runs two parallel jobs:

@@ -10,12 +10,15 @@ description = "AI Execution Inventory — detect, analyze, and report AI executi
 name = "vettd"
 path = "src/main.rs"
 
-[[bin]]
-name = "parity-adapter"
-path = "src/bin/parity_adapter.rs"
-
 [dependencies]
-vettd-skill-scanner = { path = "../vettd-skill-scanner" }
+# ⚠️ TAG-BUMP GATE (vettd-cli#243 / epic #879) — read before changing this pin:
+#   Bumping `tag` changes the crate output surface that lands in
+#   scanner-data-contract.json. Every field on the pinned crate's
+#   SkillScanResult must be classified (surface|gate) in the repo-root
+#   scanner-field-gate.json BEFORE the bump; unclassified fields fail CI
+#   via scripts/check-scanner-field-gate.sh. Default leaning (D4 ruling):
+#   ADDITIVE surfacing for optional additively-shaped fields.
+vettd-skill-scanner = { git = "https://github.com/AgenticHighway/vettd-skill-scanner", tag = "v0.1.4" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -42,5 +45,5 @@ dispatch2 = "0.3"
 fsevent-sys = "5.2"
 
 [dev-dependencies]
-httpmock = "0.8.3"
+httpmock = "=0.8.2"
 tempfile = "3"

@@ -102,7 +102,7 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
                 );
             } else {
-                directory::print_cards(&resp.skills);
+                directory::print_cards(&resp.skills, false);
                 let shown = resp.skills.len();
                 if resp.page < resp.total_pages {
                     println!(
@@ -150,9 +150,11 @@ is not user-scoped. Use `vettd directory search --asset-type mcp` instead."
         std::process::exit(1);
     }
 
-    require_auth_or_exit();
+    // Validate filters before the auth check so a bad filter / missing beta
+    // flag surfaces ahead of an auth error (upstream #231/#232).
     let beta = crate::network::search_beta_testing_enabled();
     let validated = directory::validate_search_filters(filters, beta);
+    require_auth_or_exit();
 
     let result = if beta {
         let body = directory::build_search_body(query, page, sort, reverse, filters, &validated);
@@ -169,17 +171,7 @@ is not user-scoped. Use `vettd directory search --asset-type mcp` instead."
 
     match result {
         Ok(resp) => {
-            // SEARCH_BETA_TESTING dumps both raw and formatted output on every
-            // call, regardless of --json, so a tester can diff the two.
-            if beta {
-                println!("--- SEARCH_BETA_TESTING: raw json ---");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&resp).unwrap_or_default()
-                );
-                println!("--- SEARCH_BETA_TESTING: formatted ---");
-            }
-            if json && !beta {
+            if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
@@ -187,7 +179,7 @@ is not user-scoped. Use `vettd directory search --asset-type mcp` instead."
             } else if resp.skills.is_empty() {
                 println!("No results for \"{}\" in your inventory.", query);
             } else {
-                directory::print_cards(&resp.skills);
+                directory::print_cards(&resp.skills, false);
                 let shown = resp.skills.len();
                 if resp.page < resp.total_pages {
                     println!(

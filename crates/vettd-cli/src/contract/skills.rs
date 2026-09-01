@@ -2,7 +2,10 @@
 
 use crate::models::ArtifactReport;
 
-use super::helpers::{declared_tools, first_path, make_id, qualified_name, read_artifact_head};
+use super::helpers::{
+    declared_tools, detect_skill_source, first_path, make_id, qualified_name, read_artifact_head,
+};
+use super::mcp::build_command_string;
 use super::types::{
     Agent, ExternalScannerResult, Skill, SkillConsumer, SkillDependencies, SkillPermission,
 };
@@ -45,6 +48,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let id = make_id(source_path, &artifact.artifact_hash);
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
+    let detected_source = detect_skill_source(source_path);
 
     let scanner_result = artifact
         .cached_scan_result
@@ -69,6 +73,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
         external_scanner_results: scanner_result.map(|r| vec![r]),
+        detected_source,
     }
 }
 
@@ -269,22 +274,10 @@ fn extract_mcp_command_skills(
             continue;
         }
 
-        let args_str = server_val
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default();
-
-        let full_cmd = if args_str.is_empty() {
-            cmd.to_string()
-        } else {
-            format!("{cmd} {args_str}")
-        };
+        // Reuse the same redacted command builder as the mcpServers path so
+        // secret-looking args (e.g. `--api-key sk-live-...`) are masked here
+        // too, not just in `McpServer.command`. See issue #196.
+        let full_cmd = build_command_string(server_val);
 
         skills.push(Skill {
             id: skill_name.clone(),
@@ -305,6 +298,7 @@ fn extract_mcp_command_skills(
             },
             consumers: find_skill_consumers(&skill_name, agents),
             external_scanner_results: None,
+            detected_source: None,
         });
     }
 }
@@ -346,6 +340,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         },
         consumers: find_skill_consumers(tool_name, agents),
         external_scanner_results: None,
+        detected_source: None,
     }
 }
 
@@ -567,6 +562,40 @@ mod tests {
         let agents = vec![make_agent("coder", vec!["shell"])];
         let consumers = find_skill_consumers("browser", &agents);
         assert!(consumers.is_empty());
+    }
+
+    #[test]
+    fn mcp_skill_description_redacts_api_key_secret() {
+        // Issue #196 AC #1 (skills path): a config that pins an API key in the
+        // MCP server's args must not leak the literal secret into the skill's
+        // `description`. It must use the same redacted command string as the
+        // mcpServers path (`McpServer.command`), masking the value as REDACTED.
+        let val = serde_json::json!({
+            "mcpServers": {
+                "srv": {
+                    "command": "npx",
+                    "args": ["-y", "srv", "--api-key", "sk-live-ABC123", "--port", "3000"]
+                }
+            }
+        });
+
+        let mut skills = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        extract_mcp_command_skills(&val, &mut seen, &mut skills, &[]);
+
+        assert_eq!(skills.len(), 1);
+        let description = &skills[0].description;
+        assert!(
+            !description.contains("sk-live-ABC123"),
+            "skill description must not contain the literal API key, got: {description}"
+        );
+        assert!(
+            description.contains("--api-key REDACTED"),
+            "skill description must redact the api-key value, got: {description}"
+        );
+        // Benign args are preserved, matching the McpServer.command string.
+        assert!(description.contains("npx -y srv"));
+        assert!(description.contains("--port 3000"));
     }
 
     #[test]
