@@ -375,7 +375,7 @@ python3 prototype/lint_copy.py README.md SCOPE-965.md worked-example/ranking.exa
 What the run produced, on the machine that produced this spike (Claude Code 2.1.258, one main
 session plus its 19 sub-agent transcripts, read while the session was still being written):
 
-- Tests: `python3 -m unittest discover prototype/tests` — 174 tests, 0 failures, 0 skipped, in
+- Tests: `python3 -m unittest discover prototype/tests` — 183 tests, 0 failures, 0 skipped, in
   about 8 s (the 200 MB streaming test ran; free space was above the 1 GB floor).
 - Gate: 0 violations against 85 allowed leaf paths on the real payload and on the synthetic one;
   each injected fault (unknown key at any depth, path, URL, loaded-set name or path component,
@@ -507,7 +507,7 @@ Every figure above is an observation from harness logs on this machine, not a ca
 |---|---|---|---|
 | Raw content never leaves | gate check on the written payload; sentinel content planted in every content position of the fixtures never appears in parsed facts; violation messages never echo a value or a key name | The payload has only allowlisted leaf paths and no forbidden values; parsing discards content | A future harness line type that carries content under an allowed key |
 | Deterministic, versioned extraction | two runs → byte-identical payload; `extractor_version` on every payload | Same inputs, secret and day give the same bytes | Determinism across float formats (the envelope has no floats by design) |
-| Non-blocking, fail-open | rename-while-open; kill mid-read with atomic cursor commits then resume equals a single pass; bounded memory on a 200 MB file; byte-offset resume with a partial trailing line; disk cap on the cursor store | POSIX inode semantics; atomic resume; streaming reads | Windows share modes (needs the Rust `share_mode` test in #965); macOS; WAL, which is not applicable because both harnesses are file-based |
+| Non-blocking, fail-open | rename-while-open; kill mid-read with atomic cursor commits then resume equals a single pass; bounded memory on a 200 MB file; byte-offset resume with a partial trailing line; disk cap on the cursor store; unchanged groups emit nothing; a changed main or child rebuilds the cumulative run | POSIX inode semantics; atomic resume; streaming reads; per-file cursor orchestration | Windows share modes (needs the Rust `share_mode` test in #965); macOS; WAL, which is not applicable because both harnesses are file-based |
 | Opt-in, visible silence | `coverage` block; `run_id_basis`, `device_id_source` | Silence is distinguishable from nothing observed | Anything about the production opt-in, which does not exist yet |
 | Tier, count, evidence class on every signal | schema `required`; gate `required` | Every row carries them | — |
 | No causal claims | `lint_copy.py` over the docs and the rank templates | The strings in this directory | Copy written elsewhere |

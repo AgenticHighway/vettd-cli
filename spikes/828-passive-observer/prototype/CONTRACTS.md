@@ -174,7 +174,9 @@ exit 1 on findings.
 ## cursor_store.py
 
 `CursorStore(path)`: JSON file mapping session path → {byte_offset, inode}; `save()` writes
-temp+rename (atomic); `cap_bytes` evicts oldest entries beyond the cap.
+temp+rename (atomic); `cap_bytes` evicts oldest entries beyond the cap and rejects a cap too small
+for the empty store; unknown store versions fail open to an empty store. Every main and child file
+has its own cursor. Cursors detect new complete lines; they never define a partial run record.
 
 ## observe.py
 
@@ -185,4 +187,6 @@ CLI: `--harness claude_code|codex --root <home dir> --task "<text>" --secret-fil
 runs the checker in-process and refuses to write if it fails, prints `rank.render`. `--synthetic-demo`
 appends a clearly labelled synthetic AttributedRun set (invented counts) so a populated ranking can
 be shown; the label appears in the output header and the payload is written to a separate
-`<out>.synthetic.json`.
+`<out>.synthetic.json`. A fully-cursored unchanged run emits no record and reports
+`sessions_emitted=0`; if any main or child file changes, the whole group is reread and emitted as
+one cumulative record under the existing idempotent `run_id`.

@@ -24,14 +24,15 @@ from typing import Dict, Optional
 from sources.base import Cursor
 
 STORE_VERSION = 1
+EMPTY_STORE_SIZE = len(b'{"entries":{},"version":1}\n')
 
 
 class CursorStore:
     """path -> Cursor map with atomic persistence and an optional on-disk size cap."""
 
     def __init__(self, path: str, cap_bytes: Optional[int] = None) -> None:
-        if cap_bytes is not None and cap_bytes < 0:
-            raise ValueError("cap_bytes must be >= 0 or None")
+        if cap_bytes is not None and cap_bytes < EMPTY_STORE_SIZE:
+            raise ValueError(f"cap_bytes must be >= {EMPTY_STORE_SIZE} or None")
         self.path = path
         self.cap_bytes = cap_bytes
         self._entries: Dict[str, Cursor] = {}  # insertion order == age, oldest first
@@ -101,6 +102,8 @@ class CursorStore:
             with open(self.path, "rb") as fh:
                 doc = json.loads(fh.read().decode("utf-8"))
         except (OSError, ValueError):  # missing, unreadable, not UTF-8, or not JSON -> empty
+            return
+        if not isinstance(doc, dict) or doc.get("version") != STORE_VERSION:
             return
         raw = doc.get("entries") if isinstance(doc, dict) else None
         if not isinstance(raw, dict):

@@ -47,6 +47,16 @@ COLLECTOR_VERSION = "0.1.0"
 ROOT_DIR = os.path.dirname(HERE)
 
 
+def _configure_stdio() -> None:
+    """Keep Unicode help and ranking output usable under the legacy Windows code page."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _default_root(harness: str) -> str:
     home = os.path.expanduser("~")
     return os.path.join(home, ".claude" if harness == "claude_code" else ".codex")
@@ -54,7 +64,7 @@ def _default_root(harness: str) -> str:
 
 def _load_secret(path: str) -> bytes:
     with open(path, "rb") as fh:
-        secret = fh.read().strip()
+        secret = fh.read()
     if len(secret) < 16:
         raise SystemExit("secret file must hold at least 16 bytes")
     return secret
@@ -71,8 +81,8 @@ def _group(refs: List[SessionRef]):
 
 def run_pipeline(args) -> int:
     secret = _load_secret(args.secret_file)
-    now_ms = args.now_ms if args.now_ms else int(time.time() * 1000)
-    today = args.today or _dt.datetime.utcfromtimestamp(now_ms / 1000).strftime("%Y-%m-%d")
+    now_ms = args.now_ms if args.now_ms is not None else int(time.time() * 1000)
+    today = args.today or _dt.datetime.fromtimestamp(now_ms / 1000, _dt.timezone.utc).strftime("%Y-%m-%d")
     root = args.root or _default_root(args.harness)
     source = ClaudeCodeSource(root) if args.harness == "claude_code" else CodexSource(root)
     store = CursorStore(args.cursor_store) if args.cursor_store else None
@@ -99,21 +109,61 @@ def run_pipeline(args) -> int:
     pending_cursors: Dict[str, object] = {}
     harness_version = "unknown"
     for ref in sorted(mains, key=lambda r: r.path):
-        try:
-            cursor = store.get(ref.path) if store else None
-            facts, new_cursor = source.read(ref, cursor)
-            for child_ref in sorted(children.get(ref.session_key, []), key=lambda r: r.path):
+        child_refs = sorted(children.get(ref.session_key, []), key=lambda r: r.path)
+        group_refs = [ref, *child_refs]
+
+        # A record is the cumulative state of one harness run and run_id is its idempotency key.
+        # Cursors are therefore change detectors, not the starting point for a partial replacement
+        # record. If every file in the group has a cursor, probe from those offsets and emit only
+        # when at least one complete line is new. A changed group is then rebuilt from byte zero.
+        if store and all(store.get(group_ref.path) is not None for group_ref in group_refs):
+            group_changed = False
+            probe_cursors = {}
+            probe_lines_seen = 0
+            probe_lines_unknown = 0
+            probe_bytes_read = 0
+            for group_ref in group_refs:
                 try:
-                    child_facts, _ = source.read(child_ref, None)
-                    facts.children.append(child_facts)
-                except Exception:  # fail-open: a bad child never sinks the parent
-                    coverage["sessions_skipped_unparseable"] += 1
+                    delta, new_cursor = source.read(group_ref, store.get(group_ref.path))
+                    probe_cursors[group_ref.path] = new_cursor
+                    group_changed = group_changed or delta.lines_seen > 0
+                    probe_lines_seen += delta.lines_seen
+                    probe_lines_unknown += delta.lines_unknown_type
+                    probe_bytes_read += delta.bytes_read
+                except Exception:
+                    # Retry from byte zero below. Only a failed full read counts as unparseable.
+                    group_changed = True
+            if not group_changed:
+                pending_cursors.update(probe_cursors)
+                continue
+            coverage["lines_seen"] += probe_lines_seen
+            coverage["lines_unknown_type"] += probe_lines_unknown
+            coverage["bytes_read"] += probe_bytes_read
+
+        group_cursors = {}
+        group_failed = False
+        try:
+            facts, new_cursor = source.read(ref, None)
             if store:
-                pending_cursors[ref.path] = new_cursor  # committed only after the payload is written
+                group_cursors[ref.path] = new_cursor
+            for child_ref in child_refs:
+                try:
+                    child_facts, child_cursor = source.read(child_ref, None)
+                    facts.children.append(child_facts)
+                    if store:
+                        group_cursors[child_ref.path] = child_cursor
+                except Exception:  # fail-open: preserve the prior complete record and retry later
+                    coverage["sessions_skipped_unparseable"] += 1
+                    group_failed = True
         except Exception as exc:  # fail-open: count and move on
             coverage["sessions_skipped_unparseable"] += 1
             if args.verbose:
                 print(f"skip unparseable session: {type(exc).__name__}", file=sys.stderr)
+            continue
+        if group_failed:
+            continue
+        pending_cursors.update(group_cursors)
+        if facts.lines_seen + sum(c.lines_seen for c in facts.children) == 0:
             continue
         coverage["lines_seen"] += facts.lines_seen + sum(c.lines_seen for c in facts.children)
         coverage["lines_unknown_type"] += facts.lines_unknown_type + sum(c.lines_unknown_type for c in facts.children)
@@ -249,6 +299,7 @@ def synthetic_demo_runs(secret: bytes, harness: str) -> List[AttributedRun]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    _configure_stdio()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--harness", choices=["claude_code", "codex"], required=True)
     p.add_argument("--root", help="harness home dir (default ~/.claude or ~/.codex)")
@@ -256,7 +307,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--secret-file", required=True, help="device-local secret used for run_id and name_hash pseudonyms")
     p.add_argument("--out", required=True, help="payload path (never posted)")
     p.add_argument("--today", help="UTC day for emitted_day (default: today)")
-    p.add_argument("--now-ms", type=int, default=0, help="collector 'now' in ms (tests)")
+    p.add_argument("--now-ms", type=int, default=None, help="collector 'now' in ms (tests)")
     p.add_argument("--window-days", type=int, default=30)
     p.add_argument("--model", default=None, help="model stratum to display (default: all)")
     p.add_argument("--scrub", action="store_true", help="replace asset names with hashes in the printed ranking")

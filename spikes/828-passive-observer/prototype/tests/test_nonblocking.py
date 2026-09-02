@@ -11,6 +11,7 @@ database client with lock and schema coupling; nothing below says anything about
 
 Each test states what it proves and what it cannot prove.
 """
+import importlib.util
 import json
 import os
 import random
@@ -24,7 +25,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cursor_store import CursorStore  # noqa: E402
+from cursor_store import EMPTY_STORE_SIZE, CursorStore  # noqa: E402
 from sources.base import Cursor, iter_lines  # noqa: E402
 
 PROTO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,12 +33,13 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 CHILD = os.path.join(TESTS_DIR, "_reader_child.py")
 SCRATCH = os.environ.get(
     "VETTD_SPIKE_SCRATCH",
-    "/tmp/claude-0/-home-user/1a612e42-ee29-5c51-a07a-654a25ec2209/scratchpad",
+    os.path.join(tempfile.gettempdir(), "vettd-passive-observer", "scratchpad"),
 )
 MIB = 1024 * 1024
 LARGE_TARGET_BYTES = 200 * MIB
 MEM_DELTA_LIMIT_BYTES = 64 * MIB
 MIN_FREE_BYTES = 1024 * MIB
+HAS_RESOURCE = importlib.util.find_spec("resource") is not None
 
 
 def record(seq: int, pad: int = 0) -> bytes:
@@ -75,6 +77,7 @@ class ScratchDirCase(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
+@unittest.skipUnless(os.name == "posix", "requires POSIX rename-while-open semantics")
 class RenameWhileOpen(ScratchDirCase):
     def test_rename_while_open(self):
         """Proves: on POSIX an open reader keeps its inode, so renaming the session file mid-read
@@ -113,8 +116,12 @@ class KillMidRead(ScratchDirCase):
         time.sleep(kill_after)
         proc.kill()
         _, err = proc.communicate(timeout=60)
-        self.assertEqual(proc.returncode, -signal.SIGKILL,
-                         "child finished before the kill landed (delay %.3fs); %s" % (kill_after, err))
+        if os.name == "posix":
+            self.assertEqual(proc.returncode, -signal.SIGKILL,
+                             "child finished before the kill landed (delay %.3fs); %s" % (kill_after, err))
+        else:
+            self.assertNotEqual(proc.returncode, 0,
+                                "child finished before the kill landed (delay %.3fs); %s" % (kill_after, err))
         return None
 
     def test_kill_mid_read_cursor_consistent(self):
@@ -163,6 +170,7 @@ class KillMidRead(ScratchDirCase):
         self.assertEqual(final.byte_offset, os.path.getsize(paths["input"]), ctx)
 
 
+@unittest.skipUnless(HAS_RESOURCE, "requires the POSIX resource module for peak RSS measurement")
 class BoundedMemoryLargeFile(unittest.TestCase):
     READER = (
         "import sys, resource\n"
@@ -272,6 +280,12 @@ class ByteOffsetResume(ScratchDirCase):
 
 
 class DiskCap(ScratchDirCase):
+    def test_cap_smaller_than_empty_store_is_rejected(self):
+        """Proves: every accepted cap can hold the empty serialized document, so save() cannot
+        claim a bound that is structurally impossible. Cannot prove: filesystem quota behaviour."""
+        with self.assertRaisesRegex(ValueError, str(EMPTY_STORE_SIZE)):
+            CursorStore(os.path.join(self.dir, "tiny.json"), cap_bytes=EMPTY_STORE_SIZE - 1)
+
     def test_disk_cap(self):
         """Proves: with cap_bytes set, save() keeps the store file at or under the cap by evicting
         the least recently updated entries first (a re-set entry is young again), keeps a contiguous
@@ -317,9 +331,9 @@ class CursorStoreLoad(ScratchDirCase):
     def test_load_tolerates_missing_and_corrupt(self):
         """Proves: a missing file, non-JSON bytes, a JSON document of the wrong shape, and a
         malformed entry each load as empty (or drop just that entry) instead of raising, so a
-        damaged local store degrades to a fresh read rather than blocking the collector; and a
-        set/save/load round trip preserves byte_offset and inode. Cannot prove: behaviour on a
-        store written by a future STORE_VERSION."""
+        damaged local store degrades to a fresh read rather than blocking the collector; an
+        unsupported version also starts fresh; and a set/save/load round trip preserves byte_offset
+        and inode. Cannot prove: migration from a future STORE_VERSION."""
         p = os.path.join(self.dir, "cursors.json")
         self.assertEqual(CursorStore(p).entries(), {})
         with open(p, "wb") as fh:
@@ -327,6 +341,9 @@ class CursorStoreLoad(ScratchDirCase):
         self.assertEqual(CursorStore(p).entries(), {})
         with open(p, "w") as fh:
             json.dump(["not", "an", "object"], fh)
+        self.assertEqual(CursorStore(p).entries(), {})
+        with open(p, "w") as fh:
+            json.dump({"version": 2, "entries": {"/fixture/future.ndjson": {"byte_offset": 12}}}, fh)
         self.assertEqual(CursorStore(p).entries(), {})
         with open(p, "w") as fh:
             json.dump({"version": 1, "entries": {"/fixture/a.ndjson": {"byte_offset": "12"},

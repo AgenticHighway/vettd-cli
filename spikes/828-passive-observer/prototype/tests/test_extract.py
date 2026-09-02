@@ -340,13 +340,18 @@ class ObservedDay(unittest.TestCase):
     def test_observed_day_is_utc_day_of_first_timestamp(self):
         """Proves: observed_day is the UTC calendar day of first_ts_ms at the exact boundary: half
         a second after midnight UTC is that day, one millisecond before midnight UTC is the day
-        before — and this holds under a host TZ where the local day differs (each case runs under
-        a POSIX offset that pushes the local date across midnight; the test asserts that skew is
-        real before asserting the result, so it cannot pass vacuously on a UTC host).
-        Cannot prove: behaviour if a source ever emits non-UTC-normalised timestamps."""
+        before on every platform. On POSIX it additionally changes the host TZ so the local day
+        differs and proves the result does not depend on local time.
+        Cannot prove on Windows: the non-UTC-host case, because Python exposes no time.tzset there.
+        Cannot prove anywhere: behaviour if a source emits non-UTC-normalised timestamps."""
         midnight = calendar.timegm((2026, 3, 10, 0, 0, 0)) * 1000
         # (POSIX TZ string, ts_ms, expected UTC day); POSIX offsets are inverted: "AAA10" is UTC-10.
         cases = [("AAA10", midnight + 500, "2026-03-10"), ("BBB-14", midnight - 1, "2026-03-09")]
+        if not hasattr(time, "tzset"):
+            for _, ts, want in cases:
+                run = run_extract(session(first_ts_ms=ts, last_ts_ms=ts + 10), NOW)
+                self.assertEqual(run.observed_day, want)
+            return
         old_tz = os.environ.get("TZ")
         try:
             for tz, ts, want in cases:
