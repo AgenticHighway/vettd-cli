@@ -1,0 +1,68 @@
+{
+ "_permission_modes": [
+  "acceptEdits"
+ ],
+ "agent_ids": [
+  "fx1"
+ ],
+ "current_username": [
+  ""
+ ],
+ "cwd_and_branches": [
+  "/fixture/cwd",
+  "fixture-branch"
+ ],
+ "harness_session_ids": [
+  "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"
+ ],
+ "home_dir": [
+  "/root"
+ ],
+ "hostname": [
+  "vm"
+ ],
+ "loaded_set_names": [
+  "RULES.md",
+  "agent:fx-reviewer",
+  "fx-reviewer",
+  "mcp__srvfx__other",
+  "mcp__srvfx__tool",
+  "mcp__srvpend__ping",
+  "mcp_server:srvfx",
+  "mcp_server:srvpend",
+  "rules_file:RULES.md",
+  "skill-alpha",
+  "skill-beta",
+  "skill:skill-alpha",
+  "skill:skill-beta",
+  "srvfail",
+  "srvfx",
+  "srvfx-server",
+  "srvpend"
+ ],
+ "message_ids": [
+  "msg_fx00000001",
+  "msg_fx00000002",
+  "msg_fx00000003",
+  "msg_fx00000004",
+  "msg_fx00000005",
+  "msg_fx00000006",
+  "msg_fx00000007",
+  "msg_fx00000008",
+  "msg_fxc0000001",
+  "msg_fxc0000002"
+ ],
+ "slugs": [
+  "fixture-slug"
+ ],
+ "tool_use_ids": [
+  "toolu_fx00000001",
+  "toolu_fx00000002",
+  "toolu_fx00000003",
+  "toolu_fx00000004",
+  "toolu_fx00000005",
+  "toolu_fx00000006",
+  "toolu_fx00000007",
+  "toolu_fxc0000001"
+ ]
+}

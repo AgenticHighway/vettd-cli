@@ -1,0 +1,18 @@
+Observed asset evidence for task: exercise passive observer resume
+Stratum: harness=claude_code model=all task_category=unspecified (1 runs over 1 observed days)
+The task category was read from the stated task with a keyword table; other categories are listed as context, never merged in.
+Pooled in this view (recorded, not stratified): effort, permission_mode, entrypoint_class, day.
+No runs observed in task category unspecified; this view pools every task category in this harness (1 runs). Read it as context for the stated task, not as evidence for it.
+Not enough evidence yet (sorted by calls seen; never interleaved with the ranked list):
+  -  mcp_server:09b8c9c20e67  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (1 paired calls)
+  -  skill:35788048959b  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (0 paired calls)
+  -  agent:3c8159dd0c2a  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (0 paired calls); child tokens insufficient_evidence
+  -  skill:cf86e4811730  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (1 paired calls)
+Loaded in these runs but never invoked (1 assets: 1 mcp_server): no invocation evidence; listed in the payload, not ranked.
+Loaded-only assets (rules files, prompts): context-cost estimate only, no non-success figure applies:
+  -  rules_file:0f377fbf5047  tier=inferred state=observed  context cost est. 11 tokens (file_bytes_div4) in 1 runs
+Task categories included in this pooled view: mixed 1 runs
+Cost (display-time derivation, not stored), from tokens in this stratum and the price table dated 2026-09-02:
+  other: no price entry in the table dated 2026-09-02 (1 runs; tokens counted, cost not derived)
+Every figure above is an observation from harness logs on this machine, not a causal claim.
+
