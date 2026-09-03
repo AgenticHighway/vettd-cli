@@ -66,3 +66,22 @@ regexTarget = "line"
 regexes = [
   '''sk-live-ABC123''',
 ]
+
+[[allowlists]]
+description = """
+Invented passive-observer fixture session id. It is the stem of the committed fixture transcript
+crates/vettd-cli/tests/fixtures/observe/claude_home/projects/-fixture-project/, so tests assert
+against it verbatim; gitleaks' generic-api-key rule reads `assert_eq!(x, "<uuid>")` as an
+assignment and the v4-shaped hex scores entropy 4.02. Nothing about this value is secret — a real
+harness session id never leaves the machine, it is HMAC'd into run_id (see observe/envelope.rs).
+Pinned to this one literal so any other high-entropy string in these files still fails.
+"""
+condition = "AND"
+paths = [
+  '''(^|/)crates/(proov|vettd-cli)/src/observe/.*\.rs$''',
+  '''(^|/)crates/(proov|vettd-cli)/tests/observe_integration\.rs$''',
+]
+regexTarget = "line"
+regexes = [
+  '''0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b''',
+]

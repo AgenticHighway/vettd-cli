@@ -18,7 +18,7 @@ If Vettd helps your team, you can support ongoing open source development with a
 
 ## How it works
 
-vettd is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows or `vettd update`. `vettd auth` only saves local configuration.
+vettd is local-first. It walks your filesystem, identifies AI execution artifacts, scores them for risk, and writes results locally. Network activity only happens when you explicitly opt into submission-related flows (`vettd scan … --submit`, `vettd observe --submit`) or `vettd update`. `vettd auth` only saves local configuration.
 
 If you want a hosted review, policy, and governance surface, vettd can
 submit to compatible ingest APIs. You can configure an endpoint during
@@ -244,6 +244,10 @@ Each submission payload contains:
 - **MCP server config metadata** — server commands, tool names, and env-var names (values are never transmitted)
 - **Host security context** — macOS firewall state on macOS; empty on other platforms
 - **Scanner metadata** — version, OS, and architecture
+- **Observation telemetry** (`vettd observe --submit` only, and only after you opt in) — hashes,
+  integer counts, and closed-enum values derived from local agent session logs; no message text,
+  path, asset name, session id, or timestamp finer than a UTC calendar day. See
+  [`docs/observe.md`](docs/observe.md)
 
 No file contents, secret values, or credential material are transmitted.
 
@@ -264,7 +268,7 @@ Local endpoints (`localhost`, `127.0.0.1`, `::1`, RFC-1918 addresses) are always
 - Contract sync only runs during explicit submission flows, when the target endpoint exposes a compatible contract API
 - Retry logic handles transient failures (429, 502, 503, 504)
 - On Unix-like systems, saved API keys are written to `~/.config/vettd/config.json` and vettd explicitly tightens directory/file permissions to `0700` / `0600`
-- On Windows, saved API keys are written under the current user's config directory, typically `%APPDATA%\\vettd\\config.json`, and currently rely on the default per-user profile ACLs rather than explicit ACL hardening by vettd
+- On Windows, saved API keys are written under the current user's config directory, typically `%APPDATA%\\vettd\\config.json`, and currently rely on the default per-user profile ACLs rather than explicit ACL hardening by vettd. The same applies to `~/.vettd/observer_secret`: the `0600` mode is set on Unix-like systems only
 
 ## Self-update
 
@@ -298,6 +302,7 @@ non-zero with guidance, rather than blocking on input.
 | "Report path" prompt | `--out <path>` |
 | API key prompt (`vettd auth`) | `vettd auth --key <key>` |
 | Update confirmation (`vettd update`) | `vettd update --force` |
+| "Send N run record(s) to …?" after `vettd observe --submit` | `vettd observe --submit --api-key <key>` (no prompt without a TTY) |
 
 Without a TTY and without the equivalent flag, `vettd scan`, `vettd auth`, and
 `vettd update` exit non-zero with a message naming the flag to use.
@@ -310,6 +315,11 @@ Without a TTY and without the equivalent flag, `vettd scan`, `vettd auth`, and
 - **Secret detection without storage** — token patterns trigger a signal tag, but values are never stored or transmitted
 - **Browser presence only** — extension directories are noted, but no extension content or preferences are read
 - **Declarative rules** — custom rules are TOML config files; they use the same content-read allowlist as built-in detectors
+- **Session logs are opt-in and projected, never transmitted** — `vettd observe` reads nothing until
+  `[telemetry] enabled = true` is in your per-user config, and sends nothing without `--submit`.
+  What it can send is an 85-field allowlist of hashes and counts, checked against
+  `telemetry-field-gate.json` before anything is written or sent; a payload that fails it is
+  refused rather than trimmed. See [`docs/observe.md`](docs/observe.md)
 
 ## Project structure
 
@@ -377,9 +387,11 @@ For security vulnerability reports: [SECURITY.md](SECURITY.md)
 | File                             | Purpose                                       |
 | -------------------------------- | --------------------------------------------- |
 | `~/.config/vettd/config.json`   | API key + endpoint (created by `vettd auth`) |
-| `~/.vettd/.vettd.toml`          | Optional access-mode setting (per-user only) |
+| `~/.vettd/.vettd.toml`          | Optional access-mode setting and the `vettd observe` opt-in (per-user only) |
 | `~/.vettd/scanner_uuid`         | Persistent scanner identity (auto-generated)  |
 | `~/.vettd/rules/*.toml`         | Custom detection rules                        |
+| `~/.vettd/observer_secret`      | HMAC key behind `vettd observe` pseudonyms (auto-generated, never transmitted) |
+| `~/.vettd/observer/observer-v1.sqlite3` | `vettd observe` read cursors and submission ledger (created by `--submit` only) |
 
 Optional `~/.vettd/.vettd.toml`:
 
@@ -388,6 +400,10 @@ Optional `~/.vettd/.vettd.toml`:
 mode = "lite"                   # limit terminal console findings to the top three artifacts
 # search_beta_testing = false   # opt into --language, --agent-compatibility,
 #                               # and --rankings beta search filters
+
+# [telemetry]
+# enabled = true                # opt into `vettd observe` reading local agent session logs.
+#                               # Absent or false means off; `vettd observe enable` writes it.
 ```
 
 > **Beta search filters:** `search_beta_testing = true` enables the `--language`,
