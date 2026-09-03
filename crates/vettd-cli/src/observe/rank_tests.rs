@@ -42,7 +42,7 @@ fn stats_json(values: &[i64]) -> Value {
         "sum": values.iter().sum::<i64>(),
         "min": values.iter().min().copied().unwrap_or(0),
         "max": values.iter().max().copied().unwrap_or(0),
-        "sumsq": values.iter().map(|v| (v * v) as u64).sum::<u64>(),
+        "sumsq": values.iter().map(|v| (v * v) as u64).sum::<u64>().to_string(),
     })
 }
 

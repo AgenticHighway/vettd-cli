@@ -20,14 +20,9 @@
 //! on this machine and never egress, so they do not go through this function and
 //! may use `serde_json`'s default formatting instead.
 //!
-//! "Every number is an integer" is necessary but not sufficient for parity:
-//! Python's `int` is arbitrary-precision, while `serde_json::Value` tops out at
-//! `u64::MAX`. The gate bounds `ms2`/`tokens2` at 1e21, roughly 54x that, so a
-//! `sumsq` in that range cannot round-trip through `Value` at all —
-//! `serde_json::to_value(10u128.pow(21))` is itself an `Err`. The envelope
-//! builder owns that constraint (Phase 4 of `docs/vettd-observe-port-plan.md`);
-//! here it only means the real precondition is that every integer fits
-//! `i64::MIN..=u64::MAX`, not merely that it is an integer.
+//! Envelope v0.2 represents the only aggregate that may exceed a consumer's
+//! exact JSON-number range (`sumsq`) as a bounded decimal string. Every actual
+//! JSON number therefore fits `i64::MIN..=u64::MAX` and remains exact here.
 
 use std::fmt::Write as _;
 

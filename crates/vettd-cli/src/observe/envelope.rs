@@ -18,45 +18,11 @@
 //! runs carried so [`crate::observe::gate::Gate::check`] can prove none of them is a substring of
 //! any string leaf of the payload.
 //!
-//! # The one arithmetic decision: `sumsq` cannot always fit a `serde_json::Value`
+//! # Exact sums of squares
 //!
-//! [`Stats::sumsq`](crate::observe::types::Stats::sumsq) is `u128` and the gate bounds `ms2`/`tokens2` at 1e21 — about 54x `u64::MAX`.
-//! `serde_json::Value` cannot hold an integer above `u64::MAX`: `to_value(10u128.pow(21))` is an
-//! error, and such a literal read back from JSON becomes an `f64`. Python has arbitrary-precision
-//! integers and simply writes the digits, so parity above `u64::MAX` is not available to a
-//! `Value`-shaped emitter at all.
-//!
-//! This module **fails loud and names the field** (`envelope_record::stats_sumsq`): `build_envelope` returns
-//! `Err("records[].assets[].signals.latency_ms.sumsq: … exceeds …")` rather than emit a number it
-//! cannot represent exactly. The alternatives were weighed and rejected:
-//!
-//! - *Clamp at `u64::MAX`.* The cloud derives variance from `sumsq`; a clamped value under-reports
-//!   it with no marker on the wire saying so. Silently wrong telemetry is worse than none.
-//! - *Serialize the canonical bytes from typed data instead of from a `Value`.* The gate checks a
-//!   `Value` (`gate.rs`), so the bytes and the checked document would be produced by two different
-//!   code paths — the exact split that lets an unchecked value reach the wire.
-//! - *Enable serde_json's `arbitrary_precision`.* A workspace-wide feature change that alters how
-//!   every number in the scanner parses and prints, to buy a range no observation reaches.
-//!
-//! Doing nothing is not an option either: an oversized `sumsq` would surface as a `to_value`
-//! failure or as a float that `canonical_json` rejects, i.e. it already fails — just without
-//! saying which field. Erroring here is the same outcome with the field named.
-//!
-//! The consequence, stated plainly: this emitter refuses a `sumsq` above `u64::MAX`, which the
-//! gate's `ms2`/`tokens2` bound of 1e21 would admit. **No gate-clean payload reaches it.** The gate
-//! also bounds `sum` and `max` in the *same* unit as the individual values — `latency_ms.sum` by
-//! `ms` (604 800 000) and `tokens_attributed.sum` by `tokens` (1e9) — and `sumsq <= max * sum`, so
-//! any envelope the gate accepts has `sumsq <= 3.66e17` (ms) or `<= 1e18` (tokens), both roughly
-//! 50x under `u64::MAX`. The 1e21 bound is dead. Refusal is therefore reachable only from values
-//! that would fail the gate anyway — a bogus timestamp pair, say, which
-//! [`ToolCall::latency_ms`](crate::observe::types::ToolCall::latency_ms) clamps at zero but not
-//! from above. `gate.rs::as_integer` still accepts an oversized integer so `observe check` does not
-//! falsely reject a payload from another producer; only emission refuses.
-//!
-//! One sharp edge of refusing rather than degrading: `build_envelope` propagates with `?`, so a
-//! single unrepresentable asset discards the whole batch, healthy runs included. That is the right
-//! trade while refusal implies a corrupt input, but a per-asset degradation would keep the batch if
-//! that ever stops being true.
+//! [`Stats::sumsq`](crate::observe::types::Stats::sumsq) is `u128`, while JSON numbers are not
+//! reliably exact in JavaScript above 2^53. Envelope v0.2 encodes the bounded value as a canonical
+//! decimal string, preserving all digits through validation, persistence, and later aggregation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,7 +38,7 @@ use envelope_record::record;
 
 /// Wire format version, cross-checked against `telemetry-field-gate.json` and
 /// `telemetry-envelope.schema.json` by `scripts/check-telemetry-field-gate.sh`.
-pub(crate) const ENVELOPE_VERSION: &str = "0.1.0";
+pub(crate) const ENVELOPE_VERSION: &str = "0.2.0";
 
 /// Which gate ruleset this emitter was written against (`telemetry-field-gate.json.gateVersion`).
 pub(crate) const GATE_VERSION: i64 = 1;
@@ -206,7 +172,7 @@ pub(crate) fn bom_version_for(asset_ids: &BTreeSet<String>) -> String {
 /// tokens and counts appear exactly once (`aggregate.py:93-118`). A run with no segments is
 /// skipped: it has no loaded set to describe.
 ///
-/// `Err` only ever names an unrepresentable `sumsq`; see the module docs.
+/// `Err` only ever names an out-of-contract `sumsq`; see the module docs.
 pub(crate) fn build_envelope(runs: &[AttributedRun], meta: &EnvelopeMeta) -> Result<Value, String> {
     let mut records: Vec<Value> = Vec::new();
     let mut bom: BTreeMap<String, Vec<String>> = BTreeMap::new();

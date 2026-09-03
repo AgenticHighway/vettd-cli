@@ -4,8 +4,9 @@
 //! reference semantics. Every leaf path a payload writes must be listed in the repo-root
 //! `telemetry-field-gate.json`; nullable objects may be null, otherwise their children are checked
 //! as leaves; enums are closed; formats and numeric bounds are enforced per field; hash, day and
-//! allowed-uuid paths are checked by exact format only; every other string leaf must clear every
-//! `forbiddenValuePatterns` rule and every dynamic forbid set the emitter hands over.
+//! allowed-uuid and decimal-integer paths are checked by exact format only; every other string
+//! leaf must clear every `forbiddenValuePatterns` rule and every dynamic forbid set the emitter
+//! hands over.
 //!
 //! A key-path walker cannot see a path, a URL, a uuid or a name inside a string; the value-level
 //! rules are what make "logs never leave the machine" checkable on the payload rather than on the
@@ -20,19 +21,13 @@
 //! - `serde_json::Map` is a `BTreeMap` in this workspace, so object keys are visited in sorted
 //!   order rather than in document order. The set of violations is identical, only the order of the
 //!   returned lines differs.
-//! - Python's ints are arbitrary-precision and the `ms2`/`tokens2` bound is 1e21, well above
-//!   `u64::MAX`, so the gate really does admit integers `serde_json` can only hold as `f64`.
-//!   [`as_integer`] therefore accepts an integral float whose magnitude exceeds `u64::MAX`, since a
-//!   JSON *integer* token that fits `u64` is never parsed as a float. The residual divergence is a
-//!   float-formatted literal that large (say `1.5e20`), which Python calls a `type_mismatch` and
-//!   this accepts as an integer; no emitter writes one, and it is still bounds-checked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use chrono::{Datelike, NaiveDate};
 use regex::Regex;
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
 /// The repo-root egress allowlist, compiled in so a gate check never depends on the filesystem.
 const GATE_JSON: &str = include_str!("../../../../telemetry-field-gate.json");
@@ -42,8 +37,6 @@ pub(crate) static GATE: LazyLock<Gate> = LazyLock::new(|| {
     Gate::from_json(GATE_JSON).expect("compiled-in telemetry-field-gate.json is a valid gate")
 });
 
-/// Sums of squares legitimately reach epoch-sized magnitudes; every other numeric unit does not.
-const EPOCH_EXEMPT_UNITS: [&str; 2] = ["ms2", "tokens2"];
 /// Unix seconds and unix milliseconds, as ranges a plausible count could not otherwise land in.
 const EPOCH_RANGES: [(f64, f64); 2] = [(1.5e9, 2.5e9), (1.5e12, 2.5e12)];
 /// Dynamic-forbid entries shorter than this are skipped: they would match inside almost any value.
@@ -56,11 +49,12 @@ const COMPONENT_MIN_LEN: usize = 4;
 const EPOCH_PATTERN_ID: &str = "epoch_in_string";
 /// The gate's `whitespace` pattern is the bare `\s`, which the two engines disagree about.
 const WHITESPACE_PATTERN_ID: &str = "whitespace";
-/// The three exact-format path lists, each naming the format its paths must match in full.
-const EXACT_PATH_LISTS: [(&str, &str); 3] = [
+/// The exact-format path lists, each naming the format its paths must match in full.
+const EXACT_PATH_LISTS: [(&str, &str); 4] = [
     ("hex64", "hashPaths"),
     ("day", "dayPaths"),
     ("uuid", "allowedUuidPaths"),
+    ("sumsq_decimal", "decimalIntegerPaths"),
 ];
 
 static KEY_NAME_RE: LazyLock<Regex> =
@@ -226,7 +220,7 @@ pub(crate) struct Gate {
     enums: BTreeMap<String, BTreeSet<String>>,
     formats: BTreeMap<String, Regex>,
     bounds: BTreeMap<String, (f64, f64)>,
-    /// Hash, day and allowed-uuid paths, each mapped to the format name it must match exactly.
+    /// Exact-format paths mapped to the format name each must match.
     exact_paths: BTreeMap<String, String>,
     /// Forbidden-value rules in gate order, so violations are reported in gate order.
     patterns: Vec<(String, Pattern)>,
@@ -503,25 +497,9 @@ fn as_integer(value: &Value) -> Option<i128> {
         Value::Number(number) => number
             .as_i64()
             .map(i128::from)
-            .or_else(|| number.as_u64().map(i128::from))
-            .or_else(|| integral_beyond_u64(number)),
+            .or_else(|| number.as_u64().map(i128::from)),
         _ => None,
     }
-}
-
-/// An integer too large for `u64`, recovered from the `f64` `serde_json` parsed it into.
-///
-/// `ms2`/`tokens2` are bounded at 1e21, roughly 54x `u64::MAX`, so a legitimate `sumsq` can exceed
-/// what `serde_json::Number` holds exactly. Rejecting those as `type_mismatch` would refuse a
-/// payload the Python gate accepts. Any JSON integer token that fits `u64` is parsed as `u64`, so a
-/// float this large can only have come from an oversized integer token. The recovered value is the
-/// nearest `f64`, which is inexact above 2^53 but far more precise than the 1e21 bound needs.
-fn integral_beyond_u64(number: &Number) -> Option<i128> {
-    let raw = number.as_f64()?;
-    if !raw.is_finite() || raw.fract() != 0.0 || raw.abs() <= u64::MAX as f64 {
-        return None;
-    }
-    Some(raw as i128)
 }
 
 fn is_calendar_day(value: &str) -> bool {
@@ -682,11 +660,9 @@ impl Checker<'_> {
                 }
             }
         }
-        let exempt = matches!(unit, Some(u) if EPOCH_EXEMPT_UNITS.contains(&u));
-        if !exempt
-            && EPOCH_RANGES
-                .iter()
-                .any(|&(lo, hi)| (lo..=hi).contains(&as_float))
+        if EPOCH_RANGES
+            .iter()
+            .any(|&(lo, hi)| (lo..=hi).contains(&as_float))
         {
             let detail = "integer is in a unix-timestamp range";
             self.fail(path, "epoch_in_number", detail);
@@ -696,8 +672,7 @@ impl Checker<'_> {
     fn check_string(&mut self, value: &str, path: &str, gpath: &str, spec: &FieldSpec) {
         let gate = self.gate;
         if let Some(exact) = gate.exact_paths.get(gpath) {
-            // Hash, day and allowed-uuid paths are exact-format; they are not free text, so the
-            // pattern and dynamic rules (which would trip on any hex64 or uuid) do not apply.
+            // Exact-format paths are not free text, so pattern and dynamic rules do not apply.
             if !gate.formats[exact].is_match(value) {
                 let length = value.chars().count();
                 let detail = format!("expected exact {exact}, got string of length {length}");

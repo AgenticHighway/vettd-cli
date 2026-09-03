@@ -1,8 +1,8 @@
 {
   "title": "vettd passive-observer telemetry field gate (spike #828)",
-  "description": "The complete list of fields that may leave the machine in a passive-observer telemetry payload, in the form a gate script consumes. Every leaf path of a written payload must appear in `fields` (an unknown key fails, mirroring contract/disclosure.rs::validate_payload_coverage), every field maps to exactly one disclosure category, every enum is closed, and every string leaf that is not a hash, day, or allowed uuid must pass every `forbiddenValuePatterns` regex and every `dynamicForbids` set. A key-path walker cannot see a path inside a string; the value-level rules are what make 'logs never leave the machine' checkable on the payload rather than on the code.",
+  "description": "The complete list of fields that may leave the machine in a passive-observer telemetry payload, in the form a gate script consumes. Every leaf path of a written payload must appear in `fields` (an unknown key fails, mirroring contract/disclosure.rs::validate_payload_coverage), every field maps to exactly one disclosure category, every enum is closed, and every string leaf that is not an exact-format hash, day, allowed uuid, or decimal integer must pass every `forbiddenValuePatterns` regex and every `dynamicForbids` set. A key-path walker cannot see a path inside a string; the value-level rules are what make 'logs never leave the machine' checkable on the payload rather than on the code.",
   "gateVersion": 1,
-  "envelopeVersion": "0.1.0",
+  "envelopeVersion": "0.2.0",
   "envelopeSchema": "telemetry-envelope.schema.json",
   "pathSyntax": "dot-joined keys; array elements as []; leaf paths only; nullable objects are listed once as type object with nullable=true and their children are listed as leaves.",
   "posture": {
@@ -238,7 +238,8 @@
     "day": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
     "uuid": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     "semver_or_unknown": "^(?:[0-9]+\\.[0-9]+\\.[0-9]+|unknown)$",
-    "extractor_version": "^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$"
+    "extractor_version": "^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$",
+    "sumsq_decimal": "^(?:0|[1-9][0-9]{0,20}|1000000000000000000000)$"
   },
   "numericBounds": {
     "count": [
@@ -252,14 +253,6 @@
     "ms": [
       0,
       604800000
-    ],
-    "ms2": [
-      0,
-      1000000000000000000000
-    ],
-    "tokens2": [
-      0,
-      1000000000000000000000
     ],
     "bytes": [
       0,
@@ -287,6 +280,10 @@
   ],
   "allowedUuidPaths": [
     "resource.device_id"
+  ],
+  "decimalIntegerPaths": [
+    "records[].assets[].signals.latency_ms.sumsq",
+    "records[].assets[].signals.tokens_attributed.sumsq"
   ],
   "fields": {
     "envelope_version": {
@@ -720,10 +717,10 @@
     },
     "records[].assets[].signals.latency_ms.sumsq": {
       "category": "AssetTimingStats",
-      "type": "integer",
-      "unit": "ms2",
+      "type": "string",
+      "format": "sumsq_decimal",
       "required": true,
-      "reason": "Sum of squares so variance can be derived after merging; never a percentile (#965 rollup rule).",
+      "reason": "Sum of squares so variance can be derived after merging; encoded as a canonical decimal string to preserve integers above 2^53.",
       "sinceEnvelopeVersion": "0.1.0"
     },
     "records[].assets[].signals.tokens_attributed": {
@@ -768,10 +765,10 @@
     },
     "records[].assets[].signals.tokens_attributed.sumsq": {
       "category": "AssetTokenStats",
-      "type": "integer",
-      "unit": "tokens2",
+      "type": "string",
+      "format": "sumsq_decimal",
       "required": true,
-      "reason": "Sum of squares for merged variance.",
+      "reason": "Sum of squares for merged variance; encoded as a canonical decimal string to preserve integers above 2^53.",
       "sinceEnvelopeVersion": "0.1.0"
     },
     "records[].assets[].signals.context_cost_est": {

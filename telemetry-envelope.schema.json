@@ -18,7 +18,7 @@
   "properties": {
     "envelope_version": {
       "type": "string",
-      "const": "0.1.0"
+      "const": "0.2.0"
     },
     "extractor_version": {
       "type": "string",
@@ -197,8 +197,8 @@
       "maximum": 604800000
     },
     "sumsq": {
-      "type": "integer",
-      "minimum": 0
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,20}|1000000000000000000000)$"
     },
     "stats_ms": {
       "type": "object",

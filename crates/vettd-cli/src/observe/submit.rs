@@ -38,6 +38,14 @@ pub(crate) struct SubmitOutcome {
 }
 
 impl SubmitOutcome {
+    /// Fold one request's result into the whole logical submission.
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.accepted.extend(other.accepted);
+        self.duplicate.extend(other.duplicate);
+        self.replaced.extend(other.replaced);
+        self.deadline_exceeded.extend(other.deadline_exceeded);
+    }
+
     /// The runs the server confirmed it holds — the only ones that may be ledgered.
     pub(crate) fn persisted(&self) -> impl Iterator<Item = &String> {
         self.accepted

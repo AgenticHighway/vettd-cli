@@ -10,6 +10,7 @@
 
 use std::fs;
 
+use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
@@ -83,6 +84,103 @@ fn cursors_require_confirmation_for_every_pending_run() {
     complete.deadline_exceeded.clear();
     complete.duplicate.insert("run-b".to_string());
     assert!(all_pending_persisted(&pending, &complete));
+}
+
+fn batching_envelope(records: Vec<serde_json::Value>) -> serde_json::Value {
+    let asset_ids = records
+        .iter()
+        .flat_map(|record| record["assets"].as_array().into_iter().flatten())
+        .filter_map(|asset| asset["asset_id"].as_str())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    json!({
+        "envelope_version": "0.2.0",
+        "records": records,
+        "bom": [{"bom_version": "b", "asset_ids": asset_ids}],
+    })
+}
+
+fn batching_record(index: usize, padding: usize) -> serde_json::Value {
+    json!({
+        "run_id": format!("{index:064x}"),
+        "bom_version": "b",
+        "assets": [{"asset_id": format!("{index:064x}")}],
+        "padding": "x".repeat(padding),
+    })
+}
+
+/// The client must honor the server's record limit itself; a valid observation window is not
+/// required to fit in one HTTP request.
+#[test]
+fn submission_batches_preserve_every_record_and_bom_at_the_500_record_limit() {
+    let envelope = batching_envelope((0..501).map(|i| batching_record(i, 0)).collect());
+    let batches = submission_batches(&envelope).expect("batchable");
+    assert_eq!(batches.len(), 2);
+
+    let mut run_ids = BTreeSet::new();
+    for batch in batches {
+        assert!(batch.bytes.len() <= MAX_SUBMISSION_BODY_BYTES);
+        let doc: serde_json::Value = serde_json::from_slice(&batch.bytes).expect("batch JSON");
+        assert!(doc["records"].as_array().unwrap().len() <= MAX_RECORDS_PER_SUBMISSION);
+        for record in doc["records"].as_array().unwrap() {
+            run_ids.insert(record["run_id"].as_str().unwrap().to_string());
+        }
+        let batch_assets = doc["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["assets"][0]["asset_id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let bom_assets = doc["bom"][0]["asset_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asset| asset.as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            bom_assets.len(),
+            501,
+            "the referenced loaded set stays complete"
+        );
+        assert!(batch_assets.is_subset(&bom_assets));
+    }
+    assert_eq!(run_ids.len(), 501);
+}
+
+/// Byte size is an independent server limit, so the splitter must stop before 500 when necessary.
+#[test]
+fn submission_batches_split_on_canonical_byte_size() {
+    let envelope = batching_envelope(vec![
+        batching_record(1, 600_000),
+        batching_record(2, 600_000),
+    ]);
+    let batches = submission_batches(&envelope).expect("each record fits alone");
+    assert_eq!(batches.len(), 2);
+    assert!(batches
+        .iter()
+        .all(|batch| batch.bytes.len() <= MAX_SUBMISSION_BODY_BYTES));
+}
+
+/// A cumulative record cannot be split without changing its meaning; reject it locally with the
+/// exact violated resource limit instead of sending a request the server must reject.
+#[test]
+fn submission_batches_reject_an_indivisible_oversized_record() {
+    let oversized = batching_envelope(vec![batching_record(1, MAX_SUBMISSION_BODY_BYTES)]);
+    assert!(submission_batches(&oversized)
+        .expect_err("one record exceeds the body limit")
+        .contains("server maximum"));
+
+    let assets: Vec<_> = (0..=MAX_ASSETS_PER_RECORD)
+        .map(|i| json!({"asset_id": format!("{i:064x}")}))
+        .collect();
+    let too_many_assets = batching_envelope(vec![json!({
+        "run_id": format!("{:064x}", 1),
+        "bom_version": "b",
+        "assets": assets,
+    })]);
+    assert!(submission_batches(&too_many_assets)
+        .expect_err("one record exceeds the asset limit")
+        .contains("2001 assets"));
 }
 
 /// Read every file of every group from byte 0 and commit the resulting cursors, so the store is in

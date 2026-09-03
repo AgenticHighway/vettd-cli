@@ -43,6 +43,17 @@ use crate::observe::submit::{submit_envelope, SubmitOutcome};
 use crate::observe::types::{utc_day, SessionFacts, SessionKind, SessionRef};
 use crate::submit::AuthConfig;
 
+/// Resource limits enforced by the observation ingest route.
+const MAX_SUBMISSION_BODY_BYTES: usize = 1024 * 1024;
+const MAX_RECORDS_PER_SUBMISSION: usize = 500;
+const MAX_ASSETS_PER_RECORD: usize = 2000;
+
+#[derive(Debug)]
+struct SubmissionBatch {
+    bytes: Vec<u8>,
+    run_ids: BTreeSet<String>,
+}
+
 /// Exit codes, per the plan's "Exit codes" bullet and the repo's existing conventions.
 pub(crate) const EXIT_OK: i32 = 0;
 pub(crate) const EXIT_RUNTIME: i32 = 1;
@@ -274,7 +285,8 @@ fn observe(
     //
     // Everything downstream — the gate, `--out`, the report — then works on the filtered
     // envelope, because in submit mode the payload IS the deliverable and the written file has to
-    // be an auditable record of exactly what went on the wire.
+    // be an auditable record of the logical submission. Large submissions are sent as canonical
+    // record subsets of this same document without transforming a record.
     let (envelope, pending) = match auth {
         None => (envelope, Vec::new()),
         Some(auth) => {
@@ -333,7 +345,7 @@ fn observe(
 
     // Step 13. Nothing above this line has changed any durable state.
     match (auth, args.dry_run) {
-        (Some(auth), false) => send(&bytes, auth, &pending, &staged, store.as_mut()),
+        (Some(auth), false) => send(&envelope, auth, &pending, &staged, store.as_mut()),
         (Some(_), true) => {
             // `--dry-run --submit` is a legitimate combination: build and check exactly what would
             // be sent, then send nothing. Saying so beats letting the user infer it from silence.
@@ -350,12 +362,13 @@ fn observe(
 /// record. The prototype committed them after the local write, which meant a payload written and
 /// then lost to a failed POST looked, next run, exactly like one that had been delivered.
 fn send(
-    bytes: &[u8],
+    envelope: &Value,
     auth: &AuthConfig,
     pending: &[LedgerRow],
     staged: &[(String, crate::observe::types::Cursor)],
     store: Option<&mut Store>,
 ) -> Result<i32, String> {
+    let batches = submission_batches(envelope)?;
     let host = crate::network::endpoint_display_host(&auth.endpoint);
     if std::io::IsTerminal::is_terminal(&std::io::stdin())
         && !crate::wizard::confirm(
@@ -367,7 +380,49 @@ fn send(
         return Ok(EXIT_OK);
     }
 
-    let outcome = submit_envelope(bytes, auth)?;
+    let mut outcome = SubmitOutcome::default();
+    let mut store = store;
+    for (index, batch) in batches.iter().enumerate() {
+        if batches.len() > 1 {
+            eprintln!("  Submitting batch {}/{}...", index + 1, batches.len());
+        }
+        let batch_outcome = submit_envelope(&batch.bytes, auth).map_err(|error| {
+            format!(
+                "Observation batch {}/{} failed; confirmed earlier batches will not be resent: {error}",
+                index + 1,
+                batches.len()
+            )
+        })?;
+        let held: Vec<LedgerRow> = pending
+            .iter()
+            .filter(|row| {
+                batch.run_ids.contains(&row.run_id)
+                    && batch_outcome
+                        .persisted()
+                        .any(|run_id| run_id == &row.run_id)
+            })
+            .cloned()
+            .collect();
+        outcome.extend(batch_outcome);
+
+        // Checkpoint every completed batch except the last. If a later request fails, the next
+        // invocation resumes from the first unconfirmed run instead of reusing the server's
+        // per-minute allowance on batches it already holds. Leave one batch uncheckpointed until
+        // the cursor commit so a failed final transaction always has something safe to resend.
+        if index + 1 < batches.len() {
+            if let Some(state) = store.as_deref_mut() {
+                state.commit(&[], &held)?;
+            }
+        } else if let Some(state) = store.as_deref_mut() {
+            let confirmed_cursors = if all_pending_persisted(pending, &outcome) {
+                staged
+            } else {
+                &[]
+            };
+            state.commit(confirmed_cursors, &held)?;
+        }
+    }
+
     eprintln!("{}", outcome.summary());
     if !outcome.deadline_exceeded.is_empty() {
         eprintln!(
@@ -376,27 +431,77 @@ fn send(
         );
     }
 
-    let Some(store) = store else {
-        return Ok(EXIT_OK);
-    };
-    // Only the runs the server said it holds. A run it could not finish must stay unledgered, or
-    // its cursor would advance past a record nobody has.
-    let held: Vec<LedgerRow> = pending
-        .iter()
-        .filter(|row| outcome.persisted().any(|run_id| *run_id == row.run_id))
-        .cloned()
-        .collect();
-    // Cursors are currently staged as one batch, without a run-id association. If even one run
-    // was not confirmed, retaining the prior cursor batch is the only lossless choice: accepted
-    // runs may be resent as duplicates, while advancing all cursors would make the missing run
-    // look unchanged forever. Ledger rows remain safe to commit independently by run id.
-    let confirmed_cursors = if all_pending_persisted(pending, &outcome) {
-        staged
-    } else {
-        &[]
-    };
-    store.commit(confirmed_cursors, &held)?;
     Ok(EXIT_OK)
+}
+
+/// Split one gate-checked envelope into requests accepted by the ingest route.
+fn submission_batches(envelope: &Value) -> Result<Vec<SubmissionBatch>, String> {
+    let records = envelope["records"]
+        .as_array()
+        .ok_or_else(|| "Observation envelope has no records array".to_string())?;
+    for (index, record) in records.iter().enumerate() {
+        let assets = record["assets"].as_array().map_or(0, Vec::len);
+        if assets > MAX_ASSETS_PER_RECORD {
+            return Err(format!(
+                "Observation record {index} carries {assets} assets; the server maximum is {MAX_ASSETS_PER_RECORD}"
+            ));
+        }
+    }
+
+    let mut batches = Vec::new();
+    let mut start = 0;
+    while start < records.len() {
+        let upper = (start + MAX_RECORDS_PER_SUBMISSION).min(records.len());
+        let mut low = start + 1;
+        let mut high = upper;
+        let mut best: Option<SubmissionBatch> = None;
+
+        while low <= high {
+            let end = low + (high - low) / 2;
+            let candidate = submission_batch(envelope, &records[start..end])?;
+            if candidate.bytes.len() <= MAX_SUBMISSION_BODY_BYTES {
+                best = Some(candidate);
+                low = end + 1;
+            } else {
+                high = end - 1;
+            }
+        }
+
+        let Some(batch) = best else {
+            let oversized = submission_batch(envelope, &records[start..start + 1])?;
+            return Err(format!(
+                "Observation record {start} requires {} bytes; the server maximum is {MAX_SUBMISSION_BODY_BYTES}. Reduce the observation window or loaded asset set.",
+                oversized.bytes.len()
+            ));
+        };
+        start += batch.run_ids.len();
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
+fn submission_batch(envelope: &Value, records: &[Value]) -> Result<SubmissionBatch, String> {
+    let run_ids: BTreeSet<String> = records
+        .iter()
+        .map(|record| {
+            record["run_id"]
+                .as_str()
+                .ok_or_else(|| "Observation record has no string run_id".to_string())
+                .map(str::to_string)
+        })
+        .collect::<Result<_, _>>()?;
+    if run_ids.len() != records.len() {
+        return Err("Observation envelope contains duplicate run_id values".to_string());
+    }
+    let envelope = filter_records(envelope, |record| {
+        record["run_id"]
+            .as_str()
+            .is_some_and(|run_id| run_ids.contains(run_id))
+    });
+    Ok(SubmissionBatch {
+        bytes: to_json_bytes(&envelope)?,
+        run_ids,
+    })
 }
 
 fn all_pending_persisted(pending: &[LedgerRow], outcome: &SubmitOutcome) -> bool {

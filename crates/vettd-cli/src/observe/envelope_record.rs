@@ -227,14 +227,13 @@ fn stats(summary: &Stats, field: &str) -> Result<Value, String> {
     }))
 }
 
-/// Narrow a `u128` sum of squares to a JSON integer, or fail loud. See the module docs for why this
-/// refuses rather than clamps.
-fn stats_sumsq(sumsq: u128, field: &str) -> Result<u64, String> {
-    u64::try_from(sumsq).map_err(|_| {
-        format!(
-            "{field}: sum of squares {sumsq} exceeds {}, the largest integer a JSON number carries \
-             exactly; the envelope cannot represent it and will not approximate it",
-            u64::MAX
-        )
-    })
+/// Render the bounded `u128` as a decimal string so every JSON consumer receives it exactly.
+fn stats_sumsq(sumsq: u128, field: &str) -> Result<String, String> {
+    const MAX_SUMSQ: u128 = 1_000_000_000_000_000_000_000;
+    if sumsq > MAX_SUMSQ {
+        return Err(format!(
+            "{field}: sum of squares {sumsq} exceeds the envelope maximum {MAX_SUMSQ}"
+        ));
+    }
+    Ok(sumsq.to_string())
 }

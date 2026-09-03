@@ -841,7 +841,7 @@ fn nullable_objects_are_null_when_absent_and_stats_when_present() {
     );
     assert_eq!(
         signals(rec_a, &gamma().asset_id)["tokens_attributed"],
-        json!({"n": 2, "sum": 12000, "min": 5000, "max": 7000, "sumsq": 74_000_000u64})
+        json!({"n": 2, "sum": 12000, "min": 5000, "max": 7000, "sumsq": "74000000"})
     );
     assert_eq!(
         signals(rec_a, &alpha().asset_id)["context_cost_est"],
@@ -883,7 +883,7 @@ fn failure_classes_latency_and_corroborations() {
     );
     assert_eq!(
         signals(rec_a, &alpha().asset_id)["latency_ms"],
-        json!({"n": 4, "sum": 1150, "min": 200, "max": 400, "sumsq": 352_500u64})
+        json!({"n": 4, "sum": 1150, "min": 200, "max": 400, "sumsq": "352500"})
     );
     assert_eq!(
         signals(rec_a, &gamma().asset_id)["latency_ms"]["n"],
@@ -1092,12 +1092,10 @@ fn filter_records_rebuilds_bom_from_the_survivors() {
 
 // ---- the sumsq decision --------------------------------------------------------------------
 
-/// A sum of squares above `u64::MAX` is refused with the gate path named, never clamped: a clamped
-/// `sumsq` would silently understate the variance the cloud derives from it, with nothing on the
-/// wire saying so. Cannot prove the refusal is unreachable in practice — it takes ~19 child runs of
-/// a billion tokens in one run — only that it is loud when reached. See the module docs.
+/// A sum of squares above `u64::MAX` is emitted as an exact decimal string, while a value outside
+/// the envelope's 1e21 bound fails loudly with its field named.
 #[test]
-fn sumsq_above_u64_max_is_refused_with_the_field_named() {
+fn sumsq_above_u64_max_is_exact_and_the_envelope_bound_is_enforced() {
     let huge = 5_000_000_000i64;
     let mut runs = fixture_runs();
     let invocations: Vec<InvocationObs> = (0..4)
@@ -1121,14 +1119,42 @@ fn sumsq_above_u64_max_is_refused_with_the_field_named() {
     runs[0]
         .observations
         .insert(0, vec![obs(&gamma(), invocations, None, None)]);
-    let error = build_envelope(&runs, &meta(&secret_a())).expect_err("must refuse");
+    let envelope = build_envelope(&runs, &meta(&secret_a())).expect("must encode exactly");
+    let record = record_with_run_id(
+        &envelope,
+        &run_id_for(&secret_a(), "claude_code", "session-invented-a"),
+    );
+    assert_eq!(
+        signals(record, &gamma().asset_id)["tokens_attributed"]["sumsq"],
+        json!(summary.sumsq.to_string())
+    );
+
+    let too_large = 40_000_000_000i64;
+    runs[0].observations.insert(
+        0,
+        vec![obs(
+            &gamma(),
+            vec![inv(
+                ASSET_AGENT,
+                &gamma().name,
+                T0,
+                None,
+                None,
+                Some(too_large),
+                false,
+            )],
+            None,
+            None,
+        )],
+    );
+    let error = build_envelope(&runs, &meta(&secret_a())).expect_err("must enforce the bound");
     assert!(
         error.starts_with("records[].assets[].signals.tokens_attributed.sumsq:"),
         "the error must name the field, got: {error}"
     );
     assert!(
-        error.contains(&summary.sumsq.to_string()),
-        "and the value: {error}"
+        error.contains("1600000000000000000000"),
+        "and the rejected value: {error}"
     );
 }
 
@@ -1190,12 +1216,11 @@ fn golden_envelope() -> (Value, Vec<AttributedRun>) {
     (envelope, runs)
 }
 
-/// The Rust chain reproduces the prototype's committed envelope BYTE FOR BYTE from the same fixture
-/// home, secret and clock. This is the acceptance test of the port: every hash preimage, every
-/// count, every null, every key order and every escape agrees with the Python. Cannot prove the
-/// prototype was right about any of them — only that the port did not change them.
+/// The Rust chain reproduces the committed v0.2 envelope byte for byte from the same fixture home,
+/// secret and clock. The one intentional divergence from the prototype is the lossless decimal
+/// string encoding for `sumsq`; every hash, count, null, key order and escape remains pinned.
 #[test]
-fn golden_envelope_bytes_match_prototype() {
+fn golden_envelope_bytes_match_committed_v2_contract() {
     let (envelope, _) = golden_envelope();
     let ours = to_json_bytes(&envelope).expect("encodes");
     let golden =

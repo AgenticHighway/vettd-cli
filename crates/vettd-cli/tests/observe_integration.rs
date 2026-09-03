@@ -398,7 +398,7 @@ fn observe_dry_run_writes_canonical_file_and_touches_no_store() {
     assert!(!text.contains(", \""), "no space after a comma separator");
     assert!(!text.contains("\": "), "no space after a key separator");
     let parsed: serde_json::Value = serde_json::from_str(text).expect("the payload must parse");
-    assert_eq!(parsed["envelope_version"], "0.1.0");
+    assert_eq!(parsed["envelope_version"], "0.2.0");
     assert!(
         parsed["records"].as_array().is_some_and(|r| !r.is_empty()),
         "the fixture home has a session, so records must not be empty"
@@ -721,7 +721,7 @@ fn observe_status_json() {
     assert_eq!(parsed["secret_present"], true, "seed_home wrote the secret");
     assert_eq!(parsed["store_present"], false, "nothing has submitted yet");
     assert_eq!(parsed["cursor_state"], "fresh");
-    assert_eq!(parsed["envelope_version"], "0.1.0");
+    assert_eq!(parsed["envelope_version"], "0.2.0");
     assert!(
         parsed["config_path"].as_str().unwrap().contains(".vettd"),
         "the config path must be reported so a user can find it: {parsed}"
@@ -977,7 +977,7 @@ fn observe_submit_posts_envelope_and_updates_ledger() {
         "the written payload must be the bytes that went on the wire"
     );
     let posted: Value = serde_json::from_slice(&expected_bytes).expect("the body must be JSON");
-    assert_eq!(posted["envelope_version"], "0.1.0");
+    assert_eq!(posted["envelope_version"], "0.2.0");
     assert_eq!(
         posted["records"].as_array().map(Vec::len),
         Some(run_ids.len())

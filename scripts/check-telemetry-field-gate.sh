@@ -140,7 +140,7 @@ import sys
 # The gate lists these three once as containers (two nullable objects and
 # one array of objects) and lists their children as leaves; JSON Schema
 # has no leaf at these paths, so the difference is expected and permanent
-# for envelope 0.1.0. Any other difference is a hard failure.
+# for envelope 0.2.0. Any other difference is a hard failure.
 EXPECTED_GATE_ONLY = {
     "records[].assets[].signals.context_cost_est",
     "records[].assets[].signals.tokens_attributed",

@@ -60,7 +60,8 @@ Nothing between steps 1 and 3 touches the network. Step 4 requires saved credent
   an MCP server, or `HMAC(device_secret, "<asset_type>:<name>")` where there is no content to
   hash. The `key_basis` field says which of the three was used.
 - Integer counts, mergeable statistics (`n`, `sum`, `min`, `max`, `sumsq`), and closed-enum
-  classifications.
+  classifications. Envelope v0.2 carries `sumsq` as a bounded decimal string so values above
+  JavaScript's exact integer range cannot be rounded in transit.
 
 **Sent** (only with `--submit`, and only what the gate allows):
 
@@ -105,7 +106,8 @@ The gate enforces four kinds of rule:
    the very content the gate exists to withhold.
 2. **Value-level.** Closed enums must hold a listed member; hashes must be exactly 64 lowercase
    hex characters; days must be real calendar dates; numbers must sit inside declared bounds and
-   must not fall in a Unix-timestamp range.
+   must not fall in a Unix-timestamp range; `sumsq` decimal strings must be canonical and at most
+   1e21.
 3. **Forbidden patterns.** Twenty patterns reject anything shaped like a path, URL, hostname,
    email, IP address, clock time, uuid, tool-use id, MCP tool name, git ref, JWT, or API token.
 4. **Dynamic, fail-closed.** The emitter hands the gate its own local vocabulary — the skill,
@@ -207,7 +209,8 @@ instead of the CLI treating it as already sent.
 Both are **submission state**. A `--dry-run` never opens the store, so running one twice gives
 identical output and can never starve a later submit. Cursors advance only after the server has
 confirmed it holds the record: a payload written locally and then lost to a failed POST is not
-mistaken for one that was delivered.
+mistaken for one that was delivered. Large windows are split into requests of at most 500 records
+and 1 MiB; completed batches are ledgered, but cursors wait until every batch is confirmed.
 
 Rotating the secret (delete the file) clears both cursors and the ledger, because every pseudonym
 in them refers to a key that no longer exists.
@@ -263,7 +266,7 @@ print("\n".join(sorted(set(strings(json.load(open(sys.argv[1])))))))
 PY
 ```
 
-The bytes `--dry-run` writes are the bytes `--submit` sends. They are canonical JSON — sorted
-keys, no insignificant whitespace, ASCII-only — so two payloads describing the same observation
-are byte-identical, and a diff between two of them is a diff of the observation rather than of
-the serialiser.
+The bytes `--dry-run` writes are canonical JSON — sorted keys, no insignificant whitespace,
+ASCII-only — so two payloads describing the same observation are byte-identical. For a large
+submission, the CLI sends canonical record subsets of that same gate-checked document to honor
+the ingest route's record and byte limits; it does not transform any record.

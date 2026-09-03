@@ -38,7 +38,7 @@ fn minimal_valid_payload() -> Value {
     let asset_id = hex64("asset-a");
     let bom_version = hex64("bom-a");
     json!({
-        "envelope_version": "0.1.0",
+        "envelope_version": "0.2.0",
         "extractor_version": "proto-0.1.0",
         "gate_version": 1,
         "emitted_day": DAY,
@@ -89,7 +89,7 @@ fn minimal_valid_payload() -> Value {
                         "unknown": 0,
                     },
                     "harness_corroborations": null,
-                    "latency_ms": {"n": 3, "sum": 900, "min": 200, "max": 400, "sumsq": 290000},
+                    "latency_ms": {"n": 3, "sum": 900, "min": 200, "max": 400, "sumsq": "290000"},
                     "tokens_attributed": null,
                     "context_cost_est": {"tokens": 120, "method": "listing_bytes_div4"},
                 },
@@ -189,7 +189,7 @@ fn dynamic_entries_shorter_than_three_chars_are_skipped() {
 #[test]
 fn nullable_object_accepts_null_and_populated_but_not_scalar() {
     let mut payload = minimal_valid_payload();
-    let stats = json!({"n": 1, "sum": 50, "min": 50, "max": 50, "sumsq": 2500});
+    let stats = json!({"n": 1, "sum": 50, "min": 50, "max": 50, "sumsq": "2500"});
     payload["records"][0]["assets"][0]["signals"]["tokens_attributed"] = stats;
     assert_eq!(
         GATE.check(&payload, &Dynamic::empty()),
@@ -409,13 +409,12 @@ fn epoch_rule_fires_where_bounds_do_not() {
     );
 }
 
-/// `ms2` / `tokens2` leaves may hold epoch-sized magnitudes, because a sum of squares legitimately
-/// reaches them and the rule would otherwise reject valid latency stats. Cannot prove a timestamp
-/// could never be smuggled through a `sumsq` field; the exemption is a deliberate trade.
+/// Sums of squares are exact-format decimal strings, so timestamp-pattern checks intended for free
+/// text do not reject legitimate magnitudes.
 #[test]
-fn sum_of_squares_units_are_exempt_from_epoch_rule() {
+fn sum_of_squares_decimal_is_not_treated_as_free_text() {
     let mut payload = minimal_valid_payload();
-    payload["records"][0]["assets"][0]["signals"]["latency_ms"]["sumsq"] = json!(1_700_000_000);
+    payload["records"][0]["assets"][0]["signals"]["latency_ms"]["sumsq"] = json!("1700000000");
     assert_eq!(
         GATE.check(&payload, &Dynamic::empty()),
         Vec::<String>::new()
@@ -716,33 +715,26 @@ fn schema_leaf_paths<'a>(
     out.insert(prefix.to_string());
 }
 
-/// `ms2`/`tokens2` are bounded at 1e21, roughly 54x `u64::MAX`, so a legitimate sum of squares can
-/// exceed what `serde_json` holds as an integer. Rejecting it as `type_mismatch` would refuse a
-/// payload the Python gate accepts and would strand the emitter with a nonsense message about a
-/// value that is in fact in range. Verified against the reference with
-/// `python3 -c "import json,sys; sys.path.insert(0,'spikes/828-passive-observer/prototype');
-/// from check_field_gate import check, load_gate; ..."` — the Python reports no violation.
+/// Decimal strings preserve sums of squares above JavaScript's safe integer range. The format is
+/// canonical and bounded, so alternate spellings and values above 1e21 are rejected.
 #[test]
-fn sumsq_above_u64_max_is_in_bounds_not_a_type_mismatch() {
+fn sumsq_decimal_is_exact_canonical_and_bounded() {
     let mut payload = minimal_valid_payload();
-    // 5e19 > u64::MAX (1.8446744e19) and well under the 1e21 bound.
     payload["records"][0]["assets"][0]["signals"]["latency_ms"]["sumsq"] =
-        serde_json::json!(50_000_000_000_000_000_000_f64);
+        json!("50000000000000000000");
     let violations = GATE.check(&payload, &Dynamic::empty());
     assert!(
         violations.is_empty(),
-        "an in-bounds sumsq above u64::MAX must pass: {violations:?}"
+        "an in-bounds sumsq above u64::MAX must pass exactly: {violations:?}"
     );
 
-    // Above the bound it must still fail, and as out_of_bounds rather than type_mismatch.
-    payload["records"][0]["assets"][0]["signals"]["latency_ms"]["sumsq"] =
-        serde_json::json!(2e21_f64);
-    let violations = GATE.check(&payload, &Dynamic::empty());
-    assert_violation(
-        &violations,
-        "records[0].assets[0].signals.latency_ms.sumsq",
-        "out_of_bounds",
-    );
+    for bad in [json!("2000000000000000000000"), json!("01"), json!(50)] {
+        payload["records"][0]["assets"][0]["signals"]["latency_ms"]["sumsq"] = bad;
+        assert!(
+            !GATE.check(&payload, &Dynamic::empty()).is_empty(),
+            "a noncanonical, out-of-range, or numeric sumsq must fail"
+        );
+    }
 }
 
 /// A float-shaped integer inside `u64` range stays a `type_mismatch`, matching Python, where

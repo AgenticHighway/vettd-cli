@@ -454,7 +454,10 @@ fn stats_from(value: &Value) -> Stats {
         sum: value["sum"].as_i64().unwrap_or(0),
         min: value["min"].as_i64().unwrap_or(0),
         max: value["max"].as_i64().unwrap_or(0),
-        sumsq: value["sumsq"].as_u64().map(u128::from).unwrap_or(0),
+        sumsq: value["sumsq"]
+            .as_str()
+            .and_then(|raw| raw.parse::<u128>().ok())
+            .unwrap_or(0),
     }
 }
 

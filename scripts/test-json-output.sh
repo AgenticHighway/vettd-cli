@@ -352,7 +352,7 @@ assert_json "observe --json emits the envelope on stdout" \
         --out "$OBSERVE_HOME/payload.json"
 
 if [ -n "$JSON_OUT" ]; then
-    assert_field "envelope_version is 0.1.0" "$JSON_OUT" 'data["envelope_version"] == "0.1.0" or None'
+    assert_field "envelope_version is 0.2.0" "$JSON_OUT" 'data["envelope_version"] == "0.2.0" or None'
     assert_type  "records is a list"         "$JSON_OUT" 'data["records"]'  'list'
     assert_type  "coverage is an object"     "$JSON_OUT" 'data["coverage"]' 'dict'
     # The disclosure and the gate summary are human output; a byte of either on stdout would have
