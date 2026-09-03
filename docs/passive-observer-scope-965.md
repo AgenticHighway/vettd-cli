@@ -1,8 +1,32 @@
 # Scope note for #965 — what the passive-observer production implementation inherits from spike #828
 
+> ## Status: shipped
+>
+> **Superseded as a plan; kept as a record.** The production implementation landed in `vettd-cli`
+> as `vettd observe` (see [`observe.md`](observe.md) for the shipped behaviour and
+> [`vettd-observe-port-plan.md`](vettd-observe-port-plan.md) for the port's phase-by-phase
+> record). This document is the spike's reasoning at the time it was written, moved here from
+> `spikes/828-passive-observer/` when that directory was retired. It is not maintained against
+> the code, and where the two disagree the code and `observe.md` win.
+>
+> Where the implementation deliberately diverged from what is described below:
+>
+> | This document says | What shipped | Why |
+> | --- | --- | --- |
+> | `run_id = HMAC(secret, harness session id)` | `HMAC(secret, "{harness}:{session_key}")` | The harness prefix namespaces the pseudonym, so the same session key under two harnesses cannot collide. |
+> | Reuse the scan cache (`~/.vettd/scan-cache/scan-v2.sqlite3`) for cursors | A separate store, `~/.vettd/observer/observer-v1.sqlite3` | The scan cache opens without WAL or a busy timeout, and its `CACHE_SCHEMA_VERSION` orphaning would silently discard cursors on a version bump. |
+> | `extractor_version` as `proto-0.1.0+taskcat-1` | `1+1` | Every string leaf is substring-checked against the machine's own asset names; a long producer-controlled string is a large fail-closed collision surface for no benefit. |
+> | Cloud route built on `hub/signals` | Built on `dev` | `hub/signals` carries the emitter-credential work; the observations route shares nothing with it but a file pattern. |
+>
+> One thing this document identifies that is **not** yet closed: `harness_version` defaults to
+> `"unknown"`, whose substrings include `now`, `own` and `know`, so a machine with a three-letter
+> asset name of that shape is refused. Closing it means exempting producer-controlled leaves from
+> the dynamic substring rule, as the gate already exempts closed enums. That is a gate contract
+> change and is left for the owner.
+
 > Written by spike [#828](https://github.com/AgenticHighway/vettd/issues/828) for the tracker
 > [#965](https://github.com/AgenticHighway/vettd/issues/965) (second scanning pass, chat-log
-> signals). Companion to the spike answer in `README.md` next to this file. Laptop tier only:
+> signals). Companion to the spike answer, now [`passive-observer-decision-828.md`](passive-observer-decision-828.md). Laptop tier only:
 > read-only, opt-in, fail-open, one developer machine. Nothing here is a fleet-tier commitment;
 > org-level consent, collector attestation and "not silently disableable" are a different feature
 > with a different consent model.
@@ -19,7 +43,7 @@ a child of a static-scan tracker without inheriting acceptance criteria it canno
 "What v1 does not do" below). If the maintainer rules "fold into #824" instead, everything
 below still applies; only the parent changes.
 
-## What #965 inherits from the prototype (`spikes/828-passive-observer/`)
+## What #965 inherits from the prototype (was `spikes/828-passive-observer/`, since deleted)
 
 | Artifact | Status | How it transfers |
 |---|---|---|
@@ -71,7 +95,7 @@ does not.
 7. **Detectors.** Add `~/.codex` (`config.toml`, `sessions/`) to `discovery.rs` and
    `mcp_configs.rs` so `--submit` inventories can evidence Codex presence at all.
 
-## What #965 must build (cloud, `vettd`, on `hub/signals`)
+## What #965 must build (cloud, `vettd`; built on `dev`, not `hub/signals` — see the status header)
 
 The cloud already has a second ingest route built for out-of-process emitters:
 `POST /api/signals/ingest` (#973) — emitter credential (`ah_emit_…`), provenance stamped at the
@@ -132,17 +156,17 @@ changes stay undetected and documented); ClickHouse or any store migration; the 
 
 ## Proposed children (replacing the list in #965's comment)
 
-| # | Child | Repo | Depends on |
-|---|---|---|---|
-| 1 | Observer secret + telemetry disclosure categories + walker generalisation + golden-payload gate test + CI script | vettd-cli | — |
-| 2 | Claude Code source (structs, key allowlist, pairing, dedupe, in-band loaded set, settle rule, sub-agent linkage) + non-blocking tests incl. Windows share mode | vettd-cli | 1 |
-| 3 | Attribution: asset keys, binding, bom_version, tiers | vettd-cli | 2 |
-| 4 | `vettd observe`: opt-in flag, disclosure on every path, cursors, ledger, dry-run, submit | vettd-cli | 1–3, 6 |
-| 5 | Codex source, confirmed on real files; `~/.codex` detectors | vettd-cli | 2 |
-| 6 | `POST /api/observations/ingest` + tables + retention + `harnessId` column and identity-key migration | vettd | — |
-| 7 | Projection into `AssetSignal` + display floors/intervals/"not enough evidence yet" | vettd | 6 |
-| 8 | Telemetry `asset_id` on the scan payload (contract bump through vettd-cli#243's gate) | vettd → vettd-cli | 3 |
-| 9 | Amend #916/#917 acceptance to "supplemented on the user's view; public retirement is fleet-tier" | vettd | ruling |
+| # | Child | Repo | Depends on | Landed |
+| --- | --- | --- | --- | --- |
+| 1 | Observer secret + telemetry disclosure categories + walker generalisation + golden-payload gate test + CI script | vettd-cli | — | **Yes** — `identity.rs`, `contract/disclosure.rs` (14 variants), `observe/gate.rs`, `scripts/check-telemetry-field-gate.sh` |
+| 2 | Claude Code source (structs, key allowlist, pairing, dedupe, in-band loaded set, settle rule, sub-agent linkage) + non-blocking tests incl. Windows share mode | vettd-cli | 1 | **Yes** — `observe/source.rs`, `observe/claude_code/`; the Windows share-mode test runs in CI on a Windows runner |
+| 3 | Attribution: asset keys, binding, bom_version, tiers | vettd-cli | 2 | **Yes** — `observe/extract.rs`, `observe/attribute/`, `observe/taskcat.rs` |
+| 4 | `vettd observe`: opt-in flag, disclosure on every path, cursors, ledger, dry-run, submit | vettd-cli | 1–3, 6 | **Yes** — `observe/{args,pipeline,store,subcommands,submit}.rs`; shipped ahead of child 6 rather than after it, since the CLI's contract is the schema, not the route |
+| 5 | Codex source, confirmed on real files; `~/.codex` detectors | vettd-cli | 2 | No — deliberately out of scope; `--harness` rejects anything but `claude_code` at parse time rather than accepting it and finding nothing |
+| 6 | `POST /api/observations/ingest` + tables + retention + `harnessId` column and identity-key migration | vettd | — | In progress on `dev`, not `hub/signals` |
+| 7 | Projection into `AssetSignal` + display floors/intervals/"not enough evidence yet" | vettd | 6 | No — follow-up |
+| 8 | Telemetry `asset_id` on the scan payload (contract bump through vettd-cli#243's gate) | vettd → vettd-cli | 3 | No — follow-up |
+| 9 | Amend #916/#917 acceptance to "supplemented on the user's view; public retirement is fleet-tier" | vettd | ruling | No — needs the maintainer |
 
 ## Estimate against actual capacity
 

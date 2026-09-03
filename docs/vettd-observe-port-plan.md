@@ -1,4 +1,44 @@
 > Status: PLAN — written 2026-09-03 by the planning session for AgenticHighway/vettd-cli#250. Executed on branch `claude/vettd-cli-250-product-ready-tb6w2w` in both repos.
+>
+> ## Executed: phases 0-8 landed (2026-09-03)
+>
+> Kept per the repo convention for plan docs. What shipped, and where it differs from what is
+> written below:
+>
+> | Phase | Landed | Note |
+> | --- | --- | --- |
+> | 0 Branch, baseline, artifact promotion | Yes | `cargo deny` was already failing at the branch point (RUSTSEC-2026-0258 via `httpmock`); fixed as its own commit. |
+> | 1 Gate, disclosure, secret, CI script | Yes | Gate script steps 4-5 deferred to phase 6 as planned; they need the built binary. |
+> | 2 Source, Claude Code reader, goldens | Yes | The Windows share-mode test runs in CI on a Windows runner (the plan's default ruling). |
+> | 3 Extract, FsIndex, attribute, taskcat | Yes | |
+> | 4 Envelope, canonical bytes, golden parity | Yes | `extractor_version` is `1+1`, not `proto-0.1.0+taskcat-1` — see below. |
+> | 5 Rank, render, copy lint | Yes | |
+> | 6 `vettd observe` command | Yes | `--out` is `Option<PathBuf>` with `default_missing_value`, not `Option<Option<PathBuf>>`. |
+> | 7 Submit with ledger | Yes | `--resend` correction, recorded at step 9 of the pipeline section. |
+> | 8 Docs and spike disposition | Yes | `git grep spikes/828` still hits ~40 source doc comments; see below. |
+> | 9 Cloud route in `vettd` | Pending | |
+>
+> Three deliberate deviations, each argued where it lives:
+>
+> 1. **`extractor_version` is `1+1`.** Every string leaf is substring-checked against the machine's
+>    own asset names, so a long producer-controlled string is a large fail-closed collision surface
+>    for no benefit. One related issue is open and escalated rather than fixed: `harness_version`
+>    defaults to `"unknown"`, whose substrings include `now`, `own` and `know`, so a machine with a
+>    three-letter asset name of that shape is refused. Closing it means exempting
+>    producer-controlled leaves from the dynamic rule, as the gate already exempts closed enums —
+>    a gate contract change, and the owner's call.
+> 2. **`--resend` bypasses the cursor probe**, not only the ledger. See the correction at step 9.
+> 3. **Source doc comments keep their `spikes/828-passive-observer/prototype/…` citations.** This
+>    plan expected `git grep spikes/828` to hit only the docs. Rewriting ~40 comments across 35
+>    files would have churned the diff for a cosmetic grep result and lost the one useful thing
+>    those citations carry: which Python function each Rust one came from. `observe/mod.rs`
+>    instead carries a single note saying the directory was deleted and how to retrieve any file
+>    from git — an instruction that is identical for every citation, and that a per-file rewrite
+>    could not have carried, since it needs the deleting commit's sha.
+>
+> One factual error in this plan, corrected in place where it appears: the claim that canonical
+> JSON leaves `0x7f` raw. Under `ensure_ascii=True` CPython's `ESCAPE_ASCII` is `([\\"]|[^ -~])`,
+> so only `0x20`-`0x7e` survive and DEL is escaped as `\u007f`.
 
 # Make vettd-cli#250 product-ready: port the passive observer to Rust (`vettd observe`) and land its cloud ingest route
 

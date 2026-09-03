@@ -108,6 +108,24 @@ expect_contains() {
     fi
 }
 
+# Run a command, expect a substring on STDERR.
+#
+# `expect_contains` reads stdout, which is the right stream for scan output. Human-oriented
+# output — the observe disclosure, progress, the gate summary — belongs on stderr by the rule in
+# AGENTS.md, so asserting it needs its own capture rather than a `2>&1` that would let a stdout
+# match pass for a stderr one.
+expect_contains_stderr() {
+    local label="$1"; shift
+    local needle="$1"; shift
+    local output
+    output=$("$@" 2>&1 1>/dev/null) || true
+    if echo "$output" | grep -q "$needle"; then
+        pass "$label"
+    else
+        fail "$label — expected '$needle' on stderr"
+    fi
+}
+
 # Run a command and verify the output file exists and is valid JSON
 expect_json_file() {
     local label="$1"
@@ -674,6 +692,60 @@ if [ -n "$AH_TEST_API_KEY" ]; then
 else
     skip "remote submit — set AH_TEST_API_KEY to enable"
 fi
+
+# ── 16. Passive observation (`vettd observe`) ───────────────────────
+#
+# Runs against the committed fixture harness home in a throwaway $HOME, with
+# the clock and the emission day pinned, so the payload is reproducible and
+# nothing here touches the developer's own ~/.claude or ~/.vettd.
+
+section "Passive observation (vettd observe)"
+
+OBSERVE_HOME="$(mktemp -d)"
+mkdir -p "$OBSERVE_HOME/.vettd"
+OBSERVE_FIXTURES="$REPO_ROOT/crates/vettd-cli/tests/fixtures/observe"
+OBSERVE_ROOT="$OBSERVE_HOME/claude_home"
+cp -R "$OBSERVE_FIXTURES/claude_home" "$OBSERVE_ROOT"
+cp "$OBSERVE_FIXTURES/golden/secret.bin" "$OBSERVE_HOME/.vettd/observer_secret"
+OBSERVE_PAYLOAD="$OUT_DIR/${TIMESTAMP}-observe.json"
+
+# Pinned so a fixture timestamp cannot drift out of the window or read as truncated.
+OBS="env HOME=$OBSERVE_HOME VETTD_SCANNER_UUID=00000000-0000-4000-8000-000000000000 $RUN observe"
+OBS_ARGS="--root $OBSERVE_ROOT --now-ms 1800000000000 --today 2027-01-15 --window-days 3650"
+
+expect_ok       "observe --help"                    $RUN observe --help
+expect_ok       "observe status"                    $OBS status
+
+# Off by default: exit 3, and the guidance names the file to edit.
+if $OBS $OBS_ARGS --dry-run > /dev/null 2>&1; then
+    fail "observe without the opt-in must exit 3, not succeed"
+else
+    if [ "$?" = "3" ]; then pass "observe exits 3 before the opt-in"; else fail "observe exit code before the opt-in"; fi
+fi
+
+expect_ok       "observe enable"                    $OBS enable
+expect_contains "observe status reports enabled" "enabled" $OBS status
+
+# The dry run writes the payload and prints the disclosure; it sends nothing.
+expect_ok       "observe --dry-run"                 $OBS $OBS_ARGS --dry-run --out "$OBSERVE_PAYLOAD"
+expect_json_file "observe payload is valid JSON"    "$OBSERVE_PAYLOAD"
+expect_contains_stderr "observe discloses on stderr before reading" "This observation will include" \
+    env HOME="$OBSERVE_HOME" $RUN observe $OBS_ARGS --dry-run --out "$OBSERVE_PAYLOAD"
+
+# The gate accepts what it just produced, which is the point of `check`.
+expect_ok       "observe check on its own payload"  $OBS check "$OBSERVE_PAYLOAD"
+
+# ...and rejects a payload with a field nobody allowlisted.
+OBSERVE_TAMPERED="$OUT_DIR/${TIMESTAMP}-observe-tampered.json"
+python3 -c "
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc['records'][0]['not_in_the_gate'] = 'anything'
+json.dump(doc, open(sys.argv[2], 'w'), sort_keys=True, separators=(',', ':'))
+" "$OBSERVE_PAYLOAD" "$OBSERVE_TAMPERED"
+expect_fail     "observe check rejects an unknown field" $OBS check "$OBSERVE_TAMPERED"
+
+rm -rf "$OBSERVE_HOME"
 
 # ── Summary ──────────────────────────────────────────────────────────
 

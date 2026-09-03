@@ -1,5 +1,29 @@
 # Spike #828 — Passive observer: harness session logs as an observational asset signal (DECISION)
 
+> ## Status: shipped
+>
+> **Superseded as a plan; kept as a record.** The production implementation landed in `vettd-cli`
+> as `vettd observe` (see [`observe.md`](observe.md) for the shipped behaviour and
+> [`vettd-observe-port-plan.md`](vettd-observe-port-plan.md) for the port's phase-by-phase
+> record). This document is the spike's reasoning at the time it was written, moved here from
+> `spikes/828-passive-observer/` when that directory was retired. It is not maintained against
+> the code, and where the two disagree the code and `observe.md` win.
+>
+> Where the implementation deliberately diverged from what is described below:
+>
+> | This document says | What shipped | Why |
+> | --- | --- | --- |
+> | `run_id = HMAC(secret, harness session id)` | `HMAC(secret, "{harness}:{session_key}")` | The harness prefix namespaces the pseudonym, so the same session key under two harnesses cannot collide. |
+> | Reuse the scan cache (`~/.vettd/scan-cache/scan-v2.sqlite3`) for cursors | A separate store, `~/.vettd/observer/observer-v1.sqlite3` | The scan cache opens without WAL or a busy timeout, and its `CACHE_SCHEMA_VERSION` orphaning would silently discard cursors on a version bump. |
+> | `extractor_version` as `proto-0.1.0+taskcat-1` | `1+1` | Every string leaf is substring-checked against the machine's own asset names; a long producer-controlled string is a large fail-closed collision surface for no benefit. |
+> | Cloud route built on `hub/signals` | Built on `dev` | `hub/signals` carries the emitter-credential work; the observations route shares nothing with it but a file pattern. |
+>
+> One thing this document identifies that is **not** yet closed: `harness_version` defaults to
+> `"unknown"`, whose substrings include `now`, `own` and `know`, so a machine with a three-letter
+> asset name of that shape is refused. Closing it means exempting producer-controlled leaves from
+> the dynamic substring rule, as the gate already exempts closed enums. That is a gate contract
+> change and is left for the owner.
+
 > Answer to [#828](https://github.com/AgenticHighway/vettd/issues/828). Laptop tier only:
 > read-only, opt-in, fail-open, one developer machine. Fleet-tier concerns (org consent,
 > collector attestation, "not silently disableable") are a different feature with a different
@@ -20,7 +44,7 @@ Deliverables in this directory:
 | File | What it is |
 |---|---|
 | `README.md` | This answer (also posted on #828) |
-| `SCOPE-965.md` | Scope note for #965 (also posted there) |
+| `SCOPE-965.md` (now [`passive-observer-scope-965.md`](passive-observer-scope-965.md)) | Scope note for #965 (also posted there) |
 | `telemetry-field-gate.json` (now at the repo root) | The egress allowlist in the form the gate consumes — **the artifact meant to survive into #965** |
 | `telemetry-envelope.schema.json` (now at the repo root) | JSON schema of the payload, every object closed |
 | `prices.json` (now `crates/vettd-cli/resources/observe-prices.json`) | Dated display-time price table; cost is derived, never stored |
@@ -233,7 +257,7 @@ under an identity key that cannot hold strata. #965 clones that route's pattern 
 the same PR, projects `AssetSignal` rows (`sourceClass: logs`, `sampleSize`, `observedAt`), and
 mints `harnessId` as a real column on the observation tables and on `AssetSignal` (in the
 identity key). `referenceFrame` (#957) is outside the key and cannot hold two harness strata for
-one asset. Details in `SCOPE-965.md`.
+one asset. Details in [`passive-observer-scope-965.md`](passive-observer-scope-965.md).
 
 ### D4 — Attribution model
 
@@ -330,7 +354,7 @@ the personal claim ("in your runs, this was observed") is the one that is safe b
 The empty state is therefore most of the product and is designed as such above. Org aggregation
 across an enrolled org's machines is the fleet-tier feature and would put aggregation privacy
 (minimum cohort, no per-device rows in org views) on #965's critical path; public cross-org
-aggregation is out either way. Consequence stated plainly in `SCOPE-965.md`: single-machine data
+aggregation is out either way. Consequence stated plainly in [`passive-observer-scope-965.md`](passive-observer-scope-965.md): single-machine data
 cannot retire the public #916/#917 proxies; v1 supplements them on the user's own view.
 
 ## 3. Signals
@@ -572,3 +596,71 @@ incomplete as above.
   docs; crates.io metadata for `opentelemetry-otlp`.
 - Not verified: Codex on a real rollout file; Claude Code compaction (`summary`) lines and
   denial text (none in the sample); Windows file sharing; any Cursor, Hermes or OpenClaw file.
+
+## 13. Provenance and score eligibility (vettd#795, vettd#797)
+
+Added 2026-09-03, when the CLI implementation landed. The spike predates the provenance work, so
+this section says how an observation record answers the two issues that govern whether evidence
+may affect a public score. It is a **ruling to be confirmed by the owner**, not a claim that the
+issues are closed — both are open, and their acceptance criteria are quoted verbatim below.
+
+### What an observation record says about its own provenance
+
+| Dimension (#795) | For an observation record | Field |
+| --- | --- | --- |
+| Execution locus | The customer's own machine. Not hosted, not BYOC — a developer laptop running the harness. | `resource.device_id` (per-device, HMAC-free scanner uuid), `resource.harness` |
+| Key provenance | **Customer-supplied.** The runs observed were driven by the user's own harness credentials. Vettd supplies no key and runs no model; the CLI reads logs after the fact. | Implicit in the locus; there is no Vettd-key path to observation |
+| Method / scanner version | The extraction rules, the egress allowlist, and the derivation basis for every asset key and token total. | `extractor_version`, `gate_version`, `envelope_version`, plus per-asset `key_basis` and `binding`, and `tokens.basis` |
+
+Method provenance is deliberately more granular here than #795 asks. A single "scanner version"
+cannot distinguish an asset keyed by content hash from one keyed by a name pseudonym, or a token
+total read from a provider's own accounting from one estimated locally — and those distinctions
+decide how much weight a downstream consumer may put on the number. `key_basis`, `binding` and
+`tokens.basis` carry them per record.
+
+### Eligibility ruling
+
+Under #797's line — "cloud-verified or Vettd-key results may be score-bearing; customer-key or
+self-reported results remain provenance-labeled context" — an observation record is
+**customer-key** and therefore **provenance-labelled context, never score-bearing**. Concretely:
+
+- Labelled `source = vettd-cli`, `sourceClass = logs`, `derivation = inferred`, tenant-scoped to
+  the submitting `userId`.
+- Visible on **that user's own view only**. It does not enter a public grade, a directory tile, or
+  the #916/#917 proxies.
+- Display-gated by the evidence-state floors: a rate is shown from `sampleSize >= 20` and ordered
+  by from `>= 50`. One developer's runs are not a population, and the floors are what stop the
+  interface from implying otherwise.
+- Enters `AssetSignal` only through child 7's projection, which is a separate piece of work with
+  its own review — not as a side effect of this route existing.
+
+This is the conservative reading, and it is the right one for a v1: a public score that moved
+because one developer's laptop reported something would be indefensible to an auditor and trivial
+to attack. Nothing here forecloses a fleet-tier aggregate later; that needs a different consent
+model and a minimum cohort size, and is out of scope by the "What v1 does not do" section above.
+
+### Acceptance criteria, quoted
+
+[vettd#795 — *Execution locus, key provenance, and method provenance on evidence records*](https://github.com/AgenticHighway/vettd/issues/795)
+(open; fetched 2026-09-03):
+
+> - [ ] Evidence records persist execution locus, key provenance, and method version
+> - [ ] Values populated for all current production scan paths (hosted suite scans)
+> - [ ] Fields exposed in evidence-bearing API responses
+
+The third criterion is a cloud concern. The first two are what the CLI can satisfy from its side:
+the fields above are on every record the CLI emits, and the schema requires them. Note the second
+criterion's scope — "all current production scan paths (hosted suite scans)" — does not name the
+observation path, because #795 predates it; whether observation records must carry the same field
+*names* as hosted scan evidence, or map onto them at the boundary, is the owner's call.
+
+[vettd#797 — *Score-bearing eligibility rules (methodology-versioned)*](https://github.com/AgenticHighway/vettd/issues/797)
+(open; depends on #795; fetched 2026-09-03):
+
+> - [ ] Written eligibility policy, versioned, published on the methodology page
+> - [ ] Score computation reads eligibility class; non-eligible evidence visibly excluded from the grade
+> - [ ] Closed spec issues #542/#533/#544 reviewed for reusable scoring concepts (cite, don't rebuild)
+
+All three are cloud-side. The ruling above is this record's input to the first: it states which
+class observation evidence falls into and why, so the written policy has something concrete to
+codify rather than deriving it after the fact.

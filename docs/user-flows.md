@@ -18,6 +18,7 @@ flowchart TD
     Choice -->|"inventory ..."| Inventory["Browse your own inventory\n(requires auth)"]
     Choice -->|"rules ..."| Rules["List, add, remove,\nvalidate custom rules"]
     Choice -->|"update"| Update["Check or install a signed update"]
+    Choice -->|"observe [enable/status/check]"| Observe["Read local agent session logs\n(opt-in; see docs/observe.md)"]
 
     Wizard --> Scan
     Scan --> Output["Render local output\nor build submission payload"]
@@ -31,6 +32,7 @@ flowchart TD
     Inventory --> End
     Rules --> End
     Update --> End
+    Observe --> End
     Prompt --> End
 ```
 
@@ -94,6 +96,54 @@ sequenceDiagram
         CLI-->>User: success or explicit retry/error guidance
     else version mismatch
         CLI-->>User: stop and prompt for update
+    end
+```
+
+## Observe and Submit Journey
+
+`vettd observe` is a separate journey from a scan: it reads agent session transcripts rather
+than the filesystem, it is off until the user opts in, and its payload is gate-checked before
+anything is written or sent. See [`observe.md`](observe.md) for the full model.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as vettd observe
+    participant Config as ~/.vettd/.vettd.toml
+    participant Logs as ~/.claude/projects
+    participant Gate as telemetry field gate
+    participant Store as ~/.vettd/observer/*.sqlite3
+    participant Backend as compatible backend
+
+    User->>CLI: vettd observe enable
+    CLI->>Config: append [telemetry] enabled = true
+
+    User->>CLI: vettd observe [--dry-run | --submit]
+    CLI-->>User: disclosure of all 14 categories (stderr, before any read)
+    CLI->>Config: telemetry enabled?
+    alt not enabled
+        CLI-->>User: guidance + exit 3 (nothing read)
+    else enabled
+        opt --submit only
+            CLI->>Store: open cursors + ledger
+        end
+        CLI->>Logs: stream transcripts from byte cursors
+        Logs-->>CLI: lines (projected to hashes and counts in memory)
+        CLI->>CLI: extract, attribute, build envelope
+        opt --submit only
+            CLI->>Store: drop records already delivered under this hash
+        end
+        CLI->>Gate: check every leaf, value, pattern, dynamic set
+        alt violation
+            Gate-->>User: rule + path, exit 2 (nothing written, stored, or sent)
+        else clean
+            CLI-->>User: canonical payload to --out, report to stdout
+            opt --submit without --dry-run
+                CLI->>Backend: POST /api/observations/ingest
+                Backend-->>CLI: per-run accepted / duplicate / replaced
+                CLI->>Store: commit cursors + ledger rows (one transaction, after the 2xx)
+            end
+        end
     end
 ```
 
