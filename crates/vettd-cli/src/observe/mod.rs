@@ -27,6 +27,7 @@ pub(crate) mod render;
 pub(crate) mod source;
 pub(crate) mod store;
 pub(crate) mod subcommands;
+pub(crate) mod submit;
 pub(crate) mod taskcat;
 pub(crate) mod types;
 

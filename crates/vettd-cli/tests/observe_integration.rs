@@ -11,7 +11,12 @@
 //! reproducible.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use httpmock::Method::POST;
+use httpmock::MockServer;
+use serde_json::{json, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_vettd");
 
@@ -821,5 +826,674 @@ fn observe_reports_a_bad_root_rather_than_an_empty_observation() {
         out.stdout.is_empty(),
         "nothing on stdout: {:?}",
         out.stdout_text()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Submission
+//
+// Against a real loopback mock server, so the assertions are about the bytes and headers that
+// actually go on the wire. 127.0.0.1 is a local host, so `ensure_endpoint_allowed` permits plain
+// HTTP without `--allow-public-endpoint` — which is itself covered below.
+// ---------------------------------------------------------------------------
+
+const MOCK_API_KEY: &str = "observe-mock-key-123";
+const INGEST_PATH: &str = "/api/observations/ingest";
+
+/// A throwaway `$HOME` that also carries saved credentials, as `vettd auth` would have written.
+///
+/// `endpoint` is written in the SCAN ingest form the CLI actually saves, so the tests exercise the
+/// real `/api/scans/ingest` → `/api/observations/ingest` derivation rather than a pre-cooked URL.
+fn seed_home_with_auth(scan_endpoint: &str) -> tempfile::TempDir {
+    let home = seed_home(Some(true));
+    let config_dir = home.path().join(".config").join("vettd");
+    std::fs::create_dir_all(&config_dir).expect("create ~/.config/vettd");
+    std::fs::write(
+        config_dir.join("config.json"),
+        json!({"endpoint": scan_endpoint, "apiKey": MOCK_API_KEY}).to_string(),
+    )
+    .expect("seed auth config");
+    home
+}
+
+fn scan_endpoint(server: &MockServer) -> String {
+    format!("{}/api/scans/ingest", server.base_url())
+}
+
+/// What a dry run on this home produces: the exact canonical bytes, and the run ids in them.
+///
+/// A `run_id` is `HMAC(secret, "claude_code:<session_key>")`; pinning the literal would make every
+/// test below fail for the right reason but the wrong one the day the fixture or the HMAC input
+/// changes. The bytes come back too, so a test can require the wire body to equal them — which
+/// pins the property a user actually relies on: what `--dry-run` shows you is what gets sent.
+fn learn_dry_run(home: &Path, root: &Path) -> (Vec<u8>, Vec<String>) {
+    let payload = home.join("learn.json");
+    let out = run_vettd(
+        &observe_args(
+            root.to_str().unwrap(),
+            &["--dry-run", "--out", payload.to_str().unwrap()],
+        ),
+        home,
+    );
+    assert_eq!(
+        out.status, 0,
+        "the learning dry run must succeed: {}",
+        out.stderr
+    );
+    let bytes = std::fs::read(&payload).expect("read the learned payload");
+    let envelope: Value = serde_json::from_slice(&bytes).expect("parse the learned payload");
+    let ids: Vec<String> = envelope["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .map(|r| r["run_id"].as_str().expect("run_id").to_string())
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "the fixture home must produce at least one run"
+    );
+    std::fs::remove_file(&payload).ok();
+    (bytes, ids)
+}
+
+/// Just the run ids, for the tests that do not care about the bytes.
+fn learn_run_ids(home: &Path, root: &Path) -> Vec<String> {
+    learn_dry_run(home, root).1
+}
+
+fn results_body(run_ids: &[String], status: &str) -> Value {
+    json!({
+        "results": run_ids
+            .iter()
+            .map(|id| json!({"run_id": id, "status": status}))
+            .collect::<Vec<_>>()
+    })
+}
+
+/// Start the binary without waiting, for the one test that has to change the server mid-flight.
+fn spawn_vettd(args: &[&str], home: &Path) -> Child {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args);
+    cmd.env("HOME", home);
+    cmd.env("USERPROFILE", home);
+    cmd.env_remove("HOMEDRIVE");
+    cmd.env_remove("HOMEPATH");
+    cmd.env("VETTD_SCANNER_UUID", DEVICE_ID);
+    cmd.env_remove("XDG_CONFIG_HOME");
+    cmd.env_remove("XDG_CONFIG_DIRS");
+    cmd.current_dir(home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.spawn().expect("spawn vettd")
+}
+
+/// Invariant: the envelope goes out with the credential and content type the ingest route
+/// requires, as the exact bytes that were gate-checked, and the runs the server confirms are
+/// recorded so the next run has nothing to send.
+///
+/// The body assertion is the whole payload re-parsed, not a substring: a submission that dropped
+/// or reshaped a field between the gate and the socket would be a payload nobody authorised.
+#[test]
+fn observe_submit_posts_envelope_and_updates_ledger() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let (expected_bytes, run_ids) = learn_dry_run(home.path(), &root);
+
+    // Everything that must be true of the request is expressed as a MATCHER, so a hit is itself
+    // the assertion: the credential, the content type, and the body as exact bytes — the same
+    // canonical payload `--dry-run` produced. A mismatch anywhere means no mock matches, the
+    // server answers 404, and the CLI fails loudly rather than the test quietly checking less.
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path(INGEST_PATH)
+            .header("Authorization", format!("Bearer {MOCK_API_KEY}"))
+            .header("Content-Type", "application/json")
+            .body(String::from_utf8(expected_bytes.clone()).expect("canonical bytes are ASCII"));
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+
+    let sent = home.path().join("sent.json");
+    let out = run_vettd(
+        &observe_args(
+            root.to_str().unwrap(),
+            &["--submit", "--out", sent.to_str().unwrap()],
+        ),
+        home.path(),
+    );
+
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    mock.assert_calls(1);
+
+    // ...and the file left behind is that same payload, so `observe check` on it audits what was
+    // actually sent rather than a second rendering of it.
+    assert_eq!(
+        std::fs::read(&sent).expect("--out payload"),
+        expected_bytes,
+        "the written payload must be the bytes that went on the wire"
+    );
+    let posted: Value = serde_json::from_slice(&expected_bytes).expect("the body must be JSON");
+    assert_eq!(posted["envelope_version"], "0.1.0");
+    assert_eq!(
+        posted["records"].as_array().map(Vec::len),
+        Some(run_ids.len())
+    );
+
+    assert!(
+        out.stderr
+            .contains("Observations accepted: 1 new, 0 replaced, 0 duplicate"),
+        "the outcome must be reported: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains(&format!("Destination: {}", server.address())),
+        "the disclosure must name the host the payload reached: {}",
+        out.stderr
+    );
+    // The ledger now holds the run, so the store exists.
+    assert!(
+        home.path()
+            .join(".vettd/observer/observer-v1.sqlite3")
+            .exists(),
+        "a successful submit must have written cursors and the ledger"
+    );
+}
+
+/// Invariant: a second submit with nothing changed makes NO request at all.
+///
+/// Not "sends an empty envelope" — no request. A collector that woke a server up on every
+/// invocation to say nothing would be a bad citizen on someone else's infrastructure, and the
+/// user's own bandwidth.
+#[test]
+fn observe_second_submit_sends_nothing_new() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+    let first = run_vettd(&args, home.path());
+    assert_eq!(first.status, 0, "{}", first.stderr);
+    mock.assert_calls(1);
+
+    let second = run_vettd(&args, home.path());
+    assert_eq!(second.status, 0, "{}", second.stderr);
+    assert!(
+        second.stderr.contains("nothing new to send"),
+        "the second run must say so: {}",
+        second.stderr
+    );
+    mock.assert_calls(1);
+    assert!(
+        second.stdout.is_empty(),
+        "and print no report for an empty submission: {:?}",
+        second.stdout_text()
+    );
+}
+
+/// Invariant: a run that gained turns is sent again under the SAME `run_id`.
+///
+/// A record is the cumulative state of one harness run, and `run_id` is its idempotency key: the
+/// server replaces the row rather than storing two. If the ledger were keyed on the run alone the
+/// updated record would read as already-sent and the completed run would never reach the server —
+/// which is why `ledger_has` takes the record hash.
+#[test]
+fn observe_changed_run_is_resent_under_the_same_run_id() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    // Matches only a body carrying this run id, so a hit proves the run id, not just a POST.
+    let run_id = run_ids[0].clone();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path(INGEST_PATH)
+            .body_includes(format!("\"run_id\":\"{run_id}\""));
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+    let first = run_vettd(&args, home.path());
+    assert_eq!(first.status, 0, "{}", first.stderr);
+    mock.assert_calls(1);
+
+    append_a_turn(&root);
+
+    // The record must now differ — proved independently of the wire by a dry run, which reads the
+    // same transcript through the same pipeline.
+    let (changed_bytes, changed_ids) = learn_dry_run(home.path(), &root);
+    assert_eq!(
+        changed_ids, run_ids,
+        "appending a turn must not change the run id: it is keyed on the session, not its content"
+    );
+    assert!(
+        !changed_bytes.is_empty(),
+        "the changed run must still produce a payload"
+    );
+
+    let second = run_vettd(&args, home.path());
+    assert_eq!(second.status, 0, "{}", second.stderr);
+    assert!(
+        second
+            .stderr
+            .contains("Observations accepted: 1 new, 0 replaced, 0 duplicate"),
+        "the changed run must be sent, not suppressed by the ledger: {}",
+        second.stderr
+    );
+    // Two hits on a mock that only matches this run id: the same run went twice.
+    mock.assert_calls(2);
+}
+
+/// Append one more assistant turn to the fixture transcript, so the run's record changes.
+///
+/// Reuses a line already in the file rather than authoring one, so the appended line is guaranteed
+/// to be a shape the reader understands. The fixture's last line is deliberately unparseable (it
+/// exercises `lines_unknown_type`), so this looks for the last line that actually parses.
+fn append_a_turn(root: &Path) {
+    let transcript = root
+        .join("projects")
+        .join("-fixture-project")
+        .join("0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.ndjson");
+    let text = std::fs::read_to_string(&transcript).expect("read the fixture transcript");
+    let mut line = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["type"] == "user")
+        .next_back()
+        .expect("the fixture has at least one user line");
+    line["uuid"] = json!("00000000-0000-4000-8000-0000000000f1");
+    line["timestamp"] = json!("2026-08-15T10:01:30.000Z");
+    let appended = format!("{}\n", serde_json::to_string(&line).unwrap());
+    std::fs::write(&transcript, format!("{text}{appended}")).expect("append a turn");
+}
+
+/// Invariant: `--resend` sends a record the machine has already sent, unchanged.
+///
+/// This is a deliberate deviation from the port plan's step ordering, and the plan's own
+/// acceptance line is the evidence: it expects `--resend` on an unchanged machine to report
+/// `0 new, 0 replaced, 1 duplicate`, which is impossible if the cursor probe short-circuits the
+/// group before a record is ever built. So `--resend` bypasses the cursor probe as well as the
+/// ledger. Under the literal reading the flag does nothing in exactly the case a user reaches for
+/// it and reports `nothing new to send`, which reads as success.
+#[test]
+fn observe_resend_ignores_ledger() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let accepted = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+    assert_eq!(run_vettd(&args, home.path()).status, 0);
+    accepted.assert_calls(1);
+
+    // Without --resend: nothing.
+    assert!(run_vettd(&args, home.path())
+        .stderr
+        .contains("nothing new to send"));
+    accepted.assert_calls(1);
+
+    // With it: the same record goes again, and the server's `duplicate` verdict is reported as
+    // such rather than being counted as new.
+    let mut accepted = accepted;
+    accepted.delete();
+    let duplicate = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "duplicate"));
+    });
+    let resent = run_vettd(
+        &observe_args(root.to_str().unwrap(), &["--submit", "--resend"]),
+        home.path(),
+    );
+    assert_eq!(resent.status, 0, "{}", resent.stderr);
+    duplicate.assert_calls(1);
+    assert!(
+        resent
+            .stderr
+            .contains("Observations accepted: 0 new, 0 replaced, 1 duplicate"),
+        "a resend of an unchanged record is a duplicate, not new: {}",
+        resent.stderr
+    );
+}
+
+/// Invariant: a 400 fails with exit 1 and writes NO ledger row, so the record is sent again next
+/// time.
+///
+/// A rejected payload is a bug on our side, and the one thing that must not happen is for the CLI
+/// to record it as delivered — the run would then be suppressed forever by a ledger row for data
+/// nobody has.
+#[test]
+fn observe_submit_400_exits_1_without_ledger_write() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let mut rejected = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(400)
+            .json_body(json!({"error": "records[0].run_outcome: invalid"}));
+    });
+
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+    let out = run_vettd(&args, home.path());
+    assert_eq!(
+        out.status, 1,
+        "a rejected payload is a runtime error: {}",
+        out.stderr
+    );
+    rejected.assert_calls(1);
+    assert!(
+        out.stderr.contains("Server rejected payload (400)"),
+        "the failure must name the status: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("telemetry-envelope.schema.json"),
+        "and point at the contract it violated: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("Observations accepted"),
+        "a rejection must not report a success line: {}",
+        out.stderr
+    );
+
+    // Nothing was ledgered: the very same record goes again once the server accepts it.
+    rejected.delete();
+    let accepted = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+    let retried = run_vettd(&args, home.path());
+    assert_eq!(retried.status, 0, "{}", retried.stderr);
+    accepted.assert_calls(1);
+    assert!(
+        retried
+            .stderr
+            .contains("Observations accepted: 1 new, 0 replaced, 0 duplicate"),
+        "the run the 400 lost must still be sendable: {}",
+        retried.stderr
+    );
+}
+
+/// Invariant: a 429 is retried, and `Retry-After` decides when rather than the built-in backoff.
+///
+/// The synchronisation is deliberate and not a sleep race: the throttling mock answers with
+/// `Retry-After: 1`, and the test swaps in the accepting mock as soon as it sees the first hit —
+/// a ~1 second window against a 10 ms poll. The elapsed-time assertion is what proves the header
+/// won: the first entry in the shared backoff schedule is 5 seconds, so a run that finishes in
+/// under 4 cannot have used it.
+#[test]
+fn observe_submit_429_honours_retry_after() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let mut throttled = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(429)
+            .header("Retry-After", "1")
+            .json_body(json!({"error": "Rate limit exceeded."}));
+    });
+
+    let started = Instant::now();
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+    let child = spawn_vettd(&args, home.path());
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while throttled.calls() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the CLI never reached the throttled endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Delete before adding, so the two mocks are never both live for one request and the CLI
+    // cannot be served a 429 by the mock we thought we had replaced.
+    throttled.delete();
+    let accepted = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+
+    let output = child.wait_with_output().expect("wait for vettd");
+    let elapsed = started.elapsed();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    accepted.assert_calls(1);
+    assert!(
+        stderr.contains("Server returned 429, retrying in 1s"),
+        "the retry must say what it is waiting for: {stderr}"
+    );
+    assert!(
+        stderr.contains("Observations accepted: 1 new, 0 replaced, 0 duplicate"),
+        "the retry must succeed: {stderr}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "took {elapsed:?}; the shared backoff's first delay is 5s, so Retry-After was ignored"
+    );
+}
+
+/// Invariant: plain HTTP to a public host is refused even with `--allow-public-endpoint`.
+///
+/// The flag exists to permit a *public* endpoint, not an unencrypted one. A bearer token on the
+/// wire in cleartext is a credential disclosure, and no flag on this command opts into it.
+#[test]
+fn observe_submit_refuses_public_http_endpoint() {
+    let home = seed_home_with_auth("https://vettd.invented.test/api/scans/ingest");
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+
+    for extra in [
+        vec![
+            "--submit",
+            "http://collector.invented.test/api/observations/ingest",
+        ],
+        vec![
+            "--submit",
+            "http://collector.invented.test/api/observations/ingest",
+            "--allow-public-endpoint",
+        ],
+    ] {
+        let out = run_vettd(&observe_args(root.to_str().unwrap(), &extra), home.path());
+        assert_eq!(out.status, 1, "refusing to send is exit 1: {}", out.stderr);
+        assert!(
+            out.stderr.contains("HTTP with a public host"),
+            "the refusal must say why: {}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "nothing may be produced for a refused endpoint: {:?}",
+            out.stdout_text()
+        );
+        // Refused before anything was read, so no store and no disclosure of a destination.
+        assert!(
+            !home.path().join(".vettd/observer").exists(),
+            "a refused endpoint must not create the store"
+        );
+        assert!(
+            !out.stderr.contains("Destination:"),
+            "and must not claim a destination it will not use: {}",
+            out.stderr
+        );
+    }
+}
+
+/// Invariant: `--submit <URL>` posts to that URL exactly, with no path rewriting.
+///
+/// An operator naming a route means it. Deriving from it — as the saved scan endpoint is derived —
+/// would make a local or self-hosted collector unreachable, and the failure would look like the
+/// server being down rather than the client editing the address.
+#[test]
+fn observe_explicit_submit_url_is_used_verbatim() {
+    let server = MockServer::start();
+    // A deliberately non-standard path: nothing about it suggests `/api/observations/ingest`.
+    let explicit = format!("{}/collector/v9/drop-here", server.base_url());
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let verbatim = server.mock(|when, then| {
+        when.method(POST).path("/collector/v9/drop-here");
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+    let derived = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(500);
+    });
+
+    let out = run_vettd(
+        &observe_args(root.to_str().unwrap(), &["--submit", &explicit]),
+        home.path(),
+    );
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    verbatim.assert_calls(1);
+    derived.assert_calls(0);
+}
+
+/// Invariant: a bare `--submit` derives the observations route from the SAVED scan endpoint.
+///
+/// The saved endpoint points at `/api/scans/ingest` because that is what `vettd auth` configures.
+/// Posting observations there would be silently wrong — a route that exists, authenticates, and
+/// stores the payload as something it is not.
+#[test]
+fn observe_derived_url_ends_with_observations_ingest() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+
+    let observations = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+    let scans = server.mock(|when, then| {
+        when.method(POST).path("/api/scans/ingest");
+        then.status(500);
+    });
+
+    let out = run_vettd(
+        &observe_args(root.to_str().unwrap(), &["--submit"]),
+        home.path(),
+    );
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    observations.assert_calls(1);
+    scans.assert_calls(0);
+}
+
+/// Invariant: `--submit` with no credential exits 3 (not configured) and reads nothing.
+///
+/// Distinct from 1 on purpose, and the same code as telemetry being off: both mean "you have not
+/// set this up", which is not a failure a script should treat as an error. Failing before the read
+/// also means nobody's transcripts are opened to build a payload that could never be sent.
+#[test]
+fn observe_submit_without_credentials_exits_3_before_reading() {
+    let home = seed_home(Some(true));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let out = run_vettd(
+        &observe_args(root.to_str().unwrap(), &["--submit"]),
+        home.path(),
+    );
+
+    assert_eq!(out.status, 3, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("No API key for --submit"),
+        "the guidance must name what is missing: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("vettd auth"),
+        "and how to fix it: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("Nothing was read."),
+        "and say nothing was read: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("This observation will include:"),
+        "the disclosure is moot when the command refuses before reading: {}",
+        out.stderr
+    );
+    assert!(out.stdout.is_empty());
+    assert!(!home.path().join(".vettd/observer").exists());
+}
+
+/// Invariant: `--dry-run --submit` builds and checks the payload and sends nothing.
+///
+/// The combination is legitimate — "show me exactly what would go" — and the failure to guard
+/// against is the obvious one: a dry run that actually transmits.
+#[test]
+fn observe_dry_run_with_submit_sends_nothing() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+
+    let never = server.mock(|when, then| {
+        when.method(POST);
+        then.status(200).json_body(json!({"results": []}));
+    });
+
+    let payload = home.path().join("would-send.json");
+    let out = run_vettd(
+        &observe_args(
+            root.to_str().unwrap(),
+            &["--submit", "--dry-run", "--out", payload.to_str().unwrap()],
+        ),
+        home.path(),
+    );
+
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    never.assert_calls(0);
+    assert!(
+        payload.exists(),
+        "the payload must still be produced to inspect"
+    );
+    assert!(
+        out.stderr.contains("dry run: nothing was sent"),
+        "and it must say so rather than leaving the user to infer it: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("Observations accepted"),
+        "no submission means no success line: {}",
+        out.stderr
+    );
+    // The store IS opened (step 4 runs for any --submit, dry or not) but nothing is committed to
+    // it, so the next real submit still has the run to send.
+    let ledgered = run_vettd(
+        &observe_args(root.to_str().unwrap(), &["--submit", "--dry-run"]),
+        home.path(),
+    );
+    assert!(
+        !ledgered.stderr.contains("nothing new to send"),
+        "a dry run must not have consumed the record: {}",
+        ledgered.stderr
     );
 }

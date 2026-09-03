@@ -131,11 +131,14 @@ fn save_auth_config_to_path(path: &Path, config: &AuthConfig) -> Result<SaveOutc
 // ---------------------------------------------------------------------------
 
 /// Backoff schedule in seconds for transient failures.
-const BACKOFF_SECONDS: [u64; 3] = [5, 30, 120];
-const MAX_ATTEMPTS: usize = 3;
+///
+/// `pub(crate)` so `observe::submit` shares one retry policy with scan submission rather than
+/// growing a second one that could drift.
+pub(crate) const BACKOFF_SECONDS: [u64; 3] = [5, 30, 120];
+pub(crate) const MAX_ATTEMPTS: usize = 3;
 
 /// HTTP status codes considered transient (retryable).
-fn is_retryable(status: u16) -> bool {
+pub(crate) fn is_retryable(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
 

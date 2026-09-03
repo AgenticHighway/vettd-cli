@@ -26,19 +26,22 @@ use serde_json::Value;
 use crate::observe::args::ObserveArgs;
 use crate::observe::attribute::attribute;
 use crate::observe::attribute::fs_index::FsIndex;
-use crate::observe::canonical::to_json_bytes;
+use crate::observe::canonical::{canonical_json, hex_sha256, to_json_bytes};
 use crate::observe::claude_code::ClaudeCodeSource;
 use crate::observe::disclosure::render_observe_disclosure;
 use crate::observe::envelope::{
-    build_envelope, collect_dynamic, Coverage, EnvelopeMeta, Resource, EXTRACTOR_VERSION,
+    build_envelope, collect_dynamic, filter_records, Coverage, EnvelopeMeta, Resource,
+    EXTRACTOR_VERSION,
 };
 use crate::observe::extract::extract;
 use crate::observe::gate::{Dynamic, GATE};
 use crate::observe::rank::rank;
 use crate::observe::render::render_with_prices;
 use crate::observe::source::Source;
-use crate::observe::store::Store;
+use crate::observe::store::{LedgerRow, Store};
+use crate::observe::submit::submit_envelope;
 use crate::observe::types::{utc_day, SessionFacts, SessionKind, SessionRef};
+use crate::submit::AuthConfig;
 
 /// Exit codes, per the plan's "Exit codes" bullet and the repo's existing conventions.
 pub(crate) const EXIT_OK: i32 = 0;
@@ -66,7 +69,21 @@ pub(crate) fn run_observe(args: &ObserveArgs, json: bool) -> i32 {
             return EXIT_RUNTIME;
         }
     };
-    let destination = args.submit_endpoint().map(host_of);
+    // Resolved before the disclosure so the disclosure can name the host a payload would actually
+    // reach — including for a bare `--submit`, whose destination comes from the saved config and
+    // is not visible in the arguments. A "Destination:" line that appeared only for an explicit
+    // URL would understate egress in exactly the case the user has least visibility into. It also
+    // fails fast: nobody's transcripts should be read to build a payload that cannot be sent.
+    let auth = match resolve_submit_target(args) {
+        Ok(auth) => auth,
+        Err((code, message)) => {
+            eprintln!("{message}");
+            return code;
+        }
+    };
+    let destination = auth
+        .as_ref()
+        .map(|auth| crate::network::endpoint_display_host(&auth.endpoint).to_string());
     eprint!(
         "{}",
         render_observe_disclosure(destination.as_deref(), &root)
@@ -84,7 +101,7 @@ pub(crate) fn run_observe(args: &ObserveArgs, json: bool) -> i32 {
             return EXIT_RUNTIME;
         }
     };
-    match observe(args, &context, json) {
+    match observe(args, &context, auth.as_ref(), json) {
         Ok(code) => code,
         Err(message) => {
             eprintln!("{message}");
@@ -102,6 +119,50 @@ fn resolve_root(args: &ObserveArgs) -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join(".claude"))
         .ok_or_else(|| "Unable to determine home directory — pass --root".to_string())
+}
+
+/// Where a submission would go, or `None` when nothing will be sent.
+///
+/// The error carries its own exit code because the two failures are different things to a script:
+/// a missing credential is "not configured" (3), the same as telemetry being off, while a refused
+/// endpoint is a runtime error (1). Checking for the credential structurally here — rather than
+/// reading it out of `resolve_submit_auth`'s message — keeps that distinction from depending on
+/// wording that a later edit could change without anyone noticing.
+fn resolve_submit_target(args: &ObserveArgs) -> Result<Option<AuthConfig>, (i32, String)> {
+    if !args.wants_submit() {
+        return Ok(None);
+    }
+    let saved = crate::submit::load_auth_config();
+    let has_key = args.api_key.is_some()
+        || saved
+            .as_ref()
+            .is_some_and(|config| !config.api_key.trim().is_empty());
+    if !has_key {
+        return Err((
+            EXIT_NOT_CONFIGURED,
+            "No API key for --submit. Run `vettd auth --key <your-key>`, or pass --api-key for \
+             automation. Nothing was read."
+                .to_string(),
+        ));
+    }
+
+    // `resolve_submit_auth` takes the two-level Option the scan flags use: absent, present-bare,
+    // present-with-URL. Ours collapses bare to `Some("")`, so rebuild the distinction here.
+    let flag = Some(args.submit_endpoint().map(str::to_string));
+    let mut auth = crate::output::resolve_submit_auth(
+        &flag,
+        args.api_key.as_deref(),
+        args.allow_public_endpoint,
+    )
+    .map_err(|e| (EXIT_RUNTIME, e))?;
+
+    // An explicit `--submit URL` is used verbatim — it is the operator naming a route, and
+    // rewriting it would make a local test endpoint unreachable. Only the saved scan endpoint is
+    // translated, since it points at `/api/scans/ingest`.
+    if args.submit_endpoint().is_none() {
+        auth.endpoint = crate::network::derive_api_url(&auth.endpoint, "observations/ingest");
+    }
+    Ok(Some(auth))
 }
 
 fn resolve_context(args: &ObserveArgs, root: PathBuf) -> Result<Context, String> {
@@ -122,7 +183,12 @@ fn resolve_context(args: &ObserveArgs, root: PathBuf) -> Result<Context, String>
     })
 }
 
-fn observe(args: &ObserveArgs, context: &Context, json: bool) -> Result<i32, String> {
+fn observe(
+    args: &ObserveArgs,
+    context: &Context,
+    auth: Option<&AuthConfig>,
+    json: bool,
+) -> Result<i32, String> {
     if !context.root.is_dir() {
         return Err(format!(
             "Harness home {} is not a directory — pass --root",
@@ -163,8 +229,17 @@ fn observe(args: &ObserveArgs, context: &Context, json: bool) -> Result<i32, Str
     let mut staged: Vec<(String, crate::observe::types::Cursor)> = Vec::new();
     let mut harness_version = crate::observe::types::UNKNOWN.to_string();
 
+    // `--resend` bypasses the cursor probe as well as the ledger, so every group is read from
+    // byte 0. The plan's step 6 does not say so, but its own acceptance line does: it expects
+    // `--resend` on an unchanged machine to report `0 new, 0 replaced, 1 duplicate`, which is
+    // impossible if an unchanged group short-circuits before a record is ever built. Under the
+    // literal step ordering the flag does nothing in exactly the situation a user reaches for it
+    // — the machine has not changed and they want the data pushed again — and reports `nothing
+    // new to send`, which reads as success. One flag, one meaning: ignore what I believe I have
+    // already sent. Cursors are still staged and still advance only after a 2xx.
+    let probe_store = if args.resend { None } else { store.as_ref() };
     for group in &groups {
-        match read_group(&source, group, store.as_ref(), &mut coverage, &mut staged)? {
+        match read_group(&source, group, probe_store, &mut coverage, &mut staged)? {
             Some(facts) => {
                 if let Some(version) = usable_version(&facts) {
                     harness_version = version;
@@ -193,6 +268,32 @@ fn observe(args: &ObserveArgs, context: &Context, json: bool) -> Result<i32, Str
         extractor_version: EXTRACTOR_VERSION.to_string(),
     };
     let envelope = build_envelope(&attributed, &meta)?;
+
+    // Step 9. Drop records the server already holds under this exact hash, so a submit with
+    // nothing new sends nothing at all. Keyed on the record hash and not just the run: a
+    // truncated run that later completed keeps its `run_id` and changes its record, and must be
+    // resent so the server can replace its row rather than reading as already-sent forever.
+    //
+    // Everything downstream — the gate, `--out`, the report — then works on the filtered
+    // envelope, because in submit mode the payload IS the deliverable and the written file has to
+    // be an auditable record of exactly what went on the wire.
+    let (envelope, pending) = match auth {
+        None => (envelope, Vec::new()),
+        Some(auth) => {
+            let host = crate::network::endpoint_display_host(&auth.endpoint);
+            let rows = ledger_rows(&envelope, host)?;
+            let (envelope, pending) = if args.resend {
+                (envelope, rows)
+            } else {
+                drop_already_sent(envelope, &rows, store.as_ref())?
+            };
+            if pending.is_empty() {
+                eprintln!("nothing new to send");
+                return Ok(EXIT_OK);
+            }
+            (envelope, pending)
+        }
+    };
 
     // Step 8. The emitter's own local vocabulary, so the gate can prove none of it is a substring
     // of any string leaf. The machine's identity is added here rather than in `collect_dynamic`
@@ -232,17 +333,118 @@ fn observe(args: &ObserveArgs, context: &Context, json: bool) -> Result<i32, Str
         print_report(args, &envelope, &attributed)?;
     }
 
-    if args.wants_submit() {
-        // Phase 7 of the plan. Named rather than silently skipped: a --submit that quietly did
-        // nothing would look like a successful send.
-        let _ = &mut store;
-        return Err(
-            "Submission is not implemented in this build — `--submit` lands with the ingest route. \
-             Use --dry-run to produce and check the payload."
-                .to_string(),
+    // Step 13. Nothing above this line has changed any durable state.
+    match (auth, args.dry_run) {
+        (Some(auth), false) => send(&bytes, auth, &pending, &staged, store.as_mut()),
+        (Some(_), true) => {
+            // `--dry-run --submit` is a legitimate combination: build and check exactly what would
+            // be sent, then send nothing. Saying so beats letting the user infer it from silence.
+            eprintln!("dry run: nothing was sent and no cursor advanced");
+            Ok(EXIT_OK)
+        }
+        (None, _) => Ok(EXIT_OK),
+    }
+}
+
+/// Ask (when there is someone to ask), POST, then record what the server confirmed it holds.
+///
+/// The commit is the point of the whole ordering: cursors advance only once the server has the
+/// record. The prototype committed them after the local write, which meant a payload written and
+/// then lost to a failed POST looked, next run, exactly like one that had been delivered.
+fn send(
+    bytes: &[u8],
+    auth: &AuthConfig,
+    pending: &[LedgerRow],
+    staged: &[(String, crate::observe::types::Cursor)],
+    store: Option<&mut Store>,
+) -> Result<i32, String> {
+    let host = crate::network::endpoint_display_host(&auth.endpoint);
+    if std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && !crate::wizard::confirm(
+            &format!("Send {} run record(s) to {host}?", pending.len()),
+            false,
+        )
+    {
+        eprintln!("Not sent.");
+        return Ok(EXIT_OK);
+    }
+
+    let outcome = submit_envelope(bytes, auth)?;
+    eprintln!("{}", outcome.summary());
+    if !outcome.deadline_exceeded.is_empty() {
+        eprintln!(
+            "  {} run(s) hit the server's deadline and were not stored; they will be resent.",
+            outcome.deadline_exceeded.len()
         );
     }
+
+    let Some(store) = store else {
+        return Ok(EXIT_OK);
+    };
+    // Only the runs the server said it holds. A run it could not finish must stay unledgered, or
+    // its cursor would advance past a record nobody has.
+    let held: Vec<LedgerRow> = pending
+        .iter()
+        .filter(|row| outcome.persisted().any(|run_id| *run_id == row.run_id))
+        .cloned()
+        .collect();
+    store.commit(staged, &held)?;
     Ok(EXIT_OK)
+}
+
+/// One ledger row per record in `envelope`, keyed on the hash of the canonical record.
+///
+/// The hash is over `canonical_json` of the record alone, which is deterministic for a given run
+/// state: the same run read twice hashes the same, and a run that gained turns does not.
+fn ledger_rows(envelope: &Value, endpoint_host: &str) -> Result<Vec<LedgerRow>, String> {
+    let harness = envelope["resource"]["harness"].as_str().unwrap_or_default();
+    let emitted_day = envelope["emitted_day"].as_str().unwrap_or_default();
+    let records = envelope["records"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    records
+        .iter()
+        .map(|record| {
+            Ok(LedgerRow {
+                run_id: record["run_id"].as_str().unwrap_or_default().to_string(),
+                endpoint_host: endpoint_host.to_string(),
+                harness: harness.to_string(),
+                record_sha256: hex_sha256(canonical_json(record)?.as_bytes()),
+                emitted_day: emitted_day.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Drop records already in the ledger at this endpoint under this exact hash.
+///
+/// Returns the envelope to send and the rows to write on success. With no store — which cannot
+/// happen in submit mode, since step 4 opens one — nothing is dropped: fewer records sent is a
+/// silent loss, and more records sent is a duplicate the server already handles.
+fn drop_already_sent(
+    envelope: Value,
+    rows: &[LedgerRow],
+    store: Option<&Store>,
+) -> Result<(Value, Vec<LedgerRow>), String> {
+    let mut pending = Vec::new();
+    let mut keep = BTreeSet::new();
+    for row in rows {
+        let already = match store {
+            Some(store) => store.ledger_has(&row.run_id, &row.endpoint_host, &row.record_sha256)?,
+            None => false,
+        };
+        if !already {
+            keep.insert(row.run_id.clone());
+            pending.push(row.clone());
+        }
+    }
+    let filtered = filter_records(&envelope, |record| {
+        record["run_id"]
+            .as_str()
+            .is_some_and(|run_id| keep.contains(run_id))
+    });
+    Ok((filtered, pending))
 }
 
 /// The report, on stdout.
