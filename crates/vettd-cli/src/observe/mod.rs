@@ -16,6 +16,12 @@ pub(crate) mod disclosure;
 pub(crate) mod envelope;
 pub(crate) mod extract;
 pub(crate) mod gate;
+// A check on the copy rather than shipped logic: it walks `render::COPY` and the disclosure text
+// in tests so a reviewed phrase cannot quietly become an unreviewed claim.
+#[cfg(test)]
+pub(crate) mod lint_copy;
+pub(crate) mod rank;
+pub(crate) mod render;
 pub(crate) mod source;
 pub(crate) mod taskcat;
 pub(crate) mod types;

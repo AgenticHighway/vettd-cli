@@ -15,4 +15,3 @@ Task categories included in this pooled view: mixed 1 runs
 Cost (display-time derivation, not stored), from tokens in this stratum and the price table dated 2026-09-02:
   other: no price entry in the table dated 2026-09-02 (1 runs; tokens counted, cost not derived)
 Every figure above is an observation from harness logs on this machine, not a causal claim.
-
