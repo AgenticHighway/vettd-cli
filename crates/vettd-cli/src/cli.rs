@@ -96,6 +96,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: RuleAction,
     },
+    /// Observe local Claude Code sessions and report per-asset evidence (opt-in)
+    Observe {
+        #[command(flatten)]
+        args: crate::observe::ObserveArgs,
+        #[command(subcommand)]
+        action: Option<crate::observe::ObserveSubcommand>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -374,6 +381,12 @@ pub(crate) struct AccessConfig {
     /// Opt-in to the beta search filters (`--language`, `--agent-compatibility`,
     /// `--rankings`) and the POST request shape. See [`search_beta_testing_enabled`].
     search_beta_testing: bool,
+    /// Opt-in to passive observation (`vettd observe`). See [`telemetry_enabled_from_config`].
+    ///
+    /// Deliberately has **no environment override**, unlike `search_beta_testing`. Reading local
+    /// session transcripts is consent the user has to have written down, and an env var can be set
+    /// by a parent process, a CI job or a shell profile the user never looked at.
+    telemetry_enabled: bool,
 }
 
 impl Default for AccessConfig {
@@ -381,6 +394,7 @@ impl Default for AccessConfig {
         Self {
             mode: "licensed".into(),
             search_beta_testing: false,
+            telemetry_enabled: false,
         }
     }
 }
@@ -417,22 +431,28 @@ fn load_access_config_from(path: &Path) -> AccessConfig {
         Err(_) => return AccessConfig::default(),
     };
 
-    let access = match table.get("access") {
-        Some(toml::Value::Table(t)) => t,
-        _ => return AccessConfig::default(),
-    };
-
     let mut cfg = AccessConfig::default();
 
-    if let Some(toml::Value::String(v)) = access.get("mode") {
-        cfg.mode = v.clone();
+    // Each table is read independently. This used to return early when `[access]` was absent,
+    // which would have made `[telemetry]` unreadable for anyone who never set an access tier —
+    // i.e. for almost every user opting into observation.
+    if let Some(toml::Value::Table(access)) = table.get("access") {
+        if let Some(toml::Value::String(v)) = access.get("mode") {
+            cfg.mode = v.clone();
+        }
+
+        // `search_beta_testing` opts into the beta search filters and POST request
+        // shape. Env var `SEARCH_BETA_TESTING` takes precedence; this is the
+        // per-user config fallback. See `search_beta_testing_enabled`.
+        if let Some(toml::Value::Boolean(v)) = access.get("search_beta_testing") {
+            cfg.search_beta_testing = *v;
+        }
     }
 
-    // `search_beta_testing` opts into the beta search filters and POST request
-    // shape. Env var `SEARCH_BETA_TESTING` takes precedence; this is the
-    // per-user config fallback. See `search_beta_testing_enabled`.
-    if let Some(toml::Value::Boolean(v)) = access.get("search_beta_testing") {
-        cfg.search_beta_testing = *v;
+    if let Some(toml::Value::Table(telemetry)) = table.get("telemetry") {
+        if let Some(toml::Value::Boolean(v)) = telemetry.get("enabled") {
+            cfg.telemetry_enabled = *v;
+        }
     }
 
     cfg
@@ -445,6 +465,25 @@ fn load_access_config_from(path: &Path) -> AccessConfig {
 /// which ORs this value with the `SEARCH_BETA_TESTING` env var.
 pub(crate) fn search_beta_testing_from_config() -> bool {
     load_access_config().search_beta_testing
+}
+
+/// Whether the user opted into passive observation in `~/.vettd/.vettd.toml`:
+///
+/// ```toml
+/// [telemetry]
+/// enabled = true
+/// ```
+///
+/// Per-user file only — never a `.vettd.toml` in the working directory (issue #198), or a cloned
+/// repository could opt its reader in. And no env var: see [`AccessConfig::telemetry_enabled`].
+pub(crate) fn telemetry_enabled_from_config() -> bool {
+    load_access_config().telemetry_enabled
+}
+
+/// The path [`telemetry_enabled_from_config`] reads, for the messages that tell a user where to
+/// write their opt-in and for `vettd observe enable`.
+pub(crate) fn access_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".vettd").join(ACCESS_CONFIG_FILE))
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,6 +1062,11 @@ pub fn run() {
             }
         }
         return;
+    }
+
+    // Handle observe commands
+    if let Commands::Observe { args, action } = &cmd {
+        std::process::exit(crate::observe::run(args, action.as_ref(), json));
     }
 
     // Handle contract command
@@ -2437,6 +2481,7 @@ mod tests {
         let access = AccessConfig {
             mode: "lite".to_string(),
             search_beta_testing: false,
+            telemetry_enabled: false,
         };
 
         // Machine mode: hidden summary suppressed, but the full report is
@@ -2460,6 +2505,7 @@ mod tests {
         let licensed = AccessConfig {
             mode: "licensed".to_string(),
             search_beta_testing: false,
+            telemetry_enabled: false,
         };
         let (display_report3, hidden3) = display_limited_report(&report, &licensed, false);
         assert_eq!(
@@ -2485,6 +2531,7 @@ mod tests {
         let access = AccessConfig {
             mode: "lite".to_string(),
             search_beta_testing: false,
+            telemetry_enabled: false,
         };
         let (_display, _hidden) = display_limited_report(&report, &access, true);
 
@@ -2745,6 +2792,157 @@ mod tests {
             !cfg.search_beta_testing,
             "search_beta_testing = false must be parsed as false"
         );
+    }
+
+    // ── observe: the [telemetry] opt-in ──
+
+    #[test]
+    fn access_config_parses_telemetry_enabled_true() {
+        // Observation is off unless the user wrote this. The flag is the entire consent record,
+        // so it has to be read exactly as written — no coercion from strings or integers.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[access]\nmode = \"lite\"\n\n[telemetry]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(cfg.telemetry_enabled, "enabled = true must opt in");
+        assert_eq!(cfg.mode, "lite", "the access tier must still be parsed");
+    }
+
+    #[test]
+    fn access_config_parses_telemetry_enabled_false() {
+        // An explicit `false` must stay false. `vettd observe enable` refuses to rewrite a
+        // [telemetry] table for exactly this reason: a deliberate opt-out is a decision.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[telemetry]\nenabled = false\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(!cfg.telemetry_enabled, "enabled = false must not opt in");
+    }
+
+    #[test]
+    fn access_config_telemetry_defaults_to_absent_meaning_off() {
+        // Absent table, and absent key within a present table, both mean off. Observation must
+        // never start from a config that says nothing about it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+
+        let no_table = tmp.path().join(".vettd/.vettd.toml");
+        std::fs::write(&no_table, "[access]\nmode = \"licensed\"\n").unwrap();
+        assert!(
+            !load_access_config_from(&no_table).telemetry_enabled,
+            "no [telemetry] table means off"
+        );
+
+        let empty_table = tmp.path().join(".vettd/empty-table.toml");
+        std::fs::write(&empty_table, "[telemetry]\n").unwrap();
+        assert!(
+            !load_access_config_from(&empty_table).telemetry_enabled,
+            "an empty [telemetry] table means off"
+        );
+
+        let missing = tmp.path().join(".vettd/does-not-exist.toml");
+        assert!(
+            !load_access_config_from(&missing).telemetry_enabled,
+            "no config file at all means off"
+        );
+
+        // And the compiled-in default, which is what every other caller sees.
+        assert!(!AccessConfig::default().telemetry_enabled);
+    }
+
+    #[test]
+    fn telemetry_flag_is_read_without_an_access_table() {
+        // Regression: this loader used to return the default config as soon as `[access]` was
+        // missing, which made the opt-in unreadable for anyone who had never set an access tier —
+        // i.e. for nearly every user who would opt into observation. The flag must be read from a
+        // file that contains nothing but [telemetry].
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+        std::fs::write(
+            tmp.path().join(".vettd/.vettd.toml"),
+            "[telemetry]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&tmp.path().join(".vettd/.vettd.toml"));
+        assert!(
+            cfg.telemetry_enabled,
+            "[telemetry] must be read even with no [access] table"
+        );
+        assert_eq!(
+            cfg.mode, "licensed",
+            "and the access tier must still fall back to its default"
+        );
+    }
+
+    #[test]
+    fn telemetry_opt_in_is_per_user_not_cwd() {
+        // A `.vettd.toml` in a cloned repository must never opt its reader into observation.
+        // `access_config_path` is home-anchored; this pins that the home file is what is read
+        // even when a working-directory file says otherwise.
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().join("home");
+        std::fs::create_dir_all(fake_home.join(".vettd")).unwrap();
+        std::fs::write(
+            fake_home.join(".vettd/.vettd.toml"),
+            "[telemetry]\nenabled = false\n",
+        )
+        .unwrap();
+
+        let cwd_conflict = tmp.path().join("cloned-repo");
+        std::fs::create_dir_all(&cwd_conflict).unwrap();
+        std::fs::write(
+            cwd_conflict.join(".vettd.toml"),
+            "[telemetry]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let cfg = load_access_config_from(&fake_home.join(".vettd").join(ACCESS_CONFIG_FILE));
+        assert!(
+            !cfg.telemetry_enabled,
+            "the home config must win over a repository-local one"
+        );
+
+        // And the path the product tells users about is the home one, under `.vettd/`.
+        if let Some(path) = access_config_path() {
+            assert!(path.ends_with(Path::new(".vettd").join(ACCESS_CONFIG_FILE)));
+            assert_ne!(
+                path,
+                cwd_conflict.join(".vettd.toml"),
+                "never a working-directory path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_telemetry_value_does_not_opt_in() {
+        // Fail closed on a malformed value: `enabled = "true"` is not consent, and neither is a
+        // file that does not parse. Both must leave observation off rather than guessing.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".vettd")).unwrap();
+
+        for text in [
+            "[telemetry]\nenabled = \"true\"\n",
+            "[telemetry]\nenabled = 1\n",
+            "[telemetry\nenabled = true\n",
+        ] {
+            let path = tmp.path().join(".vettd/.vettd.toml");
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                !load_access_config_from(&path).telemetry_enabled,
+                "must not opt in from {text:?}"
+            );
+        }
     }
 
     // ── #196: disclosure reflects the actual payload ──

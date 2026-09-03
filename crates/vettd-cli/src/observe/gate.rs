@@ -289,6 +289,15 @@ impl Gate {
     ///
     /// `dynamic` carries the local-only strings the emitter saw while parsing; every set given is
     /// enforced, whether or not the gate lists its name under `dynamicForbids.sets`.
+    /// How many leaf paths the gate admits.
+    ///
+    /// Reported alongside a clean result so the number in "gate: OK (N allowed leaf paths)" comes
+    /// from the gate the binary actually compiled in, not from a constant someone has to remember
+    /// to update.
+    pub(crate) fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
     pub(crate) fn check(&self, payload: &Value, dynamic: &Dynamic) -> Vec<String> {
         let mut checker = Checker {
             gate: self,
