@@ -10,6 +10,8 @@
 //! here as each phase of `docs/vettd-observe-port-plan.md` lands them.
 
 pub(crate) mod canonical;
+pub(crate) mod claude_code;
 pub(crate) mod disclosure;
 pub(crate) mod gate;
+pub(crate) mod source;
 pub(crate) mod types;
