@@ -14,4 +14,5 @@ pub(crate) mod claude_code;
 pub(crate) mod disclosure;
 pub(crate) mod gate;
 pub(crate) mod source;
+pub(crate) mod taskcat;
 pub(crate) mod types;
