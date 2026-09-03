@@ -87,6 +87,10 @@ jobs:
                         - 'scanner-data-contract.json'
                         - 'scanner-field-gate.json'
                         - 'scripts/check-scanner-field-gate.sh'
+                        - 'telemetry-field-gate.json'
+                        - 'telemetry-envelope.schema.json'
+                        - 'scripts/check-telemetry-field-gate.sh'
+                        - 'crates/vettd-cli/resources/**'
                         - 'Cargo.toml'
                         - 'Cargo.lock'
                         - 'rust-toolchain.toml'
@@ -148,6 +152,14 @@ jobs:
             # is essentially just running the test harness.
             - name: Test
               run: cargo test --locked
+
+            # ~2s — telemetry field gate (vettd-cli#965 / spike #828).
+            # Cross-checks telemetry-field-gate.json, the envelope schema
+            # and contract/disclosure.rs so a field cannot reach the wire
+            # without a disclosure category. Runs after test because its
+            # later steps exercise the built `vettd observe check` binary.
+            - name: Telemetry field gate
+              run: scripts/check-telemetry-field-gate.sh
 
     # Runs in parallel with check — no dependency between them.
     # Uses pre-built binaries (not `cargo install`) to avoid the 60s+

@@ -8,3 +8,8 @@
 //! Ported from the Python prototype answered on vettd#828; the prototype is the
 //! reference semantics and the Rust here is the product. Submodules are declared
 //! here as each phase of `docs/vettd-observe-port-plan.md` lands them.
+
+pub(crate) mod canonical;
+pub(crate) mod disclosure;
+pub(crate) mod gate;
+pub(crate) mod types;

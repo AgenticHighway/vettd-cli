@@ -3,6 +3,11 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+/// A freshly generated observer secret is 32 bytes.
+const OBSERVER_SECRET_LEN: usize = 32;
+/// An explicitly supplied observer secret file must hold at least 16 bytes.
+const OBSERVER_SECRET_MIN_LEN: usize = 16;
+
 /// Returns `true` when `value` is a valid v4-style UUID string.
 pub fn is_valid_uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok()
@@ -18,13 +23,20 @@ pub fn default_scanner_account_uuid_path() -> Result<PathBuf, String> {
     Ok(vettd_dir()?.join("scanner_account_uuid"))
 }
 
+/// `~/.vettd/observer_secret`
+pub fn default_observer_secret_path() -> Result<PathBuf, String> {
+    Ok(vettd_dir()?.join("observer_secret"))
+}
+
 fn vettd_dir() -> Result<PathBuf, String> {
     dirs::home_dir().map(|h| h.join(".vettd")).ok_or_else(|| {
         "Unable to determine home directory — cannot resolve scanner identity paths".to_string()
     })
 }
 
-fn persist_uuid(path: &Path, field_name: &str, uuid: &str) -> Result<(), String> {
+/// Write `bytes` to `path`, owner-only: the parent directory is created and
+/// chmod'd 0700 and the file is created and chmod'd 0600 on unix.
+fn persist_secret_bytes(path: &Path, field_name: &str, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -58,7 +70,7 @@ fn persist_uuid(path: &Path, field_name: &str, uuid: &str) -> Result<(), String>
             .mode(0o600)
             .open(path)
             .map_err(|e| format!("Failed to open {field_name} file {}: {e}", path.display()))?;
-        file.write_all(uuid.as_bytes())
+        file.write_all(bytes)
             .map_err(|e| format!("Failed to write {field_name} to {}: {e}", path.display()))?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("Failed to secure {field_name} file {}: {e}", path.display()))?;
@@ -66,11 +78,83 @@ fn persist_uuid(path: &Path, field_name: &str, uuid: &str) -> Result<(), String>
 
     #[cfg(not(unix))]
     {
-        fs::write(path, uuid)
+        fs::write(path, bytes)
             .map_err(|e| format!("Failed to persist {field_name} to {}: {e}", path.display()))?;
     }
 
     Ok(())
+}
+
+fn persist_uuid(path: &Path, field_name: &str, uuid: &str) -> Result<(), String> {
+    persist_secret_bytes(path, field_name, uuid.as_bytes())
+}
+
+fn read_secret_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    fs::read(path).map_err(|e| {
+        format!(
+            "Failed to read observer secret from {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Resolve the observer HMAC secret plus the `run_id_basis` label that records
+/// where it came from.
+///
+/// `explicit` loads the file's raw bytes verbatim — no trimming and no UTF-8
+/// round-trip — and reports basis `test_secret`; `None` loads (or mints exactly
+/// once) `~/.vettd/observer_secret` and reports `device_secret`.
+pub fn resolve_observer_secret(explicit: Option<&Path>) -> Result<(Vec<u8>, &'static str), String> {
+    let Some(path) = explicit else {
+        return resolve_observer_secret_at(&default_observer_secret_path()?);
+    };
+
+    let bytes = read_secret_bytes(path)?;
+    if bytes.len() < OBSERVER_SECRET_MIN_LEN {
+        return Err(format!(
+            "observer secret must hold at least {OBSERVER_SECRET_MIN_LEN} bytes"
+        ));
+    }
+    Ok((bytes, "test_secret"))
+}
+
+/// Path-injectable form of the device-secret branch of [`resolve_observer_secret`].
+///
+/// An existing, non-empty file is returned verbatim and is never regenerated;
+/// otherwise fresh random bytes are generated and persisted owner-only.
+pub(crate) fn resolve_observer_secret_at(path: &Path) -> Result<(Vec<u8>, &'static str), String> {
+    // Distinguish "no secret yet" from "cannot read the secret". `Path::exists` reports both as
+    // false, so a stat failure on a secret that does exist (a stale NFS handle over `$HOME`, say)
+    // would fall through to minting — silently rotating the key, changing every future `run_id`,
+    // and orphaning the records the server already holds under the old one.
+    match fs::read(path) {
+        Ok(bytes) if bytes.is_empty() => {}
+        Ok(bytes) => {
+            if bytes.len() < OBSERVER_SECRET_MIN_LEN {
+                // Minted secrets are always OBSERVER_SECRET_LEN, so a short one is truncation or
+                // tampering. Failing loud beats silently re-minting: the plan's rule is that an
+                // existing secret is never regenerated, and a weak HMAC key must not go unnoticed.
+                return Err(format!(
+                    "observer secret {} holds {} bytes; it must hold at least {OBSERVER_SECRET_MIN_LEN}. Remove the file to mint a new one, which changes every future run_id.",
+                    path.display(),
+                    bytes.len()
+                ));
+            }
+            return Ok((bytes, "device_secret"));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "Failed to read observer secret from {}: {e}",
+                path.display()
+            ));
+        }
+    }
+
+    let mut bytes = vec![0u8; OBSERVER_SECRET_LEN];
+    getrandom::fill(&mut bytes).map_err(|e| format!("Failed to generate observer secret: {e}"))?;
+    persist_secret_bytes(path, "observer_secret", &bytes)?;
+    Ok((bytes, "device_secret"))
 }
 
 /// Resolve a UUID through the following cascade:
@@ -195,6 +279,57 @@ mod tests {
         }
     }
 
+    /// A stat failure on a secret that does exist must not look like "no secret yet".
+    /// `Path::exists` reports both as false, and falling through would silently mint a new key,
+    /// changing every future run_id and orphaning the records the server holds under the old one.
+    /// A directory at the secret path is the portable way to make the read fail while the path
+    /// exists; the guarantee under test is "an unreadable secret is an error, never a rotation".
+    #[test]
+    fn unreadable_existing_secret_is_an_error_not_a_silent_rotation() {
+        let tmp = tempdir();
+        let path = tmp.join("observer_secret");
+        fs::create_dir_all(&path).unwrap();
+
+        let err = resolve_observer_secret_at(&path).expect_err("a directory cannot be read");
+        assert!(
+            err.contains("Failed to read observer secret"),
+            "unexpected error: {err}"
+        );
+        assert!(path.is_dir(), "the path must not have been overwritten");
+    }
+
+    /// Minted secrets are always 32 bytes, so a shorter existing one is truncation or tampering.
+    /// Re-minting would quietly rotate the pseudonym key; using it would make a weak HMAC key the
+    /// device identity. Both are worse than refusing, so this fails loud and says how to recover.
+    #[test]
+    fn short_existing_device_secret_is_refused_rather_than_used_or_replaced() {
+        let tmp = tempdir();
+        let path = tmp.join("observer_secret");
+        fs::write(&path, b"too short").unwrap();
+
+        let err = resolve_observer_secret_at(&path).expect_err("9 bytes is below the minimum");
+        assert!(err.contains("at least 16"), "unexpected error: {err}");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"too short",
+            "the existing secret must be left exactly as it was"
+        );
+    }
+
+    /// An empty file is indistinguishable from a failed create, so it is treated as "not yet
+    /// minted" and filled in — the one case where writing over an existing path is right.
+    #[test]
+    fn empty_secret_file_is_minted_into() {
+        let tmp = tempdir();
+        let path = tmp.join("observer_secret");
+        fs::write(&path, b"").unwrap();
+
+        let (bytes, basis) = resolve_observer_secret_at(&path).expect("mints into an empty file");
+        assert_eq!(bytes.len(), OBSERVER_SECRET_LEN);
+        assert_eq!(basis, "device_secret");
+        assert_eq!(fs::read(&path).unwrap(), bytes, "the mint was persisted");
+    }
+
     #[test]
     fn valid_uuid_check() {
         assert!(is_valid_uuid("550e8400-e29b-41d4-a716-446655440000"));
@@ -305,6 +440,65 @@ mod tests {
         let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(file_mode, 0o600);
+    }
+
+    /// Invariant: the device secret is minted exactly once and stays owner-only
+    /// on disk. Every run id is an HMAC under this key, so regenerating it would
+    /// silently orphan every persisted cursor and ledger entry, and a
+    /// world-readable key would let anyone forge those ids.
+    #[cfg(unix)]
+    #[test]
+    fn observer_secret_is_generated_once_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir();
+        let path = tmp.join("secure").join("observer_secret");
+
+        let (first, basis) = resolve_observer_secret_at(&path).unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(basis, "device_secret");
+
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+
+        let (second, _) = resolve_observer_secret_at(&path).unwrap();
+        assert_eq!(
+            first, second,
+            "an existing secret must never be regenerated"
+        );
+    }
+
+    /// Invariant: 16 bytes is the floor for an explicitly supplied secret — a
+    /// shorter key makes the run-id HMAC cheap to brute-force, so it is refused
+    /// rather than silently accepted.
+    #[test]
+    fn observer_secret_rejects_short_file() {
+        let tmp = tempdir();
+
+        let short = tmp.join("short.bin");
+        fs::write(&short, [0x41u8; 15]).unwrap();
+        let err = resolve_observer_secret(Some(&short)).unwrap_err();
+        assert!(err.contains("at least 16 bytes"), "unexpected error: {err}");
+
+        let exact = tmp.join("exact.bin");
+        fs::write(&exact, [0x41u8; 16]).unwrap();
+        assert!(resolve_observer_secret(Some(&exact)).is_ok());
+    }
+
+    /// Invariant: an explicit secret file is loaded byte-for-byte. The golden
+    /// fixtures pin a 33-byte secret written without a trailing newline, so any
+    /// trimming or UTF-8 round-trip would change every HMAC in the envelope.
+    #[test]
+    fn explicit_secret_file_bytes_are_loaded_exactly() {
+        let tmp = tempdir();
+        let path = tmp.join("secret.bin");
+        let raw = b"abcdefghijklmnop\n\x00\xffrest-of-secret".to_vec();
+        fs::write(&path, &raw).unwrap();
+
+        let (loaded, basis) = resolve_observer_secret(Some(&path)).unwrap();
+        assert_eq!(loaded, raw);
+        assert_eq!(basis, "test_secret");
     }
 
     fn tempdir() -> PathBuf {

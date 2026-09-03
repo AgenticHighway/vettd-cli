@@ -37,6 +37,14 @@ use super::{ContractPayload, McpServer};
 /// list is the authoritative catalog: [`render_disclosure`] formats one line
 /// per category, and the test ensures every field in every payload type maps
 /// to one of these variants.
+///
+/// The last fourteen variants belong to the passive-observer telemetry envelope
+/// (`vettd observe`), not to [`ContractPayload`]: their label and description text is
+/// copied verbatim from the repo-root `telemetry-field-gate.json`, which maps every
+/// leaf path that envelope may carry to one of them. [`disclosure_categories`] never
+/// returns them — `observe::disclosure` renders them, structurally, before any session
+/// log is opened. They live here because this enum is the one catalog of everything the
+/// CLI may disclose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisclosureCategory {
     /// `scan_meta.scan_id`, `scanned_at`, `scan_duration_ms` — scan bookkeeping.
@@ -67,7 +75,81 @@ pub enum DisclosureCategory {
     AgentRecords,
     /// `agentic_apps[*]` — agentic application records.
     AgenticAppRecords,
+    /// `envelope_version`, `extractor_version`, `gate_version`, `resource.collector`,
+    /// `resource.collector_version` — versions of the contract, its reader, and this gate.
+    TelemetryBookkeeping,
+    /// `emitted_day`, `records[].observed_day` — UTC calendar days, never a finer time.
+    ObservationDay,
+    /// `resource.device_id`, `resource.device_id_source`, `records[].run_id` — the persisted
+    /// scanner device id and the per-run HMAC pseudonym keyed by a device-local secret.
+    DeviceIdentity,
+    /// `resource.harness`, `resource.harness_version`, `records[].entrypoint_class`.
+    HarnessIdentity,
+    /// `records[].model`, `records[].tokens_by_model[].model` — allowlisted ids, else `other`.
+    ModelIdentity,
+    /// `records[].effort`, `.permission_mode`, `.task_category`, `.loaded_set_basis`,
+    /// `.run_outcome` — closed enums only.
+    RunShape,
+    /// `records[].counts.*` — turns, tool calls, tool failures, user denials, sub-agent runs,
+    /// compactions, unpaired tool uses, repeated tool calls, loaded-set changes.
+    RunOutcomeCounts,
+    /// `records[].tokens.*` and `records[].tokens_by_model[]` (all but its `model`) — token
+    /// totals per provider bucket and the basis they were read from.
+    RunTokenTotals,
+    /// `records[].assets[].asset_id`, `.asset_type`, `.key_basis` — the hash and how it was made.
+    AssetIdentityHash,
+    /// `records[].bom_version`, `records[].assets[].tier`, `.binding`,
+    /// `.direct_evidence_available`, `bom[].bom_version`, `bom[].asset_ids[]`.
+    AssetLoadedSet,
+    /// `records[].assets[].signals.invocations.n`, `.signals.failures.*`,
+    /// `.signals.harness_corroborations`.
+    AssetOutcomeCounts,
+    /// `records[].assets[].signals.latency_ms.n`, `.sum`, `.min`, `.max`, `.sumsq`.
+    AssetTimingStats,
+    /// `records[].assets[].signals.tokens_attributed` (and `.n`, `.sum`, `.min`, `.max`,
+    /// `.sumsq`), `.signals.context_cost_est` (and `.tokens`, `.method`).
+    AssetTokenStats,
+    /// `coverage.sessions_seen`, `.sessions_emitted`, `.sessions_skipped_unparseable`,
+    /// `.lines_seen`, `.lines_unknown_type`, `.bytes_read`, `.truncated_sessions`,
+    /// `.window_days`, `.cursor_state`, `.run_id_basis`.
+    CoverageMetadata,
 }
+
+/// Every [`DisclosureCategory`], scanner categories first and then the telemetry
+/// categories in `telemetry-field-gate.json` order.
+///
+/// The only way to look a category up by name; the parity test walks it to prove the
+/// gate and this enum are the same list.
+pub const ALL_CATEGORIES: [DisclosureCategory; 28] = [
+    DisclosureCategory::ScanMetaInfo,
+    DisclosureCategory::ScanRootPaths,
+    DisclosureCategory::Hostname,
+    DisclosureCategory::HostSecurityContext,
+    DisclosureCategory::ScannerVersion,
+    DisclosureCategory::McpServerCommand,
+    DisclosureCategory::McpToolNames,
+    DisclosureCategory::McpDependentAgents,
+    DisclosureCategory::LogDerivedNetworkEvidence,
+    DisclosureCategory::EnvVarNames,
+    DisclosureCategory::PromptRecords,
+    DisclosureCategory::SkillRecords,
+    DisclosureCategory::AgentRecords,
+    DisclosureCategory::AgenticAppRecords,
+    DisclosureCategory::TelemetryBookkeeping,
+    DisclosureCategory::ObservationDay,
+    DisclosureCategory::DeviceIdentity,
+    DisclosureCategory::HarnessIdentity,
+    DisclosureCategory::ModelIdentity,
+    DisclosureCategory::RunShape,
+    DisclosureCategory::RunOutcomeCounts,
+    DisclosureCategory::RunTokenTotals,
+    DisclosureCategory::AssetIdentityHash,
+    DisclosureCategory::AssetLoadedSet,
+    DisclosureCategory::AssetOutcomeCounts,
+    DisclosureCategory::AssetTimingStats,
+    DisclosureCategory::AssetTokenStats,
+    DisclosureCategory::CoverageMetadata,
+];
 
 impl DisclosureCategory {
     /// Human-readable label used in the rendered disclosure.
@@ -93,6 +175,20 @@ impl DisclosureCategory {
             DisclosureCategory::SkillRecords => "Scanned skill records",
             DisclosureCategory::AgentRecords => "AI agent configuration records",
             DisclosureCategory::AgenticAppRecords => "Agentic application records",
+            DisclosureCategory::TelemetryBookkeeping => "Telemetry bookkeeping",
+            DisclosureCategory::ObservationDay => "Observation day",
+            DisclosureCategory::DeviceIdentity => "Device identity",
+            DisclosureCategory::HarnessIdentity => "Harness identity",
+            DisclosureCategory::ModelIdentity => "Model identity",
+            DisclosureCategory::RunShape => "Run shape",
+            DisclosureCategory::RunOutcomeCounts => "Run outcome counts",
+            DisclosureCategory::RunTokenTotals => "Run token totals",
+            DisclosureCategory::AssetIdentityHash => "Asset identity hashes",
+            DisclosureCategory::AssetLoadedSet => "Loaded set",
+            DisclosureCategory::AssetOutcomeCounts => "Asset outcome counts",
+            DisclosureCategory::AssetTimingStats => "Asset timing stats",
+            DisclosureCategory::AssetTokenStats => "Asset token stats",
+            DisclosureCategory::CoverageMetadata => "Coverage metadata",
         }
     }
 
@@ -137,6 +233,86 @@ impl DisclosureCategory {
             DisclosureCategory::AgenticAppRecords => {
                 "framework, agent count, risk, review status, description, agents, tools by agent, workflow steps, integrations, verification checks, and risk summary"
             }
+            DisclosureCategory::TelemetryBookkeeping => {
+                "envelope, extractor, gate, and collector versions"
+            }
+            DisclosureCategory::ObservationDay => {
+                "UTC calendar day of emission and of each observed run start; no finer time resolution is transmitted"
+            }
+            DisclosureCategory::DeviceIdentity => {
+                "the persisted scanner device id and a per-run pseudonym derived from a device-local secret; the harness session id itself is never transmitted"
+            }
+            DisclosureCategory::HarnessIdentity => {
+                "which supported harness produced the run, its semantic version, and a coarse entrypoint class"
+            }
+            DisclosureCategory::ModelIdentity => {
+                "the allowlisted model identifier reported by the harness for the run, or 'other'"
+            }
+            DisclosureCategory::RunShape => {
+                "closed-enum descriptors of the run: effort, permission mode, task category from a published tool-mix rule set, loaded-set basis, run outcome"
+            }
+            DisclosureCategory::RunOutcomeCounts => {
+                "integer counts per run: turns, tool calls, failures by class, denials, sub-agent runs, compactions, unpaired calls, repeated near-identical calls"
+            }
+            DisclosureCategory::RunTokenTotals => {
+                "token totals per run by provider bucket (nullable per provider) and the basis they were read from; never a cost figure"
+            }
+            DisclosureCategory::AssetIdentityHash => {
+                "a content hash, canonical-descriptor hash, or HMAC name pseudonym per asset with its type and key basis; never a name or path"
+            }
+            DisclosureCategory::AssetLoadedSet => {
+                "the loaded-set hash per run, the membership list as asset hashes, and per-asset attribution tier and binding"
+            }
+            DisclosureCategory::AssetOutcomeCounts => {
+                "per asset per run: invocation count, failures by class, harness-native corroboration count"
+            }
+            DisclosureCategory::AssetTimingStats => {
+                "per asset per run: mergeable stats (n, sum, min, max, sumsq) of per-invocation latency in ms from harness timestamps"
+            }
+            DisclosureCategory::AssetTokenStats => {
+                "per asset per run: mergeable stats of tokens attributed to the asset where attribution is exact (sub-agent runs), and a locally estimated context-cost figure with its method"
+            }
+            DisclosureCategory::CoverageMetadata => {
+                "what the collector saw and did not see, so silence is distinguishable from nothing to report"
+            }
+        }
+    }
+
+    /// The variant's own Rust name.
+    ///
+    /// Exists so the parity test can match a `telemetry-field-gate.json` category name
+    /// against this enum. The match is exhaustive on purpose: a new variant cannot be
+    /// added without being named here.
+    pub fn name(&self) -> &'static str {
+        match self {
+            DisclosureCategory::ScanMetaInfo => "ScanMetaInfo",
+            DisclosureCategory::ScanRootPaths => "ScanRootPaths",
+            DisclosureCategory::Hostname => "Hostname",
+            DisclosureCategory::HostSecurityContext => "HostSecurityContext",
+            DisclosureCategory::ScannerVersion => "ScannerVersion",
+            DisclosureCategory::McpServerCommand => "McpServerCommand",
+            DisclosureCategory::McpToolNames => "McpToolNames",
+            DisclosureCategory::McpDependentAgents => "McpDependentAgents",
+            DisclosureCategory::LogDerivedNetworkEvidence => "LogDerivedNetworkEvidence",
+            DisclosureCategory::EnvVarNames => "EnvVarNames",
+            DisclosureCategory::PromptRecords => "PromptRecords",
+            DisclosureCategory::SkillRecords => "SkillRecords",
+            DisclosureCategory::AgentRecords => "AgentRecords",
+            DisclosureCategory::AgenticAppRecords => "AgenticAppRecords",
+            DisclosureCategory::TelemetryBookkeeping => "TelemetryBookkeeping",
+            DisclosureCategory::ObservationDay => "ObservationDay",
+            DisclosureCategory::DeviceIdentity => "DeviceIdentity",
+            DisclosureCategory::HarnessIdentity => "HarnessIdentity",
+            DisclosureCategory::ModelIdentity => "ModelIdentity",
+            DisclosureCategory::RunShape => "RunShape",
+            DisclosureCategory::RunOutcomeCounts => "RunOutcomeCounts",
+            DisclosureCategory::RunTokenTotals => "RunTokenTotals",
+            DisclosureCategory::AssetIdentityHash => "AssetIdentityHash",
+            DisclosureCategory::AssetLoadedSet => "AssetLoadedSet",
+            DisclosureCategory::AssetOutcomeCounts => "AssetOutcomeCounts",
+            DisclosureCategory::AssetTimingStats => "AssetTimingStats",
+            DisclosureCategory::AssetTokenStats => "AssetTokenStats",
+            DisclosureCategory::CoverageMetadata => "CoverageMetadata",
         }
     }
 }
@@ -537,6 +713,51 @@ pub fn disclosure_category_labels(categories: &[DisclosureCategory]) -> Vec<&str
 mod tests {
     use super::*;
     use crate::network_evidence::{EnvVarRef, HostNetworkInfo, NetworkEvidence};
+
+    /// The telemetry field gate and this enum must be the same list of categories.
+    ///
+    /// The gate maps every leaf path a telemetry payload may carry to a category *name*;
+    /// this enum is what the user is actually shown. A gate category with no variant — or
+    /// one whose label or description differs by a single byte — means a field could
+    /// egress under a heading the disclosure never displays, or displays differently from
+    /// the allowlist that admitted it. Byte-for-byte parity is what keeps "nothing is
+    /// emitted that is not disclosed" true as the gate grows.
+    #[test]
+    fn every_gate_category_is_a_disclosure_variant() {
+        const GATE_JSON: &str = include_str!("../../../../telemetry-field-gate.json");
+        let gate: serde_json::Value =
+            serde_json::from_str(GATE_JSON).expect("telemetry-field-gate.json parses");
+        let entries = gate["disclosureCategories"]
+            .as_array()
+            .expect("the gate declares a disclosureCategories array");
+        assert!(!entries.is_empty(), "the gate must declare categories");
+
+        for entry in entries {
+            let name = entry["name"].as_str().expect("category has a name");
+            let category = ALL_CATEGORIES
+                .iter()
+                .find(|c| c.name() == name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "telemetry-field-gate.json category '{name}' has no DisclosureCategory \
+                         variant: gated fields would egress under a heading the disclosure \
+                         never shows"
+                    )
+                });
+            assert_eq!(
+                category.label(),
+                entry["label"].as_str().expect("category has a label"),
+                "label of {name} must be the gate's own wording, byte for byte"
+            );
+            assert_eq!(
+                category.description(),
+                entry["description"]
+                    .as_str()
+                    .expect("category has a description"),
+                "description of {name} must be the gate's own wording, byte for byte"
+            );
+        }
+    }
 
     /// Every serialized field in a maximally-populated [`ContractPayload`] must
     /// map to a known [`DisclosureCategory`]. If anyone adds a public field to
