@@ -5,9 +5,25 @@
 //! against the repo-root `telemetry-field-gate.json` egress allowlist before
 //! anything is written or sent. See `docs/observe.md`.
 //!
-//! Ported from the Python prototype answered on vettd#828; the prototype is the
-//! reference semantics and the Rust here is the product. Submodules are declared
-//! here as each phase of `docs/vettd-observe-port-plan.md` lands them.
+//! Ported from the Python prototype answered on vettd#828; the prototype was the
+//! reference semantics and the Rust here is the product.
+//!
+//! # Where the prototype went
+//!
+//! Doc comments throughout this module cite paths under `spikes/828-passive-observer/prototype/`.
+//! **That directory no longer exists**: it was deleted once the port was complete and its
+//! 183-test suite had been run green against this code for the last time. The citations are kept
+//! because they say precisely which Python function each Rust one came from, which is the useful
+//! part; retrieve any of them from git rather than from the working tree:
+//!
+//! ```text
+//! git log --diff-filter=D --oneline -- spikes/828-passive-observer   # find the deleting commit
+//! git show <that commit>^:spikes/828-passive-observer/prototype/attribute.py
+//! ```
+//!
+//! The spike's reasoning and the scope note survive as `docs/passive-observer-decision-828.md`
+//! and `docs/passive-observer-scope-965.md`. The shipped behaviour is `docs/observe.md`, which is
+//! the document to trust where it and the prototype disagree.
 
 pub(crate) mod args;
 pub(crate) mod attribute;
