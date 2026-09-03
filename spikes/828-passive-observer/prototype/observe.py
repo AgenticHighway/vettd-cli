@@ -45,6 +45,9 @@ def semver_or_unknown(value: str) -> str:
     return value if _SEMVER_RE.match(value) else "unknown"
 COLLECTOR_VERSION = "0.1.0"
 ROOT_DIR = os.path.dirname(HERE)
+# The gate/schema live at the repo root and prices under crates/vettd-cli/resources/
+# since the #965 port promoted them out of the spike directory.
+REPO_ROOT = os.path.normpath(os.path.join(ROOT_DIR, "..", ".."))
 
 
 def _configure_stdio() -> None:
@@ -314,8 +317,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--public-names", help="file of display names allowed through --scrub (public assets)")
     p.add_argument("--cursor-store", help="path of the local cursor store (resumable reads)")
     p.add_argument("--synthetic-demo", action="store_true", help="also print a labelled synthetic ranking")
-    p.add_argument("--gate", default=os.path.join(ROOT_DIR, "telemetry-field-gate.json"))
-    p.add_argument("--prices", default=os.path.join(ROOT_DIR, "prices.json"))
+    p.add_argument("--gate", default=os.path.join(REPO_ROOT, "telemetry-field-gate.json"))
+    p.add_argument("--prices", default=os.path.join(REPO_ROOT, "crates", "vettd-cli", "resources", "observe-prices.json"))
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args(argv)
     return run_pipeline(args)

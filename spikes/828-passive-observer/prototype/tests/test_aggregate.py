@@ -29,8 +29,9 @@ from model import (  # noqa: E402
 
 PROTO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPIKE_DIR = os.path.dirname(PROTO_DIR)
-SCHEMA_PATH = os.path.join(SPIKE_DIR, "telemetry-envelope.schema.json")
-GATE_PATH = os.path.join(SPIKE_DIR, "telemetry-field-gate.json")
+REPO_ROOT = os.path.normpath(os.path.join(SPIKE_DIR, "..", ".."))
+SCHEMA_PATH = os.path.join(REPO_ROOT, "telemetry-envelope.schema.json")
+GATE_PATH = os.path.join(REPO_ROOT, "telemetry-field-gate.json")
 NULL_UUID = "00000000-0000-4000-8000-000000000000"
 TODAY = "2026-03-06"
 # Built at runtime so no secret-shaped literal exists in the file.

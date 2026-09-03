@@ -31,7 +31,7 @@ import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 DEFAULT_GATE_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "telemetry-field-gate.json")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "telemetry-field-gate.json")
 )
 
 # Sums of squares legitimately reach epoch-sized magnitudes; every other numeric unit does not.

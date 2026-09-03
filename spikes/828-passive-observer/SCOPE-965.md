@@ -23,15 +23,15 @@ below still applies; only the parent changes.
 
 | Artifact | Status | How it transfers |
 |---|---|---|
-| `telemetry-field-gate.json` | **The one artifact meant to survive.** 85 leaf paths, 14 disclosure categories, closed enums (model ids are a closed, gate-versioned list), 20 value-level forbid patterns, dynamic forbid sets with path-component splitting | Becomes the CI-consumed manifest for a `scripts/check-telemetry-field-gate.sh` sibling of the scanner field gate; the categories become `DisclosureCategory` variants in `contract/disclosure.rs` |
-| `telemetry-envelope.schema.json` | Draft 2020-12, `additionalProperties:false` at every object, no floats | The wire contract for the new route; served like `scanner-data-contract.json`; validated with Ajv on the cloud side |
+| `telemetry-field-gate.json` (promoted to the repo root) | **The one artifact meant to survive.** 85 leaf paths, 14 disclosure categories, closed enums (model ids are a closed, gate-versioned list), 20 value-level forbid patterns, dynamic forbid sets with path-component splitting | Becomes the CI-consumed manifest for a `scripts/check-telemetry-field-gate.sh` sibling of the scanner field gate; the categories become `DisclosureCategory` variants in `contract/disclosure.rs` |
+| `telemetry-envelope.schema.json` (promoted to the repo root) | Draft 2020-12, `additionalProperties:false` at every object, no floats | The wire contract for the new route; served like `scanner-data-contract.json`; validated with Ajv on the cloud side |
 | `prototype/check_field_gate.py` | Reference semantics of the gate: key-path walker + value-level checks + dynamic forbids; rejects duplicate JSON keys and non-identifier keys; never echoes a value or key | Port to Rust as a test over the serialized payload (the walker already exists; the value checks are new) and to a CI script over a golden payload |
 | Asset key derivation (`attribute.py`) | content hash (tree hash for skill dirs), canonical-descriptor hash for MCP servers, HMAC name pseudonym otherwise; `key_basis` enum | Port as-is; the descriptor canonicalisation rules are the part to test hardest |
 | Attribution tiers, `binding`, the delta settle rule, bom_version | Decisions D4 | Port as-is; the settle rule is specific to Claude Code's `deferred_tools_delta` semantics |
 | Evidence-state floors and Wilson ordering (`rank.py`) | Decision D5 | The cloud display layer implements these; the CLI never ranks for the cloud |
 | Task-category rule table (`taskcat.py`, `taskcat-1`) | Published, versioned into `extractor_version` | Port verbatim; a rule change is a new `extractor_version` |
 | Test list (`prototype/tests/`) | Unit, gate-negative, non-blocking | Re-express in Rust; the non-blocking suite gains the Windows `share_mode` test the prototype cannot run |
-| `prices.json` | Dated display-time price table | Cloud-side display concern; never stored with the observation |
+| `prices.json` (promoted to `crates/vettd-cli/resources/observe-prices.json`) | Dated display-time price table | Cloud-side display concern; never stored with the observation |
 
 Nothing from Splitrail is taken by file in the prototype. If the Rust port takes
 `src/analyzers/claude_code.rs` / `codex_cli.rs` by file, pin the v3.7.2 commit, keep the MIT

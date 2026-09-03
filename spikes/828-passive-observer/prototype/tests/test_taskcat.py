@@ -15,7 +15,9 @@ import taskcat  # noqa: E402
 from taskcat import KNOWN_MODELS, RULES_VERSION, allowlist_model, categorize  # noqa: E402
 
 PROTO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATE_PATH = os.path.join(os.path.dirname(PROTO_DIR), "telemetry-field-gate.json")
+GATE_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(PROTO_DIR), "..", "..", "telemetry-field-gate.json")
+)
 
 
 class CategorizeBoundaries(unittest.TestCase):

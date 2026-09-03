@@ -54,7 +54,12 @@ TASK_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 )
 TIER_RANK = {TIER_DIRECT: 0, TIER_LOADED: 1, TIER_INFERRED: 2}
 PRICED_BUCKETS = ("input", "cache_creation", "cache_read", "output")
-DEFAULT_PRICES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prices.json")
+DEFAULT_PRICES_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "crates", "vettd-cli", "resources", "observe-prices.json",
+    )
+)
 
 # Every template the output is built from. No causal verb, no money sign, and every template that
 # names a rate says "observed" (lint_copy's hedge rule cannot see "{n}" as a number).

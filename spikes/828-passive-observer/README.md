@@ -21,9 +21,9 @@ Deliverables in this directory:
 |---|---|
 | `README.md` | This answer (also posted on #828) |
 | `SCOPE-965.md` | Scope note for #965 (also posted there) |
-| `telemetry-field-gate.json` | The egress allowlist in the form the gate consumes — **the artifact meant to survive into #965** |
-| `telemetry-envelope.schema.json` | JSON schema of the payload, every object closed |
-| `prices.json` | Dated display-time price table; cost is derived, never stored |
+| `telemetry-field-gate.json` (now at the repo root) | The egress allowlist in the form the gate consumes — **the artifact meant to survive into #965** |
+| `telemetry-envelope.schema.json` (now at the repo root) | JSON schema of the payload, every object closed |
+| `prices.json` (now `crates/vettd-cli/resources/observe-prices.json`) | Dated display-time price table; cost is derived, never stored |
 | `prototype/` | Throwaway Python prototype: reads real local session state, extracts, attributes, aggregates, gate-checks the written payload, prints a ranked list. Never posts |
 | `worked-example/` | Real, scrubbed output from the spike author's own session files |
 
