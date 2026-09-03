@@ -2,21 +2,25 @@
 
 ## Summary
 
-Adds these filters to `vettd directory search` / `vettd inventory search`,
-all gated behind `SEARCH_BETA_TESTING` (see
+Adds these filters to **`vettd directory search` only**, all gated behind
+`SEARCH_BETA_TESTING` (see
 [`crates/vettd-cli/src/network.rs`](../crates/vettd-cli/src/network.rs)'s
 `search_beta_testing_enabled()`), the same flag that gates
-`VETTD_DIRECTORY_ENDPOINT`/`VETTD_INVENTORY_ENDPOINT`:
+`VETTD_DIRECTORY_ENDPOINT`:
 
 - `--language`, `--agent-compatibility`, `--rankings` — catalog filters (skill).
 - `--source` (repeatable), `--rank-filter <key=N>` (repeatable) — discovery-source
   and per-source search-rank push-downs (skill + mcp for `--source`).
 - `--asset-type skill|mcp` — which catalog to search. `mcp` switches the
-  response envelope to `mcpServers` (`McpHit`-shaped cards). `directory` only
-  — `inventory search --asset-type mcp` is rejected client-side (the MCP
-  catalog is not user-scoped).
+  response envelope to `mcpServers` (`McpHit`-shaped cards).
 - `--mcp-category`, `--deployment`, `--registry-type` (all repeatable) —
   mcp-only filters (ignored server-side for `--asset-type skill`).
+
+**`vettd inventory search` has no beta path.** The user-scoped inventory has
+no `SEARCH_BETA_TESTING` search API, so `inventory search` always issues the
+plain `GET /api/inventory` query below, regardless of the flag, and none of
+the filter flags above are offered on it (clap rejects them). `VETTD_INVENTORY_ENDPOINT`
+still redirects that GET for local testing.
 
 Skill search responses also now carry three opaque scan-verdict passthroughs
 per card — `llm_scan`, `cli_security`, `vettd_scan` (`object | null`,
@@ -28,9 +32,9 @@ body — there is no GET-with-new-filters hybrid. This is the only way search
 is issued once the beta flag is on.
 
 Implemented in `crates/vettd-cli/src/directory.rs` (`handle_search`,
-`validate_search_filters`, `build_search_body`), reused by
-`crates/vettd-cli/src/inventory.rs`, over `read_client::post_json` /
-`inventory_client::post_json`.
+`validate_search_filters`, `build_search_body`) over `read_client::post_json`.
+`crates/vettd-cli/src/inventory.rs` reuses only the response structs +
+`inventory_client::fetch_json` (authed GET).
 
 ## Old shape (`SEARCH_BETA_TESTING` unset — unchanged, always GET)
 
@@ -196,8 +200,9 @@ http://localhost:3001/api/directory
 - `429` → message + `exit 1`; `404` → `ReadError::NotFound`; any other
   non-200 → `ReadError::ServerError(status)`; transport failure →
   `ReadError::Unreachable`.
-- `inventory search` uses the authed twin `inventory_client::post_json`
-  (adds the bearer token from `vettd auth`) and `VETTD_INVENTORY_ENDPOINT`.
+- `inventory search` does **not** use this POST path — it stays on the plain
+  authed `GET /api/inventory` (`inventory_client::fetch_json`, bearer token
+  from `vettd auth`, `VETTD_INVENTORY_ENDPOINT` override).
 
 Built by `directory::build_search_body()` in
 `crates/vettd-cli/src/directory.rs`; the `--asset-type mcp` path routes to
@@ -313,9 +318,8 @@ a **different response envelope** (`mcpServers`, not `skills`) of
 `McpHit`-shaped cards. It is a thin fail-open proxy of the query service's
 `mcp_servers` catalog — no Postgres spine, no `mock` fabrication.
 
-- Only on `directory search`. `inventory search --asset-type mcp` is rejected
-  client-side (exit 1) — the MCP catalog is not user-scoped and the backend
-  400s it.
+- Only on `directory search`. `inventory search` has no `--asset-type` flag
+  at all (clap rejects it) — the MCP catalog is not user-scoped.
 - Always beta (requires `SEARCH_BETA_TESTING`), so always `POST`. `--json`
   → raw JSON; otherwise the compact MCP table.
 - `--source` is forwarded; `--mcp-category` / `--deployment` /
@@ -577,8 +581,8 @@ Error: --rank-filter 'bogus' must be in key=N form
 $ unset SEARCH_BETA_TESTING; $BIN directory search "x" --asset-type mcp
 Error: search filters (--language/--agent-compatibility/--rankings/--source/--rank-filter/--asset-type mcp/--mcp-category/--deployment/--registry-type) require SEARCH_BETA_TESTING=1.
 
-$ $BIN inventory search "x" --asset-type mcp          # even with the beta flag on
-Error: --asset-type mcp is not supported for `inventory search` — the MCP catalog is not user-scoped. Use `vettd directory search --asset-type mcp` instead.
+$ $BIN inventory search "x" --asset-type mcp          # no such flag on inventory search
+error: unexpected argument '--asset-type' found
 ```
 
 ### E — non-beta `--json` is untouched

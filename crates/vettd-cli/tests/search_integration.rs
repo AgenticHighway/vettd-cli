@@ -265,22 +265,6 @@ fn mount_inventory_get(server: &MockServer, response_body: &Value) {
     });
 }
 
-/// Mount `POST /api/inventory` (new shape), requiring both the bearer token
-/// and an exact JSON body match.
-fn mount_inventory_post<'a>(
-    server: &'a MockServer,
-    expected_request_body: &Value,
-    response_body: &Value,
-) -> httpmock::Mock<'a> {
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/inventory")
-            .header("authorization", format!("Bearer {MOCK_API_KEY}"))
-            .json_body(expected_request_body.clone());
-        then.status(200).json_body(response_body.clone());
-    })
-}
-
 /// The default POST body the CLI sends when no filter flags are given
 /// (`assetType` defaults to `"skill"`, so the mcp-only arrays are absent).
 fn default_search_body(query: &str) -> Value {
@@ -556,54 +540,30 @@ fn inventory_search_without_config_is_rejected_before_any_request() {
     assert!(result.stderr.contains("not authenticated"));
 }
 
-// Regression tests for #231: invalid beta-gated filters must be rejected
-// before the auth check runs. An unauthenticated invocation with a bad filter
-// should exit 1 with the filter-validation error, NOT exit 3 with the auth
-// error.
+// `inventory search` has no beta search API — `SEARCH_BETA_TESTING` and the
+// directory-search filter flags don't apply. The command always uses the plain
+// `GET /api/inventory` path, and clap rejects `--language` / `--asset-type` /
+// etc. as unknown arguments.
 #[test]
-fn inventory_search_with_beta_gated_filter_without_flag_exits_before_auth_check() {
+fn inventory_search_rejects_directory_filter_flags() {
     let home = new_temp_home();
-    // No config seeded — no auth.
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--language", "python"],
-        home.path(),
-        &[],
-    );
-
-    assert_eq!(
-        result.status, 1,
-        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
-        result.stderr
-    );
-    assert!(
-        result.stderr.contains("--language")
-            && result.stderr.contains("require SEARCH_BETA_TESTING=1"),
-        "stderr should mention the beta-gate message: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn inventory_search_with_invalid_rankings_and_beta_flag_exits_before_auth_check() {
-    let home = new_temp_home();
-    // SEARCH_BETA_TESTING is set so the filter-validation step runs, but the
-    // rankings value is invalid JSON → must fail at validation, before auth.
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--rankings", "not-json"],
-        home.path(),
-        &[("SEARCH_BETA_TESTING", "1")],
-    );
-
-    assert_eq!(
-        result.status, 1,
-        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
-        result.stderr
-    );
-    assert!(
-        result.stderr.contains("--rankings is not valid JSON"),
-        "stderr should mention the invalid-JSON message: {}",
-        result.stderr
-    );
+    for flag in [
+        ["--language", "python"],
+        ["--asset-type", "mcp"],
+        ["--source", "seed"],
+    ] {
+        let result = run_vettd(
+            &["inventory", "search", "notes", flag[0], flag[1]],
+            home.path(),
+            &[("SEARCH_BETA_TESTING", "1")],
+        );
+        assert_ne!(result.status, 0, "{flag:?} should be rejected");
+        assert!(
+            result.stderr.contains("unexpected argument") || result.stderr.contains("unrecognized"),
+            "{flag:?} stderr: {}",
+            result.stderr
+        );
+    }
 }
 
 #[test]
@@ -725,14 +685,16 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
     assert_json_eq(&result.stdout, &expected_directory_output_beta());
 }
 
+/// Even with `SEARCH_BETA_TESTING=1`, `inventory search` still uses the plain
+/// `GET /api/inventory` path — it never switches to a POST body.
 #[test]
-fn beta_search_inventory_sends_bearer_token_and_post_body() {
+fn inventory_search_ignores_search_beta_testing_and_uses_get() {
     let server = MockServer::start();
-    let mock = mount_inventory_post(
-        &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
-    );
+    mount_inventory_get(&server, &inventory_response_basic());
+    let post_inv = server.mock(|when, then| {
+        when.method(POST).path("/api/inventory");
+        then.status(200).json_body(inventory_response_basic());
+    });
     let home = seed_home("http://127.0.0.1:1/api/scans/ingest", MOCK_API_KEY);
 
     let result = run_vettd(
@@ -745,7 +707,8 @@ fn beta_search_inventory_sends_bearer_token_and_post_body() {
     );
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    mock.assert();
+    assert_json_eq(&result.stdout, &expected_inventory_output_basic());
+    post_inv.assert_calls(0);
 }
 
 #[test]
@@ -780,14 +743,6 @@ fn new_filter_flags_without_search_beta_testing_are_rejected_before_any_request(
         &["directory", "search", "pdf", "--mcp-category", "server"],
         &["directory", "search", "pdf", "--deployment", "hybrid"],
         &["directory", "search", "pdf", "--registry-type", "npm"],
-        &["inventory", "search", "notes", "--source", "seed"],
-        &[
-            "inventory",
-            "search",
-            "notes",
-            "--rank-filter",
-            "search_rank_seed_rank=5",
-        ],
     ];
     for args in cases {
         let server = MockServer::start();
@@ -799,18 +754,12 @@ fn new_filter_flags_without_search_beta_testing_are_rejected_before_any_request(
             when.method(POST).path("/api/directory");
             then.status(200).json_body(directory_response_beta());
         });
-        let post_inv = server.mock(|when, then| {
-            when.method(POST).path("/api/inventory");
-            then.status(200).json_body(inventory_response_basic());
-        });
         let home = seed_home(&ingest_endpoint(&server), MOCK_API_KEY);
-        let is_inventory = args[0] == "inventory";
-        let env_key = if is_inventory {
-            "VETTD_INVENTORY_ENDPOINT"
-        } else {
-            "VETTD_DIRECTORY_ENDPOINT"
-        };
-        let result = run_vettd(args, home.path(), &[(env_key, &ingest_endpoint(&server))]);
+        let result = run_vettd(
+            args,
+            home.path(),
+            &[("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server))],
+        );
 
         assert_ne!(result.status, 0, "{args:?} should exit non-zero");
         assert!(
@@ -820,7 +769,6 @@ fn new_filter_flags_without_search_beta_testing_are_rejected_before_any_request(
         );
         get_dir.assert_calls(0);
         post_dir.assert_calls(0);
-        post_inv.assert_calls(0);
     }
 }
 
@@ -1043,31 +991,6 @@ fn mcp_search_index_not_ready_is_distinct_from_no_results() {
 }
 
 #[test]
-fn inventory_mcp_search_is_rejected_client_side() {
-    let server = MockServer::start();
-    let post_inv = server.mock(|when, then| {
-        when.method(POST).path("/api/inventory");
-        then.status(200).json_body(inventory_response_basic());
-    });
-    let home = seed_home(&ingest_endpoint(&server), MOCK_API_KEY);
-
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--asset-type", "mcp"],
-        home.path(),
-        &[
-            ("VETTD_INVENTORY_ENDPOINT", &ingest_endpoint(&server)),
-            ("SEARCH_BETA_TESTING", "1"),
-        ],
-    );
-
-    assert_eq!(result.status, 1);
-    assert!(result
-        .stderr
-        .contains("not supported for `inventory search`"));
-    post_inv.assert_calls(0);
-}
-
-#[test]
 fn invalid_rankings_json_is_rejected_before_any_request() {
     let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
 
@@ -1112,38 +1035,6 @@ fn beta_search_without_json_prints_only_table() {
     // Human table still renders.
     assert!(out.contains("[A]"));
     assert!(out.contains("Showing 1 of 1 assets"));
-}
-
-#[test]
-fn beta_inventory_search_json_emits_only_json() {
-    let server = MockServer::start();
-    mount_inventory_post(
-        &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
-    );
-    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", MOCK_API_KEY);
-
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--json"],
-        home.path(),
-        &[
-            ("VETTD_INVENTORY_ENDPOINT", &ingest_endpoint(&server)),
-            ("SEARCH_BETA_TESTING", "1"),
-        ],
-    );
-
-    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    let out = strip_ansi(&result.stdout);
-    // No SEARCH_BETA_TESTING markers may leak into stdout — output is
-    // driven by --json only, identical to the non-beta path.
-    assert!(!out.contains("SEARCH_BETA_TESTING"));
-    assert!(!out.contains("raw json"));
-    assert!(!out.contains("formatted"));
-    assert!(!out.contains("[B]"));
-    // The whole stdout must be a single valid JSON document.
-    let parsed: Value = serde_json::from_str(&out).expect("stdout must parse as JSON");
-    assert_eq!(parsed, expected_inventory_output_basic());
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,11 +1091,6 @@ fn manual_mock_server_for_local_testing() {
         &mcp_response(),
     );
     mount_inventory_get(&server, &inventory_response_basic());
-    mount_inventory_post(
-        &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
-    );
 
     let ingest = ingest_endpoint(&server);
 
@@ -1228,8 +1114,10 @@ fn manual_mock_server_for_local_testing() {
     eprintln!("  ./target/debug/vettd directory search pdf --language python --agent-compatibility claude-code --rankings '{{\"stars\": 50}}' --json");
     eprintln!("  ./target/debug/vettd directory search context7 --asset-type mcp --json\n");
     eprintln!(
-        "  export VETTD_INVENTORY_ENDPOINT={ingest}   # inventory also needs the `auth` step above for its api key"
+        "Inventory search always uses the plain GET path (SEARCH_BETA_TESTING has no effect);"
     );
+    eprintln!("it needs the `auth` step above for its api key:");
+    eprintln!("  export VETTD_INVENTORY_ENDPOINT={ingest}");
     eprintln!("  ./target/debug/vettd inventory search notes --json\n");
     eprintln!("Blocking for 10 minutes — Ctrl-C to stop early.\n");
 

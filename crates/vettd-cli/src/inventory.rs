@@ -9,9 +9,7 @@
 //! `directory`'s response structs and display helpers rather than duplicating
 //! them.
 
-use crate::directory::{
-    self, DirectoryFinding, DirectoryListResponse, DirectorySkillDetail, SearchFilters,
-};
+use crate::directory::{self, DirectoryFinding, DirectoryListResponse, DirectorySkillDetail};
 use crate::inventory_client::{self, InventoryError};
 
 /// Derive the inventory API base URL from the configured ingest endpoint.
@@ -131,43 +129,19 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-pub fn handle_search(
-    query: &str,
-    page: u32,
-    sort: &str,
-    reverse: bool,
-    json: bool,
-    filters: &SearchFilters,
-) {
-    // The MCP catalog is not user-scoped, so the backend 400s
-    // `assetType: "mcp"` on the inventory path. Reject it client-side with a
-    // clear pointer rather than round-tripping to a 400.
-    if filters.asset_type == "mcp" {
-        eprintln!(
-            "Error: --asset-type mcp is not supported for `inventory search` — the MCP catalog \
-is not user-scoped. Use `vettd directory search --asset-type mcp` instead."
-        );
-        std::process::exit(1);
-    }
-
-    // Validate filters before the auth check so a bad filter / missing beta
-    // flag surfaces ahead of an auth error (upstream #231/#232).
-    let beta = crate::network::search_beta_testing_enabled();
-    let validated = directory::validate_search_filters(filters, beta);
+pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bool) {
+    // The user-scoped inventory has no `SEARCH_BETA_TESTING` search API — the
+    // directory-search filters and the `POST` body shape don't apply here.
+    // Always use the plain `GET /api/inventory` query path.
     require_auth_or_exit();
 
-    let result = if beta {
-        let body = directory::build_search_body(query, page, sort, reverse, filters, &validated);
-        inventory_client::post_json::<DirectoryListResponse>(&inventory_base_url(), &body)
-    } else {
-        let url = format!(
-            "{}?search={}&{}&page={page}",
-            inventory_base_url(),
-            directory::percent_encode(query),
-            directory::api_sort_params(sort, reverse),
-        );
-        inventory_client::fetch_json::<DirectoryListResponse>(&url)
-    };
+    let url = format!(
+        "{}?search={}&{}&page={page}",
+        inventory_base_url(),
+        directory::percent_encode(query),
+        directory::api_sort_params(sort, reverse),
+    );
+    let result = inventory_client::fetch_json::<DirectoryListResponse>(&url);
 
     match result {
         Ok(resp) => {

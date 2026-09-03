@@ -1,15 +1,22 @@
-# Next.js API spec: `directory`/`inventory` search endpoints
+# Next.js API spec: `directory` search endpoint
 
 ## Summary
 
 This describes the API surface the **Next.js app** (the production host behind
-`vettd.agentichighway.ai`, or whatever host serves `/api/directory` and
-`/api/inventory`) needs to implement to support the CLI changes on this
-branch. See [`SEARCH_INTERFACE.md`](SEARCH_INTERFACE.md) for the CLI-side
-request/response contract this derives from.
+`vettd.agentichighway.ai`, or whatever host serves `/api/directory`) needs to
+implement to support the CLI changes on this branch. See
+[`SEARCH_INTERFACE.md`](SEARCH_INTERFACE.md) for the CLI-side request/response
+contract this derives from.
 
-**One Next.js app serves both flows on the same paths.** There is no separate
-beta subdomain or path prefix — `--language`/`--agent-compatibility`/
+**Scope note — `/api/inventory` is GET-only and out of scope for the beta
+filters.** The user-scoped inventory has no `SEARCH_BETA_TESTING` search API;
+`vettd inventory search` always issues a plain authed `GET /api/inventory`
+(bearer token, `search`/`sort`/`page` query params, `DirectoryListResponse`
+body) and never a POST. The GET→POST switch and all the filter flags below
+apply to `directory search` only.
+
+**One Next.js app serves both directory flows on the same path.** There is no
+separate beta subdomain or path prefix — `--language`/`--agent-compatibility`/
 `--rankings` and the GET→POST switch are gated entirely on the *client* side
 by the CLI's `SEARCH_BETA_TESTING` env var
 ([`network.rs`](../crates/vettd-cli/src/network.rs)'s
@@ -19,18 +26,16 @@ with a JSON body (new shape) against the identical URL:
 
 ```
 {base}/api/directory
-{base}/api/inventory
 ```
 
 `{base}` itself *can* differ per client — the CLI derives it from whichever
 ingest endpoint is configured (`derive_api_url` in `network.rs`), and beta
-testers may point `VETTD_DIRECTORY_ENDPOINT`/`VETTD_INVENTORY_ENDPOINT` at a
-different host entirely (e.g. a local mock or staging deploy) — but for a
-given deployment, normal and beta traffic land on the same route, only
-differing by HTTP method. The Next.js route handler must not assume method
-implies environment.
+testers may point `VETTD_DIRECTORY_ENDPOINT` at a different host entirely
+(e.g. a local mock or staging deploy) — but for a given deployment, normal
+and beta traffic land on the same route, only differing by HTTP method. The
+Next.js route handler must not assume method implies environment.
 
-## Route: `GET /api/directory` (and `/api/inventory`) — unchanged
+## Route: `GET /api/directory` — unchanged
 
 Existing behavior. Query params:
 
@@ -46,7 +51,7 @@ non-beta client deserializes with an allow-list; extra fields are silently
 dropped, but adding them here defeats the point of gating and risks
 confusing non-beta consumers that assume a stable contract.
 
-## Route: `POST /api/directory` (and `/api/inventory`) — new
+## Route: `POST /api/directory` — new
 
 Needs to be added. No auth/method gating is required server-side beyond
 normal API auth — the beta flag is a CLI-only concept, not a server concept.
@@ -86,8 +91,7 @@ type RankingsFilter = {
 `asset_type`, `sources`, `rank_filters` (`QueryRequest`). When
 `assetType === "mcp"` the response is `McpSearchListResponse`
 (`{mcpServers, total, page, totalPages, mock: false, indexReady}`) instead
-of the skill envelope below; `POST /api/inventory` rejects
-`assetType: "mcp"` with a 400. See `vettd/docs/search-beta-api-spec.md`
+of the skill envelope below. See `vettd/docs/search-beta-api-spec.md`
 "Phase 3".
 
 Validation the handler owns:
@@ -155,12 +159,12 @@ output field to match.
 ## Summary of what's needed in the Next.js app
 
 - [x] Add a `POST` handler alongside the existing `GET` handler on
-      `/api/directory` and `/api/inventory`, same route file/path.
+      `/api/directory`, same route file/path. (`/api/inventory` stays GET-only;
+      the CLI never POSTs to it.)
 - [x] Parse and validate `SearchRequestBody` (above), incl. `assetType` /
       `sources` / `rankFilters` / the mcp-only filters.
 - [x] `assetType: "mcp"` on `POST /api/directory` → proxy the query service's
-      `mcp_servers` catalog, response `McpSearchListResponse`; 400 on
-      `POST /api/inventory`.
+      `mcp_servers` catalog, response `McpSearchListResponse`.
 - [x] Extend the search/query layer to filter on language, agent
       compatibility, ranking thresholds, `sources`, `rankFilters`.
 - [x] Include `language`/`agentCompatibility`/`rankings` and the
