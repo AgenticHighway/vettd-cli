@@ -8,14 +8,17 @@
 //! not in one of these arrays cannot pass the gate, so the arrays and the gate must not drift.
 //!
 //! The harness-neutral data model a source produces — [`SessionRef`], [`Cursor`], [`ToolCall`],
-//! [`Usage`], [`LoadedSetEvent`], [`InBandAsset`] and [`SessionFacts`] — is the second half of
-//! this file and ports `sources/base.py` field for field. The derived types (`RunFacts`,
-//! `AttributedRun`, …) land with the phases that produce them.
+//! [`Usage`], [`LoadedSetEvent`], [`InBandAsset`] and [`SessionFacts`] — is the middle of this
+//! file and ports `sources/base.py` field for field. The derived model that `extract.rs` and
+//! `attribute/` produce — [`InvocationObs`], [`TokenTotals`], [`RunFacts`], [`AssetKey`],
+//! [`Segment`], [`ContextCost`], [`AssetObservation`] and [`AttributedRun`] — is the last third
+//! and ports `model.py` the same way.
 //!
 //! The tests live in `types_tests.rs` (the `gate.rs`/`gate_tests.rs` convention). Even so this file
-//! is over CONTRIBUTING.md's 400-line budget: the model is one closed set of declarations that is
-//! meaningless split in half, and the only way to split it is a `pub use` re-export, which cannot
-//! compile warning-free until Phase 3 gives every type a caller.
+//! is over CONTRIBUTING.md's 400-line budget: it is one closed set of declarations that is
+//! meaningless split in half, and the only way to split it is a second module file plus a
+//! `pub use` re-export, which buys a shorter file at the cost of a second place to look for a
+//! field. The budget is deliberately overrun here and nowhere else in `observe/`.
 
 use chrono::{DateTime, NaiveDateTime, Timelike};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +61,51 @@ pub(crate) const BUILTIN_AGENT_TYPES: [&str; 8] = [
     "claude-code-guide",
     "output-style-setup",
 ];
+
+/// The five asset types as the names every producer spells (`model.py:14-18`). [`ASSET_TYPES`] is
+/// the same closed set as an array; a test below pins the two together so neither can drift.
+pub(crate) const ASSET_SKILL: &str = "skill";
+/// See [`ASSET_SKILL`].
+pub(crate) const ASSET_MCP_SERVER: &str = "mcp_server";
+/// See [`ASSET_SKILL`].
+pub(crate) const ASSET_AGENT: &str = "agent";
+/// See [`ASSET_SKILL`].
+pub(crate) const ASSET_RULES_FILE: &str = "rules_file";
+/// See [`ASSET_SKILL`].
+pub(crate) const ASSET_PROMPT: &str = "prompt";
+
+/// Evidence tier of an [`AssetObservation`] (`model.py:21-23`), identical to `enums.tier` in
+/// `telemetry-field-gate.json`. `Direct` is an invocation the collector saw itself, `Loaded` is a
+/// harness listing, `Inferred` is a historical read reconstructed after the fact — which is every
+/// row this collector produces, because it reads logs rather than watching a live run.
+pub(crate) const TIER_DIRECT: &str = "direct";
+/// See [`TIER_DIRECT`].
+pub(crate) const TIER_LOADED: &str = "loaded";
+/// See [`TIER_DIRECT`].
+pub(crate) const TIER_INFERRED: &str = "inferred";
+
+/// What an [`AssetKey::asset_id`] is a hash *of* (`model.py:25-27`), identical to
+/// `enums.key_basis` in `telemetry-field-gate.json`. The precedence between them is
+/// `attribute.py:29-31`'s: in-band body > local tree/file > descriptor > name.
+pub(crate) const KEY_CONTENT: &str = "content_hash";
+/// See [`KEY_CONTENT`].
+pub(crate) const KEY_DESCRIPTOR: &str = "descriptor_hash";
+/// See [`KEY_CONTENT`].
+pub(crate) const KEY_NAME: &str = "name_hash";
+
+/// How strongly an [`AssetKey`]'s hash is bound to what the harness actually loaded
+/// (`model.py:29-32`), identical to `enums.binding` in `telemetry-field-gate.json`.
+///
+/// `harness_log_exact` hashes bytes the log itself carried; `mtime_proven` hashes files that were
+/// all older than the harness's listing timestamp; `unproven` hashes files that may have changed
+/// since; `not_applicable` is for keys that are not content hashes at all (descriptors, names).
+pub(crate) const BINDING_EXACT: &str = "harness_log_exact";
+/// See [`BINDING_EXACT`].
+pub(crate) const BINDING_MTIME: &str = "mtime_proven";
+/// See [`BINDING_EXACT`].
+pub(crate) const BINDING_UNPROVEN: &str = "unproven";
+/// See [`BINDING_EXACT`].
+pub(crate) const BINDING_NA: &str = "not_applicable";
 
 /// The zoneless fallback accepted by [`parse_ts_ms`], per the plan's "Timestamps" paragraph.
 const NAIVE_TS_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.f";
@@ -516,6 +564,314 @@ impl SessionFacts {
             .or_default()
             .insert(value.to_string());
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// The derived model — port of `model.py:35-119`, field for field.
+//
+// `extract.rs` turns a [`SessionFacts`] tree into one [`RunFacts`]; `attribute/` turns that into an
+// [`AttributedRun`]; `envelope.rs` is the only module that may read either onto the wire.
+//
+// PRIVACY INVARIANT (`model.py:1-5`): the local-only fields of `SessionFacts` do not stop being
+// local-only by being derived. `RunFacts.session_key`, `RunFacts.tool_class_shares`,
+// `RunFacts.mcp_corroborations`' keys, `RunFacts.forbids`, `InvocationObs.name`, `AssetKey.name`
+// and `AttributedRun.name_map` all carry names, harness ids or shares that must never be written
+// to the envelope: the session key is an HMAC preimage for `run_id`, an asset name is an HMAC
+// preimage for `asset_id`, the shares are a `taskcat::categorize` input, and `forbids` and
+// `name_map` exist precisely so the gate checker can prove none of them leaked. Every field so
+// marked is annotated below; nothing else in these types is a string a session chose.
+//
+// Like the model above, none of these types derive `Serialize`/`Deserialize`: `envelope.rs` copies
+// gate fields across by hand, so "this is local-only" stays a property of the type.
+// ------------------------------------------------------------------------------------------------
+
+/// One explicit invocation of an asset inside a run (`model.py:35-48`) — a `Skill` call, an MCP
+/// tool call resolved to its server, or a sub-agent spawn resolved to its agent type.
+///
+/// `Default` mirrors the dataclass's defaults, so a producer writes
+/// `InvocationObs { asset_type, name, ts_ms, ..Default::default() }` exactly as the Python omits
+/// the trailing keywords.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct InvocationObs {
+    /// One of the `ASSET_*` consts; only [`DIRECT_CAPABLE_TYPES`] are ever invoked.
+    pub asset_type: String,
+    /// Skill, MCP server or agent-type name — **local only**, an `asset_id` HMAC preimage.
+    pub name: String,
+    pub ts_ms: i64,
+    /// `None` for async spawns and unpaired calls (`extract.py:_latency`), because neither has a
+    /// duration the harness clock can vouch for.
+    pub latency_ms: Option<i64>,
+    /// One of [`FAILURE_CLASSES`]; `None` when the call succeeded or was never resolved.
+    pub failure_class: Option<String>,
+    pub is_async: bool,
+    /// A harness-native attribution marker agreed with this invocation.
+    pub corroborated: bool,
+    /// Exact token total of a linked child run (agents only). `None` is "no evidence", never zero.
+    pub child_tokens_total: Option<i64>,
+}
+
+/// The seven envelope token buckets of one run, or of one model within it.
+///
+/// **Divergence from the Python, named:** the prototype carries these as `Dict[str, Optional[int]]`
+/// keyed by the envelope's own key names (`extract.py:57-67` `TOKEN_BUCKETS`, `aggregate.py:38`
+/// `TOKEN_KEYS` — the same seven keys in a different order, which does not matter because the
+/// canonical JSON sorts keys). A struct is those same seven buckets with the key names checked by
+/// the compiler, so a mistyped bucket is a build failure rather than a silently missing number in a
+/// byte-compared golden envelope.
+///
+/// `None` means the provider never reported the bucket, which the envelope keeps distinct from an
+/// observed zero (`aggregate.py:192-202`) — except for `input` and `output`, the two buckets that
+/// are never null on the wire and are written as `0` when absent.
+///
+/// [`Self::default`] is all-absent, which is the dataclass's `field(default_factory=dict)`: an
+/// empty dict and an all-`None` struct produce the same envelope and the same total.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TokenTotals {
+    pub input: Option<i64>,
+    pub output: Option<i64>,
+    pub cache_creation: Option<i64>,
+    pub cache_read: Option<i64>,
+    pub cached_input: Option<i64>,
+    pub thinking: Option<i64>,
+    pub reasoning: Option<i64>,
+}
+
+impl TokenTotals {
+    /// The accumulator `extract.py:174` starts summing from: the two never-null buckets at zero,
+    /// every nullable bucket absent.
+    ///
+    /// The distinction is the point — a provider that reports no `cache_read` must stay "absent"
+    /// rather than claim an observed zero, or the cloud would average a cache-read rate over
+    /// providers that have no such bucket at all.
+    pub(crate) fn zeroed_non_null() -> TokenTotals {
+        TokenTotals {
+            input: Some(0),
+            output: Some(0),
+            ..Default::default()
+        }
+    }
+}
+
+/// Per-run derived facts, harness-neutral — the output of `extract.rs` (`model.py:51-81`).
+///
+/// Scope of "the run" is `extract.py:6-18`: counts, tokens, invocations, in-band assets and
+/// `forbids` merge over the whole transcript tree, while `run_outcome`, `turns`, `loaded_events`
+/// and `truncated` describe the main transcript only.
+///
+/// **Widths:** counters are `u64` and timestamps, byte lengths and token counts are `i64`, matching
+/// the [`SessionFacts`] fields they are summed from. `bytes_read` stays `u64` for that reason even
+/// though it is a byte length.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RunFacts {
+    /// The harness's own session id — **local only**; `envelope.rs` HMACs it into `run_id`.
+    pub session_key: String,
+    pub harness: String,
+    pub harness_version: String,
+    /// Closed enum, `extract.py:entrypoint_class`.
+    pub entrypoint_class: String,
+    /// Closed enum, `extract.py:effort_class`.
+    pub effort: String,
+    /// Closed enum, `extract.py:permission_mode`.
+    pub permission_mode: String,
+    /// An allowlisted model id or `"other"` (`taskcat::allowlist_model`).
+    pub model: String,
+    /// UTC day of `first_ts_ms` (`utc_day`), the cloud's retention key.
+    pub observed_day: String,
+    pub first_ts_ms: i64,
+    pub last_ts_ms: i64,
+    /// Closed enum, `extract.py:run_outcome`.
+    pub run_outcome: String,
+    pub turns: u64,
+    pub tool_calls: u64,
+    /// Calls whose failure class is in [`RATE_BEARING_FAILURES`].
+    pub tool_failures: u64,
+    pub user_denials: u64,
+    pub subagent_runs: u64,
+    pub compactions: u64,
+    pub unpaired_tool_uses: u64,
+    pub repeated_tool_calls: u64,
+    pub tokens: TokenTotals,
+    /// `"harness_usage"` or `"none"` (`extract.py:104`); the gate also allows `"estimated"`.
+    pub tokens_basis: String,
+    /// Allowlisted model id -> that model's buckets. Sub-agents may run on another model.
+    pub tokens_by_model: BTreeMap<String, TokenTotals>,
+    /// MCP server name -> harness attribution markers. Keys are **local only**.
+    pub mcp_corroborations: BTreeMap<String, u64>,
+    /// Tool class -> share of all calls, every class present. **Local only**: it is the input to
+    /// `taskcat::categorize`, and only the resulting category egresses.
+    pub tool_class_shares: BTreeMap<String, f64>,
+    pub invocations: Vec<InvocationObs>,
+    /// Main-transcript loaded-set events only — the set the segments are cut from.
+    pub loaded_events: Vec<LoadedSetEvent>,
+    pub in_band_assets: Vec<InBandAsset>,
+    pub lines_seen: u64,
+    pub lines_unknown_type: u64,
+    pub bytes_read: u64,
+    pub parse_errors: u64,
+    /// Main-transcript truncation only; a child records its own.
+    pub truncated: bool,
+    /// Merged [`SessionFacts::forbids`] of the whole tree — **local only**, fed to the gate checker.
+    pub forbids: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Default for RunFacts {
+    /// The dataclass defaults of `model.py:66-81`.
+    ///
+    /// **Named divergence:** the Python's first eleven fields are required arguments and have no
+    /// default at all. Rust cannot express "required" on a struct literal, so they default to empty
+    /// strings and zeros here. That is a construction convenience for tests (`test_attribute.py:74`
+    /// builds a run from three arguments); `extract()` sets every field explicitly and must never
+    /// spread this default, because an empty `model`, `observed_day` or `run_outcome` is not a
+    /// value the gate accepts.
+    fn default() -> Self {
+        RunFacts {
+            session_key: String::new(),
+            harness: String::new(),
+            harness_version: String::new(),
+            entrypoint_class: String::new(),
+            effort: String::new(),
+            permission_mode: String::new(),
+            model: String::new(),
+            observed_day: String::new(),
+            first_ts_ms: 0,
+            last_ts_ms: 0,
+            run_outcome: String::new(),
+            turns: 0,
+            tool_calls: 0,
+            tool_failures: 0,
+            user_denials: 0,
+            subagent_runs: 0,
+            compactions: 0,
+            unpaired_tool_uses: 0,
+            repeated_tool_calls: 0,
+            tokens: TokenTotals::default(),
+            tokens_basis: "none".to_string(),
+            tokens_by_model: BTreeMap::new(),
+            mcp_corroborations: BTreeMap::new(),
+            tool_class_shares: BTreeMap::new(),
+            invocations: Vec::new(),
+            loaded_events: Vec::new(),
+            in_band_assets: Vec::new(),
+            lines_seen: 0,
+            lines_unknown_type: 0,
+            bytes_read: 0,
+            parse_errors: 0,
+            truncated: false,
+            forbids: BTreeMap::new(),
+        }
+    }
+}
+
+/// The identity one loaded asset has inside one segment (`model.py:84-91`).
+///
+/// Ordering is derived and therefore by `asset_id` first, which is the order `attribute.py:387`
+/// sorts observations into and the order the envelope's `bom[].asset_ids` must be in.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct AssetKey {
+    /// hex64: an HMAC over `"<asset_type>:<name>"`, or a sha256 of content or of a descriptor,
+    /// depending on `key_basis`.
+    pub asset_id: String,
+    /// One of the `ASSET_*` consts.
+    pub asset_type: String,
+    /// One of [`KEY_CONTENT`], [`KEY_DESCRIPTOR`], [`KEY_NAME`].
+    pub key_basis: String,
+    /// The asset's own name — **local only** (display and the dynamic forbids); never egresses.
+    pub name: String,
+    /// One of the `BINDING_*` consts.
+    pub binding: String,
+}
+
+impl Default for AssetKey {
+    /// Empty strings with `binding` at [`BINDING_NA`], which is the dataclass's only defaulted
+    /// field (`model.py:91`). Nothing but a test builds a key this way.
+    fn default() -> Self {
+        AssetKey {
+            asset_id: String::new(),
+            asset_type: String::new(),
+            key_basis: String::new(),
+            name: String::new(),
+            binding: BINDING_NA.to_string(),
+        }
+    }
+}
+
+impl AssetKey {
+    /// Build a key from the five borrowed values, in the positional order `attribute.py:_key_for`
+    /// passes them.
+    pub(crate) fn new(
+        asset_id: &str,
+        asset_type: &str,
+        key_basis: &str,
+        name: &str,
+        binding: &str,
+    ) -> AssetKey {
+        AssetKey {
+            asset_id: asset_id.to_string(),
+            asset_type: asset_type.to_string(),
+            key_basis: key_basis.to_string(),
+            name: name.to_string(),
+            binding: binding.to_string(),
+        }
+    }
+}
+
+/// A stretch of a run with one loaded set (`model.py:94-104`). A new segment starts only when the
+/// settle rule in `attribute/segments.rs` says the loaded set genuinely changed, so a segment
+/// boundary is evidence of a configuration change and not of an async connect completing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Segment {
+    pub index: usize,
+    pub start_ts_ms: i64,
+    pub end_ts_ms: i64,
+    /// Closed enum: `"harness_log"`, `"filesystem"` or `"none"` (`attribute.py:57-59`).
+    pub loaded_set_basis: String,
+    pub asset_keys: Vec<AssetKey>,
+    /// sha256 of the sorted, de-duplicated `asset_id`s of `asset_keys`; empty until computed.
+    pub bom_version: String,
+}
+
+/// An estimated context cost in tokens and the method that produced it — the port of
+/// `AssetObservation.context_cost_est`'s `Tuple[int, str]` (`model.py:114`), which the envelope
+/// writes as `{"tokens": …, "method": …}` (`aggregate.py:222-223`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ContextCost {
+    pub tokens: i64,
+    /// Closed enum `enums.context_cost_method`: one of `listing_bytes_div4`, `file_bytes_div4`,
+    /// `tool_schema_bytes_div4`, `none`.
+    pub method: String,
+}
+
+/// What was observed about one asset in one segment (`model.py:107-115`).
+///
+/// Mutable rather than frozen because `aggregate.py:120-147` merges an asset's observations across
+/// segments in place; the merge is Phase 4's, the mutability it needs is declared here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AssetObservation {
+    pub key: AssetKey,
+    /// One of [`TIER_DIRECT`], [`TIER_LOADED`], [`TIER_INFERRED`]. Every row this collector
+    /// produces is `inferred`: it reads finished logs (`attribute.py:_observe`).
+    pub tier: String,
+    /// Whether a live collector could have attributed this asset `direct` — i.e. whether the run
+    /// contains an invocation of it. It is not a claim that this row is direct evidence.
+    pub direct_evidence_available: bool,
+    pub invocations: Vec<InvocationObs>,
+    pub context_cost_est: Option<ContextCost>,
+    /// Harness-native attribution markers for this asset in this segment. `None` (not `0`) when
+    /// there is nothing to corroborate, because the harness may simply emit no such marker.
+    pub harness_corroborations: Option<u64>,
+}
+
+/// A run with its segments and per-segment observations — the output of `attribute()`
+/// (`model.py:118-123`) and the only input `envelope.rs` accepts.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AttributedRun {
+    pub run: RunFacts,
+    pub segments: Vec<Segment>,
+    /// Segment index -> that segment's observations, sorted by `asset_id`.
+    pub observations: BTreeMap<usize, Vec<AssetObservation>>,
+    /// `asset_id` -> `"<asset_type>:<name>"` — **local only**. It is what the ranking prints and
+    /// what `collect_dynamic` turns into the gate's forbidden needles; it never egresses.
+    pub name_map: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

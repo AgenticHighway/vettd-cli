@@ -336,3 +336,169 @@ fn stamp_grammar_rejects_what_the_reference_rejects() {
         "leap second"
     );
 }
+
+// -- the derived model (`model.py`) ---------------------------------------------------------------
+
+/// Proves: the five named `ASSET_*` consts are exactly [`ASSET_TYPES`], in the same order, and the
+/// three direct-capable ones are exactly [`DIRECT_CAPABLE_TYPES`]. Producers spell the consts and
+/// the gate checks the arrays, so a value could otherwise be added to one and not the other and
+/// only surface as a rejected record on a customer's machine.
+/// Cannot prove either list matches `telemetry-field-gate.json`; `gate.rs` owns that comparison.
+#[test]
+fn asset_type_consts_and_arrays_cannot_drift() {
+    assert_eq!(
+        ASSET_TYPES,
+        [
+            ASSET_SKILL,
+            ASSET_MCP_SERVER,
+            ASSET_AGENT,
+            ASSET_RULES_FILE,
+            ASSET_PROMPT
+        ]
+    );
+    assert_eq!(
+        DIRECT_CAPABLE_TYPES,
+        [ASSET_SKILL, ASSET_MCP_SERVER, ASSET_AGENT]
+    );
+}
+
+/// Proves: a nullable token bucket starts absent and only the two buckets that are never null on
+/// the wire start at zero. "Absent" and "observed zero" are different facts — a provider with no
+/// cache-read bucket must not contribute a zero to a cache-read average across providers — and
+/// `extract.rs` sums into this accumulator, so the distinction has to be right before the first
+/// addition.
+/// Cannot prove the summation preserves it; `extract.rs`'s `sum_tokens` tests do that.
+#[test]
+fn token_totals_start_absent_except_the_two_never_null_buckets() {
+    let start = TokenTotals::zeroed_non_null();
+    assert_eq!(start.input, Some(0));
+    assert_eq!(start.output, Some(0));
+    assert_eq!(start.cache_creation, None);
+    assert_eq!(start.cache_read, None);
+    assert_eq!(start.cached_input, None);
+    assert_eq!(start.thinking, None);
+    assert_eq!(start.reasoning, None);
+
+    assert_eq!(
+        TokenTotals::default(),
+        TokenTotals {
+            input: None,
+            output: None,
+            cache_creation: None,
+            cache_read: None,
+            cached_input: None,
+            thinking: None,
+            reasoning: None,
+        },
+        "the dataclass's empty-dict default is all-absent, not all-zero"
+    );
+}
+
+/// Proves: [`RunFacts::default`] reports no tokens at all — `tokens_basis` is `"none"`, which is
+/// what tells the envelope not to invent a per-model split for a run that recorded nothing. The
+/// eleven fields the Python makes required default to empty here, which is only ever legitimate in
+/// a test builder; the assertion pins that they are empty rather than plausible-looking, so a
+/// producer that forgot one fails the gate loudly instead of shipping a made-up enum value.
+/// Cannot prove `extract()` sets them all; that is asserted where it builds a run.
+#[test]
+fn run_facts_default_is_an_empty_run_with_no_token_basis() {
+    let run = RunFacts::default();
+    assert_eq!(run.tokens_basis, "none");
+    assert_eq!(run.tokens, TokenTotals::default());
+    assert_eq!(run.model, "");
+    assert_eq!(run.observed_day, "");
+    assert_eq!(run.run_outcome, "");
+    assert_eq!(run.turns, 0);
+    assert!(run.invocations.is_empty());
+    assert!(run.tokens_by_model.is_empty());
+    assert!(run.tool_class_shares.is_empty());
+    assert!(run.forbids.is_empty());
+    assert!(!run.truncated);
+}
+
+/// Proves: `binding` is the one [`AssetKey`] field with a default, and that default is
+/// [`BINDING_NA`] (`model.py:91`). A key built without a binding claims nothing about how its hash
+/// is tied to what the harness loaded; defaulting to an empty string would put a value outside the
+/// gate's `binding` enum one forgotten argument away.
+#[test]
+fn asset_key_default_binding_is_not_applicable() {
+    assert_eq!(AssetKey::default().binding, BINDING_NA);
+    assert_eq!(AssetKey::default().asset_id, "");
+}
+
+/// Proves: [`AssetKey::new`] fills the five fields in the positional order `attribute.py`'s
+/// `_key_for` uses, so porting those four call sites cannot silently transpose `key_basis` and
+/// `name` — a transposition that would hash a name into the wrong preimage and still type-check.
+#[test]
+fn asset_key_new_keeps_the_reference_argument_order() {
+    let key = AssetKey::new(
+        "f".repeat(64).as_str(),
+        ASSET_SKILL,
+        KEY_CONTENT,
+        "alpha",
+        BINDING_MTIME,
+    );
+    assert_eq!(
+        key,
+        AssetKey {
+            asset_id: "f".repeat(64),
+            asset_type: ASSET_SKILL.to_string(),
+            key_basis: KEY_CONTENT.to_string(),
+            name: "alpha".to_string(),
+            binding: BINDING_MTIME.to_string(),
+        }
+    );
+}
+
+/// Proves: observations sort by `asset_id` before anything else, because the derived `Ord` follows
+/// declaration order and `asset_id` is declared first. `attribute()` sorts its rows and the
+/// envelope's `bom[].asset_ids` are sorted; both are inputs to a byte-compared golden file, so the
+/// ordering key must not be, say, `asset_type`.
+/// Cannot prove the sort is applied; `attribute/` and `envelope.rs` assert that where they sort.
+#[test]
+fn asset_keys_order_by_asset_id_first() {
+    let mut keys = vec![
+        AssetKey::new("b", ASSET_AGENT, KEY_NAME, "zulu", BINDING_NA),
+        AssetKey::new("a", ASSET_SKILL, KEY_NAME, "alpha", BINDING_NA),
+    ];
+    keys.sort();
+    assert_eq!(
+        keys.iter().map(|k| k.asset_id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+/// Proves: the defaulted halves of [`InvocationObs`], [`Segment`], [`AssetObservation`] and
+/// [`AttributedRun`] mirror the dataclasses' defaults — an unresolved invocation carries no
+/// latency, no failure and no child tokens, and an observation carries `None` corroborations
+/// rather than `0`. `None` and `0` are different rows on the wire (`aggregate.py:_corroborations`
+/// writes null when nothing was seen), so a `#[derive(Default)]` that produced zeros here would
+/// invent evidence.
+#[test]
+fn derived_model_defaults_mirror_the_dataclasses() {
+    let inv = InvocationObs {
+        asset_type: ASSET_SKILL.to_string(),
+        name: "alpha".to_string(),
+        ts_ms: 1,
+        ..Default::default()
+    };
+    assert_eq!(inv.latency_ms, None);
+    assert_eq!(inv.failure_class, None);
+    assert_eq!(inv.child_tokens_total, None);
+    assert!(!inv.is_async && !inv.corroborated);
+
+    let segment = Segment::default();
+    assert_eq!(segment.bom_version, "");
+    assert!(segment.asset_keys.is_empty());
+
+    let obs = AssetObservation::default();
+    assert_eq!(obs.harness_corroborations, None);
+    assert_eq!(obs.context_cost_est, None);
+    assert!(!obs.direct_evidence_available);
+    assert!(obs.invocations.is_empty());
+
+    let attributed = AttributedRun::default();
+    assert!(attributed.segments.is_empty());
+    assert!(attributed.observations.is_empty());
+    assert!(attributed.name_map.is_empty());
+}
