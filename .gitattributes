@@ -1,0 +1,5 @@
+crates/vettd-cli/tests/fixtures/observe/**/*.json text eol=lf
+crates/vettd-cli/tests/fixtures/observe/**/*.jsonl text eol=lf
+crates/vettd-cli/tests/fixtures/observe/**/*.ndjson text eol=lf
+crates/vettd-cli/tests/fixtures/observe/**/*.txt text eol=lf
+crates/vettd-cli/tests/fixtures/observe/**/*.md text eol=lf

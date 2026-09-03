@@ -93,9 +93,9 @@ pub(crate) struct FsIndex {
 
 impl FsIndex {
     /// Indexes `root` (typically `~/.claude`), taking the second descriptor source from
-    /// `dirs::home_dir()`; `None` yields an empty index rather than an error.
+    /// the configured user home; `None` yields an empty index rather than an error.
     pub(crate) fn new(root: Option<&Path>) -> FsIndex {
-        FsIndex::with_home(root, dirs::home_dir().as_deref())
+        FsIndex::with_home(root, crate::cli::user_home_dir().as_deref())
     }
     /// [`FsIndex::new`] with the home directory injected, so tests never read the real `$HOME`.
     pub(crate) fn with_home(root: Option<&Path>, home: Option<&Path>) -> FsIndex {

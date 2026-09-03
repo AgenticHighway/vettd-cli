@@ -39,7 +39,7 @@ use crate::observe::rank::rank;
 use crate::observe::render::render_with_prices;
 use crate::observe::source::Source;
 use crate::observe::store::{LedgerRow, Store};
-use crate::observe::submit::submit_envelope;
+use crate::observe::submit::{submit_envelope, SubmitOutcome};
 use crate::observe::types::{utc_day, SessionFacts, SessionKind, SessionRef};
 use crate::submit::AuthConfig;
 
@@ -69,11 +69,10 @@ pub(crate) fn run_observe(args: &ObserveArgs, json: bool) -> i32 {
             return EXIT_RUNTIME;
         }
     };
-    // Resolved before the disclosure so the disclosure can name the host a payload would actually
-    // reach — including for a bare `--submit`, whose destination comes from the saved config and
-    // is not visible in the arguments. A "Destination:" line that appeared only for an explicit
-    // URL would understate egress in exactly the case the user has least visibility into. It also
-    // fails fast: nobody's transcripts should be read to build a payload that cannot be sent.
+    // The data/source disclosure must precede even the saved credential read. A bare `--submit`
+    // gets its destination from that user file, so the resolved destination follows immediately
+    // afterwards while still preceding every session read.
+    eprint!("{}", render_observe_disclosure(None, &root));
     let auth = match resolve_submit_target(args) {
         Ok(auth) => auth,
         Err((code, message)) => {
@@ -84,10 +83,9 @@ pub(crate) fn run_observe(args: &ObserveArgs, json: bool) -> i32 {
     let destination = auth
         .as_ref()
         .map(|auth| crate::network::endpoint_display_host(&auth.endpoint).to_string());
-    eprint!(
-        "{}",
-        render_observe_disclosure(destination.as_deref(), &root)
-    );
+    if let Some(destination) = destination {
+        eprintln!("  Destination: {destination}");
+    }
 
     if !crate::cli::telemetry_enabled_from_config() {
         eprint!("{}", not_configured_guidance());
@@ -116,7 +114,7 @@ fn resolve_root(args: &ObserveArgs) -> Result<PathBuf, String> {
     if let Some(root) = &args.root {
         return Ok(root.clone());
     }
-    dirs::home_dir()
+    crate::cli::user_home_dir()
         .map(|home| home.join(".claude"))
         .ok_or_else(|| "Unable to determine home directory — pass --root".to_string())
 }
@@ -388,8 +386,25 @@ fn send(
         .filter(|row| outcome.persisted().any(|run_id| *run_id == row.run_id))
         .cloned()
         .collect();
-    store.commit(staged, &held)?;
+    // Cursors are currently staged as one batch, without a run-id association. If even one run
+    // was not confirmed, retaining the prior cursor batch is the only lossless choice: accepted
+    // runs may be resent as duplicates, while advancing all cursors would make the missing run
+    // look unchanged forever. Ledger rows remain safe to commit independently by run id.
+    let confirmed_cursors = if all_pending_persisted(pending, &outcome) {
+        staged
+    } else {
+        &[]
+    };
+    store.commit(confirmed_cursors, &held)?;
     Ok(EXIT_OK)
+}
+
+fn all_pending_persisted(pending: &[LedgerRow], outcome: &SubmitOutcome) -> bool {
+    pending.iter().all(|row| {
+        outcome
+            .persisted()
+            .any(|persisted| persisted == &row.run_id)
+    })
 }
 
 /// One ledger row per record in `envelope`, keyed on the hash of the canonical record.
@@ -714,7 +729,7 @@ fn add_machine_identity(sets: &mut BTreeMap<String, BTreeSet<String>>) {
     );
     add(
         "home_dir",
-        dirs::home_dir().map(|h| h.to_string_lossy().to_string()),
+        crate::cli::user_home_dir().map(|h| h.to_string_lossy().to_string()),
     );
 }
 

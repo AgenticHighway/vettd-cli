@@ -99,7 +99,7 @@ pub enum Commands {
     /// Observe local Claude Code sessions and report per-asset evidence (opt-in)
     Observe {
         #[command(flatten)]
-        args: crate::observe::ObserveArgs,
+        args: Box<crate::observe::ObserveArgs>,
         #[command(subcommand)]
         action: Option<crate::observe::ObserveSubcommand>,
     },
@@ -407,8 +407,28 @@ impl Default for AccessConfig {
 /// with where rules, the scan cache, and other per-user state already live.
 const ACCESS_CONFIG_FILE: &str = ".vettd.toml";
 
+/// Resolve the user's home, with an explicit override for isolated CLI runs.
+///
+/// `dirs::home_dir()` uses platform APIs on Windows, so changing `HOME` or `USERPROFILE` does not
+/// reliably isolate a subprocess. The override is also useful to operators who need vettd's
+/// per-user state somewhere other than the OS profile directory.
+pub(crate) fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("VETTD_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
+/// Resolve the config directory consistently with [`user_home_dir`] when it is overridden.
+pub(crate) fn user_config_dir() -> Option<PathBuf> {
+    match std::env::var_os("VETTD_HOME").filter(|value| !value.is_empty()) {
+        Some(home) => Some(PathBuf::from(home).join(".config")),
+        None => dirs::config_dir(),
+    }
+}
+
 fn load_access_config() -> AccessConfig {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = user_home_dir() else {
         return AccessConfig::default();
     };
     let path = home.join(".vettd").join(ACCESS_CONFIG_FILE);
@@ -483,7 +503,7 @@ pub(crate) fn telemetry_enabled_from_config() -> bool {
 /// The path [`telemetry_enabled_from_config`] reads, for the messages that tell a user where to
 /// write their opt-in and for `vettd observe enable`.
 pub(crate) fn access_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".vettd").join(ACCESS_CONFIG_FILE))
+    user_home_dir().map(|home| home.join(".vettd").join(ACCESS_CONFIG_FILE))
 }
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,18 @@ pub(crate) fn enable() -> i32 {
         eprintln!("Unable to determine home directory — cannot locate ~/.vettd/.vettd.toml");
         return EXIT_RUNTIME;
     };
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    enable_at(&path)
+}
+
+fn enable_at(path: &Path) -> i32 {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            eprintln!("Failed to read {}: {error}", path.display());
+            return EXIT_RUNTIME;
+        }
+    };
     if existing.contains(TELEMETRY_TABLE) {
         println!("{} already has a [telemetry] table.", path.display());
         println!("Set this line to enable observation:");
@@ -45,7 +56,7 @@ pub(crate) fn enable() -> i32 {
         }
     }
     let updated = format!("{}{}", existing.trim_end(), TELEMETRY_SNIPPET);
-    if let Err(e) = std::fs::write(&path, updated) {
+    if let Err(e) = std::fs::write(path, updated) {
         eprintln!("Failed to write {}: {e}", path.display());
         return EXIT_RUNTIME;
     }
@@ -242,19 +253,23 @@ fn first_duplicate_key(text: &str) -> Option<String> {
 
 /// Consume a JSON string literal whose opening quote was already read.
 fn read_string(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> Option<String> {
-    let mut out = String::new();
+    // Keep the encoded token intact while locating its closing quote, then let serde_json apply
+    // JSON's escape semantics. Comparing encoded spellings would miss that `"a"` and `"\u0061"`
+    // are the same object key even though serde_json will decode both to `a`.
+    let mut encoded = String::from('"');
     while let Some((_, c)) = chars.next() {
         match c {
             '\\' => {
-                // Keep the escape verbatim; exact unescaping is not needed to compare key identity
-                // as long as it is applied consistently, and JSON forbids a raw quote inside.
-                out.push('\\');
+                encoded.push('\\');
                 if let Some((_, next)) = chars.next() {
-                    out.push(next);
+                    encoded.push(next);
                 }
             }
-            '"' => return Some(out),
-            other => out.push(other),
+            '"' => {
+                encoded.push('"');
+                return serde_json::from_str(&encoded).ok();
+            }
+            other => encoded.push(other),
         }
     }
     None

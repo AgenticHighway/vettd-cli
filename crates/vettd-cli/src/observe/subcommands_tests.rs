@@ -74,6 +74,38 @@ fn escapes_do_not_desynchronise_the_scan() {
     );
 }
 
+/// Invariant: duplicate identity is defined by the decoded JSON string, not by its encoded bytes.
+/// Otherwise an attacker can put a leak under `"records"`, overwrite it under `"\u0072ecords"`,
+/// and rely on serde_json retaining only the second value before the telemetry gate runs.
+#[test]
+fn equivalent_json_key_escapes_are_duplicates() {
+    assert_eq!(
+        first_duplicate_key(r#"{"records": {"leak": true}, "\u0072ecords": []}"#).as_deref(),
+        Some("records")
+    );
+    assert_eq!(
+        first_duplicate_key(r#"{"a\"b": 1, "a\u0022b": 2}"#).as_deref(),
+        Some("a\"b")
+    );
+}
+
+/// Invariant: a read failure must never turn an existing user-authored config into an empty file.
+/// Invalid UTF-8 is a portable way to make `read_to_string` fail while preserving a real file.
+#[test]
+fn enable_preserves_an_unreadable_existing_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".vettd.toml");
+    let original = b"[access]\nmode = \"licensed\"\n\xff";
+    std::fs::write(&path, original).expect("write invalid UTF-8 config");
+
+    assert_eq!(enable_at(&path), EXIT_RUNTIME);
+    assert_eq!(
+        std::fs::read(&path).expect("read preserved config"),
+        original,
+        "a read error must leave the user-authored file byte-for-byte unchanged"
+    );
+}
+
 /// Invariant: a clean envelope scans clean. Without this the other assertions could all pass with a
 /// scanner that reported a duplicate for everything.
 #[test]

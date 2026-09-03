@@ -59,6 +59,32 @@ fn blank_coverage() -> Coverage {
     }
 }
 
+fn pending_row(run_id: &str) -> LedgerRow {
+    LedgerRow {
+        run_id: run_id.to_string(),
+        endpoint_host: "collector.invented.test".to_string(),
+        harness: "claude_code".to_string(),
+        record_sha256: format!("hash-{run_id}"),
+        emitted_day: "2027-01-15".to_string(),
+    }
+}
+
+/// Invariant: a partial or malformed success response cannot advance the shared cursor batch.
+/// Re-sending a confirmed run is an idempotent duplicate; losing an unconfirmed run is permanent.
+#[test]
+fn cursors_require_confirmation_for_every_pending_run() {
+    let pending = vec![pending_row("run-a"), pending_row("run-b")];
+    let mut partial = SubmitOutcome::default();
+    partial.accepted.insert("run-a".to_string());
+    partial.deadline_exceeded.insert("run-b".to_string());
+    assert!(!all_pending_persisted(&pending, &partial));
+
+    let mut complete = partial;
+    complete.deadline_exceeded.clear();
+    complete.duplicate.insert("run-b".to_string());
+    assert!(all_pending_persisted(&pending, &complete));
+}
+
 /// Read every file of every group from byte 0 and commit the resulting cursors, so the store is in
 /// the state a completed submission would leave it in.
 fn seed_cursors(store: &mut Store, source: &ClaudeCodeSource, groups: &[Group]) {

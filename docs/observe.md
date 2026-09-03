@@ -192,6 +192,9 @@ treats it as one would be wrong.
 | `~/.vettd/observer_secret` | 32 random bytes, `0600`. The HMAC key behind every pseudonym. Never transmitted, never auto-rotated. |
 | `~/.vettd/observer/observer-v1.sqlite3` | Read cursors and the submission ledger. Created only by `--submit`. |
 
+Set `VETTD_HOME` to relocate vettd's per-user state for an isolated run. Under that directory,
+the paths above keep their `.vettd/` prefix and saved auth lives at `.config/vettd/config.json`.
+
 Cursors record how far into each transcript has been read. They are **change detectors**, not
 resume points: a run whose transcript grew is rebuilt from byte zero, because a record is the
 cumulative state of that run and not a partial delta. An unchanged run is skipped entirely.

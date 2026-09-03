@@ -29,9 +29,11 @@ pub fn default_observer_secret_path() -> Result<PathBuf, String> {
 }
 
 fn vettd_dir() -> Result<PathBuf, String> {
-    dirs::home_dir().map(|h| h.join(".vettd")).ok_or_else(|| {
-        "Unable to determine home directory — cannot resolve scanner identity paths".to_string()
-    })
+    crate::cli::user_home_dir()
+        .map(|h| h.join(".vettd"))
+        .ok_or_else(|| {
+            "Unable to determine home directory — cannot resolve scanner identity paths".to_string()
+        })
 }
 
 /// Write `bytes` to `path`, owner-only: the parent directory is created and

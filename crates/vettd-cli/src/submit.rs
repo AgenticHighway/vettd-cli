@@ -44,7 +44,7 @@ impl fmt::Debug for AuthConfig {
 
 /// Return the path to `~/.config/vettd/config.json`.
 pub fn auth_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("vettd").join("config.json"))
+    crate::cli::user_config_dir().map(|d| d.join("vettd").join("config.json"))
 }
 
 /// Load the global auth config. Returns `None` if the file doesn't exist.

@@ -26,10 +26,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 
 use crate::observe::canonical::hex_sha256;
 use crate::observe::types::Cursor;
@@ -51,7 +51,7 @@ pub(crate) struct LedgerRow {
 
 /// `~/.vettd/observer/observer-v1.sqlite3`.
 pub(crate) fn default_store_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
+    crate::cli::user_home_dir()
         .map(|home| {
             home.join(".vettd")
                 .join("observer")
@@ -64,6 +64,27 @@ pub(crate) fn default_store_path() -> Result<PathBuf, String> {
 
 pub(crate) struct Store {
     conn: Connection,
+}
+
+struct StoreConnectError {
+    message: String,
+    corruption: bool,
+}
+
+impl StoreConnectError {
+    fn sqlite(context: String, error: rusqlite::Error) -> StoreConnectError {
+        StoreConnectError {
+            corruption: is_corruption_code(error.sqlite_error_code()),
+            message: format!("{context}: {error}"),
+        }
+    }
+}
+
+fn is_corruption_code(code: Option<ErrorCode>) -> bool {
+    matches!(
+        code,
+        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
+    )
 }
 
 impl Store {
@@ -79,45 +100,68 @@ impl Store {
         }
         match Store::connect(path) {
             Ok(store) => Ok(store),
-            Err(_) => {
-                // Fail open: move the unusable file aside, keep it for diagnosis, and start clean.
+            Err(error) if error.corruption => {
+                // Fail open only for actual corruption. A lock, permission error or I/O failure is
+                // transient or environmental; renaming a valid database in those cases can split
+                // concurrent observers across two stores and lose their ledger state.
                 let aside = path.with_extension(format!("sqlite3.corrupt-{}", unix_seconds()));
-                let _ = fs::rename(path, &aside);
+                fs::rename(path, &aside).map_err(|rename_error| {
+                    format!(
+                        "{}; failed to preserve the corrupt store as {}: {rename_error}",
+                        error.message,
+                        aside.display()
+                    )
+                })?;
                 Store::connect(path).map_err(|e| {
                     format!(
                         "Failed to open the observer store {} even after moving the previous file to {}: {e}",
                         path.display(),
-                        aside.display()
+                        aside.display(),
+                        e = e.message
                     )
                 })
             }
+            Err(error) => Err(error.message),
         }
     }
 
-    fn connect(path: &Path) -> Result<Store, String> {
-        let conn = Connection::open(path)
-            .map_err(|e| format!("Failed to open observer store {}: {e}", path.display()))?;
+    fn connect(path: &Path) -> Result<Store, StoreConnectError> {
+        let conn = Connection::open(path).map_err(|e| {
+            StoreConnectError::sqlite(
+                format!("Failed to open observer store {}", path.display()),
+                e,
+            )
+        })?;
         // WAL and a busy timeout because a second `vettd observe` may be running; NORMAL synchronous
         // because a lost cursor costs a re-read, not correctness.
+        // Install the timeout before journal_mode, which itself may need a lock.
+        conn.busy_timeout(Duration::from_secs(5)).map_err(|e| {
+            StoreConnectError::sqlite("Failed to set the observer store busy timeout".into(), e)
+        })?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA busy_timeout=5000;
              PRAGMA synchronous=NORMAL;",
         )
-        .map_err(|e| format!("Failed to configure the observer store: {e}"))?;
+        .map_err(|e| {
+            StoreConnectError::sqlite("Failed to configure the observer store".into(), e)
+        })?;
         let store = Store { conn };
-        store.ensure_schema()?;
+        store.ensure_schema().map_err(|e| {
+            StoreConnectError::sqlite("Failed to create the observer store schema".into(), e)
+        })?;
         // A file can open and configure cleanly and still not be our schema; a read proves it.
         store
-            .has_any_cursor()
-            .map_err(|e| format!("Observer store is not usable: {e}"))?;
+            .conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM observer_cursors)", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|e| StoreConnectError::sqlite("Observer store is not usable".into(), e))?;
         Ok(store)
     }
 
-    fn ensure_schema(&self) -> Result<(), String> {
-        self.conn
-            .execute_batch(
-                "
+    fn ensure_schema(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "
                 CREATE TABLE IF NOT EXISTS observer_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -141,8 +185,7 @@ impl Store {
                     PRIMARY KEY (run_id, endpoint_host)
                 );
                 ",
-            )
-            .map_err(|e| format!("Failed to create the observer store schema: {e}"))
+        )
     }
 
     /// Record the secret's fingerprint, clearing both tables when it changed.

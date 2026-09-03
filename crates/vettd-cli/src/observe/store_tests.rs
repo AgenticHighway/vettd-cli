@@ -75,6 +75,38 @@ fn store_open_tolerates_missing_and_corrupt_db() {
     );
 }
 
+/// Invariant: only SQLite's corruption classifications permit destructive recovery. Busy, locked,
+/// permission and I/O failures can all describe a valid database and must be returned untouched.
+#[test]
+fn only_corruption_errors_are_recoverable() {
+    assert!(is_corruption_code(Some(ErrorCode::DatabaseCorrupt)));
+    assert!(is_corruption_code(Some(ErrorCode::NotADatabase)));
+    assert!(!is_corruption_code(Some(ErrorCode::DatabaseBusy)));
+    assert!(!is_corruption_code(Some(ErrorCode::PermissionDenied)));
+    assert!(!is_corruption_code(Some(ErrorCode::SystemIoFailure)));
+}
+
+/// Invariant: an ordinary open failure leaves the target untouched. A directory at the database
+/// path produces a portable non-corruption error; treating it as corruption would rename user
+/// data aside and replace it with a new database.
+#[test]
+fn non_corruption_open_error_does_not_move_the_target() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("observer-v1.sqlite3");
+    fs::create_dir(&path).expect("directory at database path");
+
+    let error = Store::open_at(&path)
+        .err()
+        .expect("a directory is not a database");
+    assert!(error.contains("Failed to open observer store"), "{error}");
+    assert!(path.is_dir(), "the original target must remain a directory");
+    assert_eq!(
+        fs::read_dir(dir.path()).expect("read parent").count(),
+        1,
+        "no corruption backup or replacement database may be created"
+    );
+}
+
 /// Invariant: a rotated observer secret clears BOTH tables. The secret keys every `run_id`, so a
 /// surviving cursor would attribute new bytes to a pseudonym the server has never seen, and a
 /// surviving ledger row would suppress a run the server does not have. The same secret must clear

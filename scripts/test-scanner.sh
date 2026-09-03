@@ -695,7 +695,7 @@ fi
 
 # ── 16. Passive observation (`vettd observe`) ───────────────────────
 #
-# Runs against the committed fixture harness home in a throwaway $HOME, with
+# Runs against the committed fixture harness home in a throwaway VETTD_HOME, with
 # the clock and the emission day pinned, so the payload is reproducible and
 # nothing here touches the developer's own ~/.claude or ~/.vettd.
 
@@ -710,7 +710,7 @@ cp "$OBSERVE_FIXTURES/golden/secret.bin" "$OBSERVE_HOME/.vettd/observer_secret"
 OBSERVE_PAYLOAD="$OUT_DIR/${TIMESTAMP}-observe.json"
 
 # Pinned so a fixture timestamp cannot drift out of the window or read as truncated.
-OBS="env HOME=$OBSERVE_HOME VETTD_SCANNER_UUID=00000000-0000-4000-8000-000000000000 $RUN observe"
+OBS="env VETTD_HOME=$OBSERVE_HOME HOME=$OBSERVE_HOME VETTD_SCANNER_UUID=00000000-0000-4000-8000-000000000000 $RUN observe"
 OBS_ARGS="--root $OBSERVE_ROOT --now-ms 1800000000000 --today 2027-01-15 --window-days 3650"
 
 expect_ok       "observe --help"                    $RUN observe --help
@@ -730,7 +730,7 @@ expect_contains "observe status reports enabled" "enabled" $OBS status
 expect_ok       "observe --dry-run"                 $OBS $OBS_ARGS --dry-run --out "$OBSERVE_PAYLOAD"
 expect_json_file "observe payload is valid JSON"    "$OBSERVE_PAYLOAD"
 expect_contains_stderr "observe discloses on stderr before reading" "This observation will include" \
-    env HOME="$OBSERVE_HOME" $RUN observe $OBS_ARGS --dry-run --out "$OBSERVE_PAYLOAD"
+    env VETTD_HOME="$OBSERVE_HOME" HOME="$OBSERVE_HOME" $RUN observe $OBS_ARGS --dry-run --out "$OBSERVE_PAYLOAD"
 
 # The gate accepts what it just produced, which is the point of `check`.
 expect_ok       "observe check on its own payload"  $OBS check "$OBSERVE_PAYLOAD"

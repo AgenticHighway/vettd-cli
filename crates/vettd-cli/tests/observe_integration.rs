@@ -5,7 +5,7 @@
 //! a refusal, what the exit code is, and whether any of it touched the user's home. None of that is
 //! observable from a unit test that calls `run_observe` in-process.
 //!
-//! Every test runs against a throwaway `$HOME` seeded by [`seed_home`] and a *copy* of the fixture
+//! Every test runs against a throwaway `VETTD_HOME` seeded by [`seed_home`] and a *copy* of the fixture
 //! harness home, so a test can never read (or mutate) anything under `tests/fixtures/`. The clock,
 //! the day and the HMAC secret are pinned via the hidden test hooks so payload bytes are
 //! reproducible.
@@ -113,12 +113,12 @@ impl CliOutput {
     }
 }
 
-/// Run the real binary with `$HOME` pointed at `home` and every ambient influence removed.
+/// Run the real binary with vettd's explicit home pointed at `home`.
 fn run_vettd(args: &[&str], home: &Path) -> CliOutput {
     let mut cmd = Command::new(BIN);
     cmd.args(args);
+    cmd.env("VETTD_HOME", home);
     cmd.env("HOME", home);
-    // Windows resolves the home directory from these, not from HOME.
     cmd.env("USERPROFILE", home);
     cmd.env_remove("HOMEDRIVE");
     cmd.env_remove("HOMEPATH");
@@ -914,6 +914,7 @@ fn results_body(run_ids: &[String], status: &str) -> Value {
 fn spawn_vettd(args: &[&str], home: &Path) -> Child {
     let mut cmd = Command::new(BIN);
     cmd.args(args);
+    cmd.env("VETTD_HOME", home);
     cmd.env("HOME", home);
     cmd.env("USERPROFILE", home);
     cmd.env_remove("HOMEDRIVE");
@@ -1235,6 +1236,44 @@ fn observe_submit_400_exits_1_without_ledger_write() {
     );
 }
 
+/// Invariant: a 200 response is not whole-batch success when a run is marked deadline-exceeded.
+/// Its cursor must remain at the prior position so the next invocation rebuilds and resends it.
+#[test]
+fn observe_deadline_exceeded_run_is_resent() {
+    let server = MockServer::start();
+    let home = seed_home_with_auth(&scan_endpoint(&server));
+    let root = copy_harness_home(home.path(), FIXTURE_HOME);
+    let run_ids = learn_run_ids(home.path(), &root);
+    let args = observe_args(root.to_str().unwrap(), &["--submit"]);
+
+    let mut timed_out = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "deadline_exceeded"));
+    });
+    let first = run_vettd(&args, home.path());
+    assert_eq!(first.status, 0, "{}", first.stderr);
+    timed_out.assert_calls(1);
+    assert!(first.stderr.contains("will be resent"), "{}", first.stderr);
+
+    timed_out.delete();
+    let accepted = server.mock(|when, then| {
+        when.method(POST).path(INGEST_PATH);
+        then.status(200)
+            .json_body(results_body(&run_ids, "accepted"));
+    });
+    let retried = run_vettd(&args, home.path());
+    assert_eq!(retried.status, 0, "{}", retried.stderr);
+    accepted.assert_calls(1);
+    assert!(
+        retried
+            .stderr
+            .contains("Observations accepted: 1 new, 0 replaced, 0 duplicate"),
+        "the unconfirmed run must be rebuilt and sent again: {}",
+        retried.stderr
+    );
+}
+
 /// Invariant: a 429 is retried, and `Retry-After` decides when rather than the built-in backoff.
 ///
 /// The synchronisation is deliberate and not a sleep race: the throttling mock answers with
@@ -1329,7 +1368,8 @@ fn observe_submit_refuses_public_http_endpoint() {
             "nothing may be produced for a refused endpoint: {:?}",
             out.stdout_text()
         );
-        // Refused before anything was read, so no store and no disclosure of a destination.
+        // Refused before anything was read, so no store and no claimed destination. The source
+        // disclosure still precedes the config/endpoint validation on every path.
         assert!(
             !home.path().join(".vettd/observer").exists(),
             "a refused endpoint must not create the store"
@@ -1339,6 +1379,7 @@ fn observe_submit_refuses_public_http_endpoint() {
             "and must not claim a destination it will not use: {}",
             out.stderr
         );
+        assert!(out.stderr.contains("This observation will include:"));
     }
 }
 
@@ -1437,8 +1478,8 @@ fn observe_submit_without_credentials_exits_3_before_reading() {
         out.stderr
     );
     assert!(
-        !out.stderr.contains("This observation will include:"),
-        "the disclosure is moot when the command refuses before reading: {}",
+        out.stderr.contains("This observation will include:"),
+        "the disclosure must precede even a credential/configuration refusal: {}",
         out.stderr
     );
     assert!(out.stdout.is_empty());
