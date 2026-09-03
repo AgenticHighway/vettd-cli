@@ -1122,3 +1122,52 @@ fn an_empty_parent_failure_class_falls_through_to_the_child() {
         "the child's class must win over an empty parent class"
     );
 }
+
+/// Invariant: `tokens_by_model`'s keys, and `run.model`, are always allowlisted ids — never a raw
+/// local model string. `envelope_record::tokens_by_model` relies on this to emit an array that is
+/// sorted and unique *in the key it writes*. Were a raw id to reach it, the array's length would
+/// count the machine's non-allowlisted models and its order would encode their lexicographic rank:
+/// a channel the field gate cannot see, because the gate inspects values and this would live in
+/// the ordering. Self-hosted and proxy-aliased models are exactly the non-allowlisted case, so the
+/// leak would target the users with the most to hide.
+/// Cannot prove: that `allowlist_model`'s list is the right list.
+#[test]
+fn tokens_by_model_keys_are_always_allowlisted() {
+    use crate::observe::taskcat::{allowlist_model, MODEL_OTHER};
+
+    let mut facts = session();
+    facts.usages = usages(vec![
+        Usage {
+            model: "zzz-internal-proxy".to_string(),
+            ..usage("m1", 10, 20)
+        },
+        Usage {
+            model: "aaa-internal-proxy".to_string(),
+            ..usage("m2", 30, 40)
+        },
+        Usage {
+            model: "claude-opus-5".to_string(),
+            ..usage("m3", 1, 2)
+        },
+    ]);
+    let run = extract(&facts, 1_800_000_000_000);
+
+    for key in run.tokens_by_model.keys() {
+        assert_eq!(
+            allowlist_model(Some(key)),
+            key.as_str(),
+            "raw model id {key:?} reached RunFacts"
+        );
+    }
+    assert_eq!(allowlist_model(Some(&run.model)), run.model.as_str());
+    assert_eq!(
+        run.tokens_by_model.len(),
+        2,
+        "both internal ids must collapse into a single `{MODEL_OTHER}` bucket, not two rows"
+    );
+    assert_eq!(
+        run.tokens_by_model[MODEL_OTHER].input,
+        Some(40),
+        "the collapsed bucket sums both, so neither id is recoverable from the totals"
+    );
+}

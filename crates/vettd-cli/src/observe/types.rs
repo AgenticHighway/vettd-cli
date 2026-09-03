@@ -148,12 +148,18 @@ impl Stats {
             max: first,
             sumsq: 0,
         };
+        // Saturating, not `+=`: the release profile sets no `overflow-checks`, so a bare `+=`
+        // panics in debug and silently wraps in release — and a wrapped sum is a plausible-looking
+        // wrong number on the wire. Saturating instead pins the value at the type's ceiling, which
+        // is far outside every gate bound, so the payload is refused rather than believed.
+        // Unreachable while `sumsq` is representable (sum^2 <= n * sumsq), but that is an argument,
+        // not a guarantee.
         for &value in values {
-            stats.n += 1;
-            stats.sum += value;
+            stats.n = stats.n.saturating_add(1);
+            stats.sum = stats.sum.saturating_add(value);
             stats.min = stats.min.min(value);
             stats.max = stats.max.max(value);
-            stats.sumsq += square(value);
+            stats.sumsq = stats.sumsq.saturating_add(square(value));
         }
         Some(stats)
     }
@@ -166,12 +172,13 @@ impl Stats {
         if other.n == 0 {
             return *self;
         }
+        // Saturating for the same reason as `from_values`: a wrapped merge is silently wrong.
         Stats {
-            n: self.n + other.n,
-            sum: self.sum + other.sum,
+            n: self.n.saturating_add(other.n),
+            sum: self.sum.saturating_add(other.sum),
             min: self.min.min(other.min),
             max: self.max.max(other.max),
-            sumsq: self.sumsq + other.sumsq,
+            sumsq: self.sumsq.saturating_add(other.sumsq),
         }
     }
 }

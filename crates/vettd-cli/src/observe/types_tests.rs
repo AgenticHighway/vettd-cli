@@ -502,3 +502,33 @@ fn derived_model_defaults_mirror_the_dataclasses() {
     assert!(attributed.observations.is_empty());
     assert!(attributed.name_map.is_empty());
 }
+
+/// Invariant: accumulating a summary saturates rather than wrapping. The release profile sets no
+/// `overflow-checks`, so a bare `+=` panics in debug and silently wraps in release — and a wrapped
+/// sum is a plausible-looking wrong number that the gate's bounds would happily admit. Saturating
+/// pins the value at the type ceiling instead, far outside every gate bound, so such a payload is
+/// refused rather than believed. Unreachable while `sumsq` stays representable (`sum^2 <= n*sumsq`),
+/// but that is an argument about inputs, not a property of the code.
+/// Cannot prove: that saturation is preferable to refusing at this layer — the caller's `sumsq`
+/// check is what actually turns it into a refusal.
+#[test]
+fn stats_accumulation_saturates_rather_than_wrapping() {
+    let stats = Stats::from_values(&[i64::MAX, 1]).expect("two values");
+    assert_eq!(stats.n, 2);
+    assert_eq!(stats.sum, i64::MAX, "a wrapped sum would be negative here");
+
+    let low = Stats::from_values(&[i64::MIN, -1]).expect("two values");
+    assert_eq!(low.sum, i64::MIN, "and positive here");
+
+    let huge = Stats {
+        n: u64::MAX,
+        sum: i64::MAX,
+        min: 0,
+        max: i64::MAX,
+        sumsq: u128::MAX,
+    };
+    let merged = huge.merge(&huge);
+    assert_eq!(merged.n, u64::MAX);
+    assert_eq!(merged.sum, i64::MAX);
+    assert_eq!(merged.sumsq, u128::MAX);
+}

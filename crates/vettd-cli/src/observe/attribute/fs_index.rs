@@ -98,7 +98,7 @@ impl FsIndex {
         FsIndex::with_home(root, dirs::home_dir().as_deref())
     }
     /// [`FsIndex::new`] with the home directory injected, so tests never read the real `$HOME`.
-    pub(super) fn with_home(root: Option<&Path>, home: Option<&Path>) -> FsIndex {
+    pub(crate) fn with_home(root: Option<&Path>, home: Option<&Path>) -> FsIndex {
         let Some(root) = root else {
             return FsIndex::default();
         };
