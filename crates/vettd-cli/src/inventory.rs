@@ -129,42 +129,19 @@ pub fn handle_list(page: u32, sort: &str, reverse: bool, json: bool) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn handle_search(
-    query: &str,
-    page: u32,
-    sort: &str,
-    reverse: bool,
-    json: bool,
-    languages: &[String],
-    agent_compatibility: &[String],
-    rankings: Option<&str>,
-) {
-    let beta = crate::network::search_beta_testing_enabled();
-    let rankings_value =
-        directory::validate_search_filters(languages, agent_compatibility, rankings, beta);
+pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bool) {
+    // The user-scoped inventory has no `SEARCH_BETA_TESTING` search API — the
+    // directory-search filters and the `POST` body shape don't apply here.
+    // Always use the plain `GET /api/inventory` query path.
     require_auth_or_exit();
 
-    let result = if beta {
-        let body = directory::build_search_body(
-            query,
-            page,
-            sort,
-            reverse,
-            languages,
-            agent_compatibility,
-            rankings_value,
-        );
-        inventory_client::post_json::<DirectoryListResponse>(&inventory_base_url(), &body)
-    } else {
-        let url = format!(
-            "{}?search={}&{}&page={page}",
-            inventory_base_url(),
-            directory::percent_encode(query),
-            directory::api_sort_params(sort, reverse),
-        );
-        inventory_client::fetch_json::<DirectoryListResponse>(&url)
-    };
+    let url = format!(
+        "{}?search={}&{}&page={page}",
+        inventory_base_url(),
+        directory::percent_encode(query),
+        directory::api_sort_params(sort, reverse),
+    );
+    let result = inventory_client::fetch_json::<DirectoryListResponse>(&url);
 
     match result {
         Ok(resp) => {

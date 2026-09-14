@@ -101,25 +101,41 @@ fn directory_response_beta() -> Value {
             "sourceType": "github",
             "scannerRunCount": 12,
             "internalRiskScore": 0.02,
-            "language": "python",
+            "docLanguage": "python",
             "agentCompatibility": ["claude-code", "cursor"],
             "rankings": {
                 "stars": 812,
                 "skillsShLeaderboardRank": 14,
                 "numberOfAggregators": 3,
                 "officialClaudeMarketplace": true
+            },
+            "llm_scan": {
+                "max_severity": "LOW",
+                "finding_count": 1,
+                "primary_threats": ["unpinned-dependency-install"]
+            },
+            "cli_security": {
+                "grade": "C",
+                "packages": [{"package": "playwright", "ecosystem": "npm"}]
+            },
+            "vettd_scan": {
+                "overall_grade": "B",
+                "trust_level": "cautious",
+                "has_malicious_findings": false
             }
         }],
         "total": 1,
         "page": 1,
-        "totalPages": 1
+        "totalPages": 1,
+        "mock": false
     })
 }
 
 /// What the exact same CLI call prints to stdout for `directory_response_beta()`:
-/// allow-listed fields plus `language`/`agentCompatibility`/`rankings` from
-/// the beta response, `internalRiskScore` dropped. `freshness` is omitted
-/// since the server didn't send it.
+/// allow-listed fields only (`internalRiskScore` dropped), the server's
+/// `docLanguage` surfaced under the CLI's own `language` key, plus
+/// `agentCompatibility`/`rankings`/`llm_scan`/`cli_security`/`vettd_scan`
+/// forwarded as-is. `freshness` is omitted since the server didn't send it.
 fn expected_directory_output_beta() -> Value {
     json!({
         "skills": [{
@@ -140,11 +156,26 @@ fn expected_directory_output_beta() -> Value {
                 "skillsShLeaderboardRank": 14,
                 "numberOfAggregators": 3,
                 "officialClaudeMarketplace": true
+            },
+            "llm_scan": {
+                "max_severity": "LOW",
+                "finding_count": 1,
+                "primary_threats": ["unpinned-dependency-install"]
+            },
+            "cli_security": {
+                "grade": "C",
+                "packages": [{"package": "playwright", "ecosystem": "npm"}]
+            },
+            "vettd_scan": {
+                "overall_grade": "B",
+                "trust_level": "cautious",
+                "has_malicious_findings": false
             }
         }],
         "total": 1,
         "page": 1,
-        "totalPages": 1
+        "totalPages": 1,
+        "mock": false
     })
 }
 
@@ -234,33 +265,133 @@ fn mount_inventory_get(server: &MockServer, response_body: &Value) {
     });
 }
 
-/// Mount `POST /api/inventory` (new shape), requiring both the bearer token
-/// and an exact JSON body match.
-fn mount_inventory_post<'a>(
-    server: &'a MockServer,
-    expected_request_body: &Value,
-    response_body: &Value,
-) -> httpmock::Mock<'a> {
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/inventory")
-            .header("authorization", format!("Bearer {MOCK_API_KEY}"))
-            .json_body(expected_request_body.clone());
-        then.status(200).json_body(response_body.clone());
-    })
-}
-
-/// The default POST body the CLI sends when no `--language`/
-/// `--agent-compatibility`/`--rankings` flags are given.
+/// The default POST body the CLI sends when no filter flags are given
+/// (`assetType` defaults to `"skill"`, so the mcp-only arrays are absent).
 fn default_search_body(query: &str) -> Value {
     json!({
         "search": query,
         "page": 1,
         "sort": "newest",
         "reverse": false,
+        "assetType": "skill",
         "languages": [],
         "agentCompatibility": [],
+        "sources": [],
+        "rankFilters": {},
         "rankings": null
+    })
+}
+
+/// The default POST body for an `--asset-type mcp` search with no filters:
+/// same base keys plus the always-present mcp-only arrays.
+fn default_mcp_search_body(query: &str) -> Value {
+    json!({
+        "search": query,
+        "page": 1,
+        "sort": "newest",
+        "reverse": false,
+        "assetType": "mcp",
+        "languages": [],
+        "agentCompatibility": [],
+        "sources": [],
+        "rankFilters": {},
+        "rankings": null,
+        "mcpCategory": [],
+        "deployment": [],
+        "registryType": []
+    })
+}
+
+/// An `mcpServers`-envelope response (assetType: "mcp"), carrying one
+/// `github:upstash/context7` hit with the OSV dependency-security block.
+fn mcp_response() -> Value {
+    json!({
+        "mcpServers": [{
+            "score": 0.75,
+            "rank": 1,
+            "mcp_id": "github:upstash/context7",
+            "name": "io.github.upstash/context7",
+            "description": "Fetches up-to-date, version-specific docs and code examples.",
+            "repo_url": "https://github.com/upstash/context7",
+            "status": "active",
+            "mcp_category": "server",
+            "sources": ["repo_scan", "official_registry", "glama"],
+            "registry_type": "npm",
+            "package_identifier": "@upstash/context7-mcp",
+            "deployment": "hybrid",
+            "transport": "stdio",
+            "has_installable_package": true,
+            "has_remote": true,
+            "license": "MIT License",
+            "stars": 61421,
+            "language": "TypeScript",
+            "weekly_downloads": 867314,
+            "security_source": "osv",
+            "security_vuln_count": 0,
+            "security_max_severity": null,
+            "security_direct_deps_scanned": 8,
+            "security_direct_deps_vuln_count": 44,
+            "security_direct_deps_with_vulns": ["zod", "jose", "undici", "express"],
+            "security_direct_deps_max_severity": "HIGH",
+            "internalRiskScore": 0.02
+        }],
+        "total": 1,
+        "page": 1,
+        "totalPages": 1,
+        "mock": false,
+        "indexReady": true
+    })
+}
+
+/// What the CLI's raw-json dump renders for `mcp_response()`: allow-listed
+/// snake_case fields only (`internalRiskScore` dropped).
+fn expected_mcp_output() -> Value {
+    json!({
+        "mcpServers": [{
+            "score": 0.75,
+            "rank": 1,
+            "mcp_id": "github:upstash/context7",
+            "name": "io.github.upstash/context7",
+            "description": "Fetches up-to-date, version-specific docs and code examples.",
+            "repo_url": "https://github.com/upstash/context7",
+            "status": "active",
+            "mcp_category": "server",
+            "sources": ["repo_scan", "official_registry", "glama"],
+            "registry_type": "npm",
+            "package_identifier": "@upstash/context7-mcp",
+            "deployment": "hybrid",
+            "transport": "stdio",
+            "has_installable_package": true,
+            "has_remote": true,
+            "license": "MIT License",
+            "stars": 61421,
+            "language": "TypeScript",
+            "weekly_downloads": 867314,
+            "security_source": "osv",
+            "security_vuln_count": 0,
+            "security_direct_deps_scanned": 8,
+            "security_direct_deps_vuln_count": 44,
+            "security_direct_deps_with_vulns": ["zod", "jose", "undici", "express"],
+            "security_direct_deps_max_severity": "HIGH"
+        }],
+        "total": 1,
+        "page": 1,
+        "totalPages": 1,
+        "mock": false,
+        "indexReady": true
+    })
+}
+
+/// An `mcpServers` response for an empty catalog: no hits, `indexReady:false`
+/// (onboarding/outage — distinct from "no results for this query").
+fn mcp_response_index_not_ready() -> Value {
+    json!({
+        "mcpServers": [],
+        "total": 0,
+        "page": 1,
+        "totalPages": 0,
+        "mock": false,
+        "indexReady": false
     })
 }
 
@@ -409,55 +540,30 @@ fn inventory_search_without_config_is_rejected_before_any_request() {
     assert!(result.stderr.contains("not authenticated"));
 }
 
-// Regression tests for #231: invalid beta-gated filters must be rejected
-// before the auth check runs. An unauthenticated invocation with a bad filter
-// should exit 1 with the filter-validation error, NOT exit 3 with the auth
-// error.
+// `inventory search` has no beta search API — `SEARCH_BETA_TESTING` and the
+// directory-search filter flags don't apply. The command always uses the plain
+// `GET /api/inventory` path, and clap rejects `--language` / `--asset-type` /
+// etc. as unknown arguments.
 #[test]
-fn inventory_search_with_beta_gated_filter_without_flag_exits_before_auth_check() {
+fn inventory_search_rejects_directory_filter_flags() {
     let home = new_temp_home();
-    // No config seeded — no auth.
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--language", "python"],
-        home.path(),
-        &[],
-    );
-
-    assert_eq!(
-        result.status, 1,
-        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
-        result.stderr
-    );
-    assert!(
-        result
-            .stderr
-            .contains("--language/--agent-compatibility/--rankings require SEARCH_BETA_TESTING=1"),
-        "stderr should mention the beta-gate message: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn inventory_search_with_invalid_rankings_and_beta_flag_exits_before_auth_check() {
-    let home = new_temp_home();
-    // SEARCH_BETA_TESTING is set so the filter-validation step runs, but the
-    // rankings value is invalid JSON → must fail at validation, before auth.
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--rankings", "not-json"],
-        home.path(),
-        &[("SEARCH_BETA_TESTING", "1")],
-    );
-
-    assert_eq!(
-        result.status, 1,
-        "expected filter-validation exit (1), not auth exit (3); stderr: {}",
-        result.stderr
-    );
-    assert!(
-        result.stderr.contains("--rankings is not valid JSON"),
-        "stderr should mention the invalid-JSON message: {}",
-        result.stderr
-    );
+    for flag in [
+        ["--language", "python"],
+        ["--asset-type", "mcp"],
+        ["--source", "seed"],
+    ] {
+        let result = run_vettd(
+            &["inventory", "search", "notes", flag[0], flag[1]],
+            home.path(),
+            &[("SEARCH_BETA_TESTING", "1")],
+        );
+        assert_ne!(result.status, 0, "{flag:?} should be rejected");
+        assert!(
+            result.stderr.contains("unexpected argument") || result.stderr.contains("unrecognized"),
+            "{flag:?} stderr: {}",
+            result.stderr
+        );
+    }
 }
 
 #[test]
@@ -542,8 +648,11 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
         "page": 1,
         "sort": "newest",
         "reverse": false,
+        "assetType": "skill",
         "languages": ["python", "typescript"],
         "agentCompatibility": ["claude-code"],
+        "sources": [],
+        "rankFilters": {},
         "rankings": {"stars": 50, "officialClaudeMarketplace": true}
     });
     let mock = mount_directory_post(&server, &expected_body, &directory_response_beta());
@@ -576,14 +685,16 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
     assert_json_eq(&result.stdout, &expected_directory_output_beta());
 }
 
+/// Even with `SEARCH_BETA_TESTING=1`, `inventory search` still uses the plain
+/// `GET /api/inventory` path — it never switches to a POST body.
 #[test]
-fn beta_search_inventory_sends_bearer_token_and_post_body() {
+fn inventory_search_ignores_search_beta_testing_and_uses_get() {
     let server = MockServer::start();
-    let mock = mount_inventory_post(
-        &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
-    );
+    mount_inventory_get(&server, &inventory_response_basic());
+    let post_inv = server.mock(|when, then| {
+        when.method(POST).path("/api/inventory");
+        then.status(200).json_body(inventory_response_basic());
+    });
     let home = seed_home("http://127.0.0.1:1/api/scans/ingest", MOCK_API_KEY);
 
     let result = run_vettd(
@@ -596,7 +707,8 @@ fn beta_search_inventory_sends_bearer_token_and_post_body() {
     );
 
     assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    mock.assert();
+    assert_json_eq(&result.stdout, &expected_inventory_output_basic());
+    post_inv.assert_calls(0);
 }
 
 #[test]
@@ -610,9 +722,272 @@ fn language_filter_without_search_beta_testing_is_rejected() {
     );
 
     assert_eq!(result.status, 1);
-    assert!(result
-        .stderr
-        .contains("--language/--agent-compatibility/--rankings require SEARCH_BETA_TESTING=1"));
+    assert!(result.stderr.contains("require SEARCH_BETA_TESTING=1"));
+}
+
+/// `--source` / `--rank-filter` / `--asset-type mcp` / mcp-only filters are
+/// all beta-gated the same way `--language` is: a hard exit-1 error, and no
+/// HTTP request is made.
+#[test]
+fn new_filter_flags_without_search_beta_testing_are_rejected_before_any_request() {
+    let cases: &[&[&str]] = &[
+        &["directory", "search", "pdf", "--source", "marketplace"],
+        &[
+            "directory",
+            "search",
+            "pdf",
+            "--rank-filter",
+            "search_rank_seed_rank=5",
+        ],
+        &["directory", "search", "pdf", "--asset-type", "mcp"],
+        &["directory", "search", "pdf", "--mcp-category", "server"],
+        &["directory", "search", "pdf", "--deployment", "hybrid"],
+        &["directory", "search", "pdf", "--registry-type", "npm"],
+    ];
+    for args in cases {
+        let server = MockServer::start();
+        let get_dir = server.mock(|when, then| {
+            when.method(GET).path("/api/directory");
+            then.status(200).json_body(directory_response_basic());
+        });
+        let post_dir = server.mock(|when, then| {
+            when.method(POST).path("/api/directory");
+            then.status(200).json_body(directory_response_beta());
+        });
+        let home = seed_home(&ingest_endpoint(&server), MOCK_API_KEY);
+        let result = run_vettd(
+            args,
+            home.path(),
+            &[("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server))],
+        );
+
+        assert_ne!(result.status, 0, "{args:?} should exit non-zero");
+        assert!(
+            result.stderr.contains("require SEARCH_BETA_TESTING=1"),
+            "{args:?} stderr: {}",
+            result.stderr
+        );
+        get_dir.assert_calls(0);
+        post_dir.assert_calls(0);
+    }
+}
+
+#[test]
+fn invalid_rank_filter_is_rejected_before_any_request() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/api/directory");
+        then.status(200).json_body(directory_response_beta());
+    });
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    for bad in ["no-equals", "k=abc", "=10"] {
+        let result = run_vettd(
+            &["directory", "search", "pdf", "--rank-filter", bad],
+            home.path(),
+            &[
+                ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+                ("SEARCH_BETA_TESTING", "1"),
+            ],
+        );
+        assert_eq!(result.status, 1, "{bad:?} stderr: {}", result.stderr);
+        assert!(result.stderr.contains("--rank-filter"));
+    }
+    mock.assert_calls(0);
+}
+
+#[test]
+fn beta_search_threads_source_and_rank_filter_into_post_body() {
+    let server = MockServer::start();
+    let expected_body = json!({
+        "search": "pdf",
+        "page": 1,
+        "sort": "newest",
+        "reverse": false,
+        "assetType": "skill",
+        "languages": [],
+        "agentCompatibility": [],
+        "sources": ["marketplace", "seed"],
+        "rankFilters": {"search_rank_skills_sh_rank": 100},
+        "rankings": null
+    });
+    let mock = mount_directory_post(&server, &expected_body, &directory_response_beta());
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    let result = run_vettd(
+        &[
+            "directory",
+            "search",
+            "pdf",
+            "--source",
+            "marketplace",
+            "--source",
+            "seed",
+            "--rank-filter",
+            "search_rank_skills_sh_rank=100",
+            "--json",
+        ],
+        home.path(),
+        &[
+            ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+            ("SEARCH_BETA_TESTING", "1"),
+        ],
+    );
+
+    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
+    mock.assert();
+    assert_json_eq(&result.stdout, &expected_directory_output_beta());
+}
+
+#[test]
+fn beta_search_renders_scan_verdicts_in_json_dump() {
+    let server = MockServer::start();
+    mount_directory_post(
+        &server,
+        &default_search_body("pdf"),
+        &directory_response_beta(),
+    );
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    let result = run_vettd(
+        &["directory", "search", "pdf", "--json"],
+        home.path(),
+        &[
+            ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+            ("SEARCH_BETA_TESTING", "1"),
+        ],
+    );
+
+    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
+    let raw: Value = serde_json::from_str(&result.stdout).expect("stdout is valid json");
+    assert_eq!(raw["skills"][0]["llm_scan"]["max_severity"], "LOW");
+    assert_eq!(raw["skills"][0]["cli_security"]["grade"], "C");
+    assert_eq!(raw["skills"][0]["vettd_scan"]["overall_grade"], "B");
+}
+
+// ---------------------------------------------------------------------------
+// assetType: "mcp" — different request body key + different response envelope.
+// ---------------------------------------------------------------------------
+
+/// Mount `POST /api/directory` asserting an exact `{"assetType":"mcp",...}`
+/// body and returning an `mcpServers` envelope.
+fn mount_mcp_post<'a>(
+    server: &'a MockServer,
+    expected_request_body: &Value,
+    response_body: &Value,
+) -> httpmock::Mock<'a> {
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/directory")
+            .json_body(expected_request_body.clone());
+        then.status(200).json_body(response_body.clone());
+    })
+}
+
+#[test]
+fn mcp_search_sends_asset_type_mcp_body_and_renders_mcp_servers() {
+    let server = MockServer::start();
+    let mock = mount_mcp_post(
+        &server,
+        &default_mcp_search_body("context7"),
+        &mcp_response(),
+    );
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    let result = run_vettd(
+        &[
+            "directory",
+            "search",
+            "context7",
+            "--asset-type",
+            "mcp",
+            "--json",
+        ],
+        home.path(),
+        &[
+            ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+            ("SEARCH_BETA_TESTING", "1"),
+        ],
+    );
+
+    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
+    mock.assert();
+    assert_json_eq(&result.stdout, &expected_mcp_output());
+    assert!(result.stdout.contains("github:upstash/context7"));
+}
+
+#[test]
+fn mcp_search_threads_mcp_filters_into_body() {
+    let server = MockServer::start();
+    let expected_body = json!({
+        "search": "context7",
+        "page": 1,
+        "sort": "newest",
+        "reverse": false,
+        "assetType": "mcp",
+        "languages": [],
+        "agentCompatibility": [],
+        "sources": ["glama"],
+        "rankFilters": {},
+        "rankings": null,
+        "mcpCategory": ["server"],
+        "deployment": ["hybrid"],
+        "registryType": ["npm"]
+    });
+    let mock = mount_mcp_post(&server, &expected_body, &mcp_response());
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    let result = run_vettd(
+        &[
+            "directory",
+            "search",
+            "context7",
+            "--asset-type",
+            "mcp",
+            "--source",
+            "glama",
+            "--mcp-category",
+            "server",
+            "--deployment",
+            "hybrid",
+            "--registry-type",
+            "npm",
+            "--json",
+        ],
+        home.path(),
+        &[
+            ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+            ("SEARCH_BETA_TESTING", "1"),
+        ],
+    );
+
+    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
+    mock.assert();
+}
+
+#[test]
+fn mcp_search_index_not_ready_is_distinct_from_no_results() {
+    let server = MockServer::start();
+    mount_mcp_post(
+        &server,
+        &default_mcp_search_body("context7"),
+        &mcp_response_index_not_ready(),
+    );
+    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+
+    let result = run_vettd(
+        &["directory", "search", "context7", "--asset-type", "mcp"],
+        home.path(),
+        &[
+            ("VETTD_DIRECTORY_ENDPOINT", &ingest_endpoint(&server)),
+            ("SEARCH_BETA_TESTING", "1"),
+        ],
+    );
+
+    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
+    let out = strip_ansi(&result.stdout);
+    assert!(out.contains("indexReady=false"), "stdout: {out}");
+    assert!(!out.contains("No MCP servers for"));
 }
 
 #[test]
@@ -662,38 +1037,6 @@ fn beta_search_without_json_prints_only_table() {
     assert!(out.contains("Showing 1 of 1 assets"));
 }
 
-#[test]
-fn beta_inventory_search_json_emits_only_json() {
-    let server = MockServer::start();
-    mount_inventory_post(
-        &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
-    );
-    let home = seed_home("http://127.0.0.1:1/api/scans/ingest", MOCK_API_KEY);
-
-    let result = run_vettd(
-        &["inventory", "search", "notes", "--json"],
-        home.path(),
-        &[
-            ("VETTD_INVENTORY_ENDPOINT", &ingest_endpoint(&server)),
-            ("SEARCH_BETA_TESTING", "1"),
-        ],
-    );
-
-    assert_eq!(result.status, 0, "stderr: {}", result.stderr);
-    let out = strip_ansi(&result.stdout);
-    // No SEARCH_BETA_TESTING markers may leak into stdout — output is
-    // driven by --json only, identical to the non-beta path.
-    assert!(!out.contains("SEARCH_BETA_TESTING"));
-    assert!(!out.contains("raw json"));
-    assert!(!out.contains("formatted"));
-    assert!(!out.contains("[B]"));
-    // The whole stdout must be a single valid JSON document.
-    let parsed: Value = serde_json::from_str(&out).expect("stdout must parse as JSON");
-    assert_eq!(parsed, expected_inventory_output_basic());
-}
-
 // ---------------------------------------------------------------------------
 // Manual testing helper — not run by `cargo test` (see #[ignore]). Stands up
 // the same httpmock server the automated tests use and blocks, so you can
@@ -733,18 +1076,21 @@ fn manual_mock_server_for_local_testing() {
             "page": 1,
             "sort": "newest",
             "reverse": false,
+            "assetType": "skill",
             "languages": ["python"],
             "agentCompatibility": ["claude-code"],
+            "sources": [],
+            "rankFilters": {},
             "rankings": {"stars": 50}
         }),
         &directory_response_beta(),
     );
-    mount_inventory_get(&server, &inventory_response_basic());
-    mount_inventory_post(
+    mount_mcp_post(
         &server,
-        &default_search_body("notes"),
-        &inventory_response_basic(),
+        &default_mcp_search_body("context7"),
+        &mcp_response(),
     );
+    mount_inventory_get(&server, &inventory_response_basic());
 
     let ingest = ingest_endpoint(&server);
 
@@ -765,10 +1111,13 @@ fn manual_mock_server_for_local_testing() {
     eprintln!("  export SEARCH_BETA_TESTING=1");
     eprintln!("  export VETTD_DIRECTORY_ENDPOINT={ingest}");
     eprintln!("  ./target/debug/vettd directory search pdf --json");
-    eprintln!("  ./target/debug/vettd directory search pdf --language python --agent-compatibility claude-code --rankings '{{\"stars\": 50}}' --json\n");
+    eprintln!("  ./target/debug/vettd directory search pdf --language python --agent-compatibility claude-code --rankings '{{\"stars\": 50}}' --json");
+    eprintln!("  ./target/debug/vettd directory search context7 --asset-type mcp --json\n");
     eprintln!(
-        "  export VETTD_INVENTORY_ENDPOINT={ingest}   # inventory also needs the `auth` step above for its api key"
+        "Inventory search always uses the plain GET path (SEARCH_BETA_TESTING has no effect);"
     );
+    eprintln!("it needs the `auth` step above for its api key:");
+    eprintln!("  export VETTD_INVENTORY_ENDPOINT={ingest}");
     eprintln!("  ./target/debug/vettd inventory search notes --json\n");
     eprintln!("Blocking for 10 minutes — Ctrl-C to stop early.\n");
 
