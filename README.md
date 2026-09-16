@@ -40,9 +40,14 @@ setup or pass one directly at submission time.
 
 ```bash
 brew tap AgenticHighway/tap
+brew trust --formula AgenticHighway/tap/vettd
 brew install vettd
 vettd scan quick
 ```
+
+Homebrew 6.0.0 and later require non-official taps to be explicitly
+trusted before their formulae can be installed, so the `brew trust`
+step above is required.
 
 Homebrew is the smoothest install path on macOS while direct-download
 artifacts are not yet signed and notarized.
