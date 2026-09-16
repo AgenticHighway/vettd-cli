@@ -87,7 +87,7 @@ Go to [GitHub Actions](https://github.com/AgenticHighway/vettd-cli/actions) and 
 
 3. **upload-s3** — Uploads binaries to `s3://ah-scanner-releases/vX.Y.Z/`, generates SHA-256 checksums, writes `latest.json`, asks AWS KMS to sign it, and uploads both `latest.json` and `latest.signature.json`
 
-4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/proov.rb` update to `AgenticHighway/homebrew-tap`
+4. **update-homebrew-tap** — Computes the macOS/Linux SHA-256 hashes from the release artifacts and pushes the matching `Formula/vettd.rb` update to `AgenticHighway/homebrew-tap`
 
 ### 7. Verify the release
 
@@ -98,7 +98,7 @@ After the workflow completes:
 open https://github.com/AgenticHighway/vettd-cli/releases/tag/vX.Y.Z
 
 # Check the Homebrew tap formula was refreshed
-open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/proov.rb
+open https://github.com/AgenticHighway/homebrew-tap/blob/main/Formula/vettd.rb
 
 # Check the public hosted manifest and detached signature
 curl -s https://vettd.agentichighway.ai/api/scanner/latest | python3 -m json.tool
