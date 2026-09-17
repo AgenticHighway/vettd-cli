@@ -527,7 +527,17 @@ fn directory_search_human_table_via_config_endpoint() {
     let out = strip_ansi(&result.stdout);
     assert!(out.contains("pdf-summarizer"));
     assert!(out.contains("[A]"));
-    assert!(out.contains("13 scanners")); // scanner_run_count (12) + 1
+    // vettd#879: the table header renamed `rating` → `safety`, dropped the
+    // `scanned by` column, and added a `signals` column.
+    assert!(out.contains("safety"));
+    assert!(out.contains("signals"));
+    assert!(!out.contains("scanned by"));
+    assert!(
+        !out.contains("scanner"),
+        "scanned-by cell wording is gone: {out}"
+    );
+    // The fixture carries no `signalCount` (pre-deploy server) → `—`.
+    assert!(out.contains("—"), "absent signalCount renders —: {out}");
 }
 
 #[test]
