@@ -1022,6 +1022,14 @@ pub fn handle_view(slug: &str, json: bool) {
         println!("{}", serde_json::to_string_pretty(&val).unwrap_or_default());
         return;
     }
+    // Full 7-category signal envelope, fetched from the public signals
+    // endpoint using the audit `id`; any failure (incl. 404 — no published
+    // signal record) degrades to no rows — view must not error on it.
+    let signals = signals_for_detail(detail.id.as_deref());
+    // One label width for every row — the signals block carries the longest
+    // labels printed (17 today — `Unresolvable refs`; the longest fixed row
+    // label, `Last scanned:`, is 13), so it drives the column.
+    let label_w = signals_table_label_w();
     let (c, h, m, l, i) = count_by_severity(&detail.findings);
 
     let mut scanned_by: Vec<&str> = detail
@@ -1076,57 +1084,92 @@ pub fn handle_view(slug: &str, json: bool) {
         println!("  {desc}");
     }
     println!();
-    println!("  {DIM}{:<13}{RESET}  {gc}{}{RESET}", "Grade:", grade_str);
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {gc}{}{RESET}",
+        "Grade:",
+        grade_str,
+        label_w = label_w
+    );
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "Version:",
-        detail.version.as_deref().unwrap_or("—")
+        detail.version.as_deref().unwrap_or("—"),
+        label_w = label_w
     );
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "License:",
-        detail.license.as_deref().unwrap_or("—")
+        detail.license.as_deref().unwrap_or("—"),
+        label_w = label_w
     );
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "Author:",
-        detail.author.as_deref().unwrap_or("—")
+        detail.author.as_deref().unwrap_or("—"),
+        label_w = label_w
     );
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "Category:",
-        detail.category.as_deref().unwrap_or("—")
+        detail.category.as_deref().unwrap_or("—"),
+        label_w = label_w
     );
-    println!("  {DIM}{:<13}{RESET}  {}", "Source:", source);
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {}",
+        "Source:",
+        source,
+        label_w = label_w
+    );
     if let Some(url) = &detail.source_url {
         if !url.is_empty() {
-            println!("  {DIM}{:<13}{RESET}  {}", "Source URL:", url);
+            println!(
+                "  {DIM}{:<label_w$}{RESET}  {}",
+                "Source URL:",
+                url,
+                label_w = label_w
+            );
         }
     }
-    println!("  {DIM}{:<13}{RESET}  {}", "Contains:", contains_str);
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {}",
+        "Contains:",
+        contains_str,
+        label_w = label_w
+    );
     println!();
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "Findings:",
-        fmt_severity_breakdown_colored(c, h, m, l, i)
+        fmt_severity_breakdown_colored(c, h, m, l, i),
+        label_w = label_w
     );
-    if let Some(signals) = detail
-        .signal_categories
-        .as_deref()
-        .and_then(fmt_signal_categories_compact)
-    {
-        println!("  {DIM}{:<13}{RESET}  {}", "Signals:", signals);
-    }
-    println!("  {DIM}{:<13}{RESET}  {}", "Scanned by:", scanned_by_str);
-    println!("  {DIM}{:<13}{RESET}  {}", "Last scanned:", last_scanned);
+    // Full signals block — same selection and value precedence as compare,
+    // rendered as a single column (see `render_signals_block`).
+    print!(
+        "{}",
+        render_signals_block(&signals.signals, None, detail.signal_count, None, label_w)
+    );
     println!(
-        "  {DIM}{:<13}{RESET}  {}",
+        "  {DIM}{:<label_w$}{RESET}  {}",
+        "Scanned by:",
+        scanned_by_str,
+        label_w = label_w
+    );
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {}",
+        "Last scanned:",
+        last_scanned,
+        label_w = label_w
+    );
+    println!(
+        "  {DIM}{:<label_w$}{RESET}  {}",
         "Files:",
         detail
             .file_count
             .map(|n| n.to_string())
             .as_deref()
-            .unwrap_or("—")
+            .unwrap_or("—"),
+        label_w = label_w
     );
     // Slice 2 freshness detail.
     for line in freshness::fmt_freshness_detail(&detail.freshness.as_ref()) {
@@ -1245,14 +1288,25 @@ fn fetch_signals(detail_id: &str) -> Result<serde_json::Value, ReadError> {
     fetch_signals_url(&url)
 }
 
-/// Fetch and decode the signals envelope for one compare side.
+/// Fetch and decode the signals envelope for one audit id.
 ///
-/// `Result`-returning so compare can map any [`ReadError`] (including a 404 —
+/// `Result`-returning so callers can map any [`ReadError`] (including a 404 —
 /// no published signal record) to "no signal rows" without exiting, unlike
 /// [`handle_signals`] which exits on the same errors.
-fn fetch_signals_for_compare(detail_id: &str) -> Result<SkillSignalsResponse, ReadError> {
+fn fetch_signals_envelope(detail_id: &str) -> Result<SkillSignalsResponse, ReadError> {
     let raw = fetch_signals(detail_id)?;
     serde_json::from_value(raw).map_err(|e| ReadError::Decode(e.to_string()))
+}
+
+/// Full signal envelope for a directory detail record, or no rows when the
+/// record carries no audit id or the signals read fails (including 404 — no
+/// published signal record). Non-exiting: `directory view` and
+/// `directory compare` must not error out because signals are unavailable.
+fn signals_for_detail(detail_id: Option<&str>) -> SkillSignalsResponse {
+    match detail_id {
+        Some(id) if !id.is_empty() => fetch_signals_envelope(id).unwrap_or_default(),
+        _ => SkillSignalsResponse::default(),
+    }
 }
 
 /// The anonymous signals GET at an explicit URL — `Result`-returning so the
@@ -1378,6 +1432,12 @@ fn fmt_signal_row(row: &SignalEnvelopeRow) -> String {
 /// Compact one-line signal summary for directory cards (list/search output).
 /// One short token per non-empty category, joined with `·`; `None` when no
 /// category has rows (keeps the table from flooding).
+///
+/// NOTE (vettd#879): no longer called by the CLI — `directory view` now
+/// renders the full vertical signals block like `directory compare` instead
+/// of this compact line. Kept (not deleted speculatively) because list/search
+/// responses still carry `signalCategories` and a future surface may want it.
+#[allow(dead_code)]
 pub(crate) fn fmt_signal_categories_compact(cats: &[SignalCategorySummary]) -> Option<String> {
     let tokens: Vec<String> = cats
         .iter()
@@ -1422,20 +1482,20 @@ pub(crate) fn fmt_signal_categories_compact(cats: &[SignalCategorySummary]) -> O
 }
 
 // ---------------------------------------------------------------------------
-// Compare signals block (vettd#879)
+// Signals block (vettd#879)
 //
-// `directory compare` shows a fixed selection of signals vertically, one per
-// line, sourced from the full 7-category envelope (`GET
+// `directory compare` and `directory view` show a fixed selection of signals
+// vertically, one per line, sourced from the full 7-category envelope (`GET
 // /api/assets/skill_audit/{id}/signals`) rather than the deliberately narrow
 // 3-category `signalCategories` summary on the detail payload.
 // ---------------------------------------------------------------------------
 
-/// Selected signals shown in `directory compare`, in display order:
+/// Selected signals shown in the vertical signals block, in display order:
 /// `(ruleId, display label)`. The license row already shows the license, so
 /// the `characteristics/declared-license` signal (which carries an empty
 /// `valueText`) is excluded; `sentiment/watchers` is shown in its place,
 /// keeping the sentiment family together.
-const COMPARE_SIGNAL_SELECTION: &[(&str, &str)] = &[
+const SIGNAL_SELECTION: &[(&str, &str)] = &[
     ("performance/static-context-tokens", "Context tokens"),
     ("reliability/eval-test-case-count", "Eval test cases"),
     (
@@ -1451,26 +1511,32 @@ const COMPARE_SIGNAL_SELECTION: &[(&str, &str)] = &[
     ("characteristics/primary-language", "Primary language"),
 ];
 
-/// Width of the label column in the compare signals block: the longest
-/// selected label plus a 2-space gap, so every row's value columns line up
-/// exactly and a separator always separates label from value (the longest
-/// label today, `Unresolvable refs`, is 17 chars → 19). Computed from the
-/// selection so the column can never drift out of sync with the labels.
-fn compare_signals_label_w() -> usize {
-    let longest = COMPARE_SIGNAL_SELECTION
+/// Width of each side's value column. Every row of the compare table shares
+/// this one width — fixed rows and the signals block — so value A and value B
+/// sit at identical byte offsets on every line.
+const COMPARE_VALUE_W: usize = 30;
+
+/// Longest selected signal label, in display chars. The signals block's
+/// label column is sized from this so every signal row's values line up.
+/// Computed from the selection so the column can never drift out of sync
+/// with the labels.
+fn signals_label_w() -> usize {
+    SIGNAL_SELECTION
         .iter()
         .map(|(_, label)| label.chars().count())
         .max()
-        .unwrap_or(0);
-    // `Total signals` shares the column on its own line.
-    let widest = longest.max("Total signals".chars().count());
-    widest + 2
+        .unwrap_or(0)
 }
 
-/// Width of each side's value column in the compare signals block. With the
-/// 2-space indent, label column and inter-column gaps the whole line stays
-/// under ~61 chars, well within normal terminal widths.
-const COMPARE_SIGNALS_VALUE_W: usize = 18;
+/// The single label-column width for a directory command's rows — the fixed
+/// rows and the signals block share it, so value A starts at the same column
+/// on every line. The signals selection carries the longest labels printed
+/// (17 today — `Unresolvable refs`; the longest fixed row label,
+/// `Last scanned:`, is 13), so it drives the width; the 13 floor keeps the
+/// fixed rows aligned if the selection is ever shortened below them.
+fn signals_table_label_w() -> usize {
+    signals_label_w().max(13)
+}
 
 /// Pick the display value for one signal rule on one side.
 ///
@@ -1478,7 +1544,7 @@ const COMPARE_SIGNALS_VALUE_W: usize = 18;
 /// `.0`) → non-empty `valueText` → `severity` → count of the rule's list rows
 /// on this side (only when there is more than one — a lone scalar row with no
 /// usable value is absent, not a list) → `—`.
-fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
+fn signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     let matching: Vec<&SignalEnvelopeRow> = rows
         .iter()
         .filter(|r| r.rule_id.as_deref() == Some(rule_id))
@@ -1515,40 +1581,60 @@ fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     "—".to_string()
 }
 
-/// Render the vertical signals block for `directory compare`: a dim heading,
-/// a `Total signals` line (per-side `signal_count`, `—` when absent), then one
-/// line per selected signal with the side-A and side-B values.
+/// Append one signals-block row to `out`. `b` carries the second value column
+/// when a second side is present (`directory compare`); `None` renders a
+/// single value column (`directory view`). Two-column values are truncated to
+/// `COMPARE_VALUE_W` so the right column stays put; single-column values are
+/// never clipped.
+fn push_signal_row(out: &mut String, label: &str, a: String, b: Option<String>, label_w: usize) {
+    match b {
+        Some(b) => out.push_str(&format!(
+            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}\n",
+            label,
+            truncate_to_display(&a, COMPARE_VALUE_W),
+            truncate_to_display(&b, COMPARE_VALUE_W),
+            label_w = label_w,
+            val_w = COMPARE_VALUE_W,
+        )),
+        None => out.push_str(&format!(
+            "  {DIM}{:<label_w$}{RESET}  {}\n",
+            label,
+            a,
+            label_w = label_w,
+        )),
+    }
+}
+
+/// Render the vertical signals block: a dim heading, a `Total signals` line
+/// (per-side `signal_count`, `—` when absent), then one line per selected
+/// signal. `b_rows`/`b_signal_count` as `None` renders a single value column
+/// (`directory view`); with both sides the columns line up against the
+/// caller's unified label width (`directory compare`).
 ///
 /// Pure — no stdout, so the layout is unit-testable without capturing output
 /// (mirrors how `render_cards_table` was split out of `print_cards`).
-fn render_compare_signals(
+fn render_signals_block(
     a_rows: &[SignalEnvelopeRow],
-    b_rows: &[SignalEnvelopeRow],
+    b_rows: Option<&[SignalEnvelopeRow]>,
     a_signal_count: Option<u32>,
     b_signal_count: Option<u32>,
+    label_w: usize,
 ) -> String {
-    let label_w = compare_signals_label_w();
     let mut out = String::new();
     out.push_str(&format!("  {DIM}Signals{RESET}\n"));
-    out.push_str(&format!(
-        "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}\n",
+    let count_a = a_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string());
+    let count_b = b_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string());
+    push_signal_row(
+        &mut out,
         "Total signals",
-        a_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
-        b_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
-        label_w = label_w,
-        val_w = COMPARE_SIGNALS_VALUE_W,
-    ));
-    for (rule_id, label) in COMPARE_SIGNAL_SELECTION {
-        let a = compare_signal_value(a_rows, rule_id);
-        let b = compare_signal_value(b_rows, rule_id);
-        out.push_str(&format!(
-            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}\n",
-            label,
-            truncate_to_display(&a, COMPARE_SIGNALS_VALUE_W),
-            truncate_to_display(&b, COMPARE_SIGNALS_VALUE_W),
-            label_w = label_w,
-            val_w = COMPARE_SIGNALS_VALUE_W,
-        ));
+        count_a,
+        b_rows.map(|_| count_b),
+        label_w,
+    );
+    for (rule_id, label) in SIGNAL_SELECTION {
+        let a = signal_value(a_rows, rule_id);
+        let b = b_rows.map(|rows| signal_value(rows, rule_id));
+        push_signal_row(&mut out, label, a, b, label_w);
     }
     out
 }
@@ -1574,9 +1660,13 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
         return;
     }
 
-    // Column geometry: 2 indent + 13 label + 2 sep + 30 value + 2 sep + right value
-    let label_w: usize = 13;
-    let val_w: usize = 30;
+    // Column geometry: 2 indent + 17 label + 2 sep + 30 value + 2 sep + right
+    // value. ONE label width and ONE value width for every row — fixed rows
+    // and the signals block — so value A starts at the same column on every
+    // line (the signals selection carries the longest labels; see
+    // `signals_table_label_w`).
+    let label_w = signals_table_label_w();
+    let val_w: usize = COMPARE_VALUE_W;
     let prefix_w = 2 + label_w + 2; // chars before the left value column
 
     let (ca, ha, ma, la, ia) = count_by_severity(&detail_a.findings);
@@ -1650,18 +1740,8 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
 
     let findings_a = fmt_severity_breakdown(ca, ha, ma, la, ia);
     let findings_b = fmt_severity_breakdown(cb, hb, mb, lb, ib);
-    // Full 7-category signal envelope per side, fetched from the public
-    // signals endpoint using the audit `id` as `subjectId`. A side whose
-    // detail carries no audit id, or for which the signals read fails
-    // (including 404 — no published signal record), degrades to no rows.
-    let signals_a = match detail_a.id.as_deref() {
-        Some(id) if !id.is_empty() => fetch_signals_for_compare(id).unwrap_or_default(),
-        _ => SkillSignalsResponse::default(),
-    };
-    let signals_b = match detail_b.id.as_deref() {
-        Some(id) if !id.is_empty() => fetch_signals_for_compare(id).unwrap_or_default(),
-        _ => SkillSignalsResponse::default(),
-    };
+    let signals_a = signals_for_detail(detail_a.id.as_deref());
+    let signals_b = signals_for_detail(detail_b.id.as_deref());
     let scanners_a_s = format!(
         "{scanners_a} scanner{}",
         if scanners_a == 1 { "" } else { "s" }
@@ -1727,14 +1807,16 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     );
     // Vertical signals block — replaces the old horizontal `Signals:` row,
     // which truncated the narrow 3-category summary. Shows a fixed selection
-    // of signals one per line for both sides (see `render_compare_signals`).
+    // of signals one per line for both sides, sharing the table's label and
+    // value columns (see `render_signals_block`).
     print!(
         "{}",
-        render_compare_signals(
+        render_signals_block(
             &signals_a.signals,
-            &signals_b.signals,
+            Some(&signals_b.signals),
             detail_a.signal_count,
             detail_b.signal_count,
+            label_w,
         )
     );
     println!(
@@ -3257,7 +3339,7 @@ mod tests {
         assert_eq!(detail_val["signalCount"], 7);
     }
 
-    // ── compare signals block (vettd#879) ────────────────────────────
+    // ── signals block (vettd#879) ─────────────────────────────────────
 
     fn env_row(rule_id: &str) -> SignalEnvelopeRow {
         SignalEnvelopeRow {
@@ -3285,16 +3367,17 @@ mod tests {
         r
     }
 
-    /// Split one ANSI-stripped signals-block line into (label, a-value, b-value)
-    /// using the block's geometry: 2-space indent, label column (longest
-    /// selected label + 2 — see `compare_signals_label_w`), 2-space gap,
-    /// 18-wide value A, 2-space gap, then value B. Derives the offsets from
-    /// the same width the renderer uses, so the parse always matches layout.
+    /// Split one ANSI-stripped two-column signals-block line into
+    /// (label, a-value, b-value) using the unified compare geometry:
+    /// 2-space indent, the shared table label column (`signals_table_label_w`),
+    /// 2-space gap, the shared 30-wide value column (`COMPARE_VALUE_W`),
+    /// 2-space gap, then value B. Derives the offsets from the same widths
+    /// the renderer uses, so the parse always matches layout.
     fn split_signal_line(line: &str) -> (&str, &str, &str) {
-        let label_w = compare_signals_label_w();
+        let label_w = signals_table_label_w();
         let label_end = 2 + label_w;
         let a_start = label_end + 2;
-        let a_end = a_start + COMPARE_SIGNALS_VALUE_W;
+        let a_end = a_start + COMPARE_VALUE_W;
         let label = line[2..label_end].trim_end();
         let a = line[a_start..a_end].trim();
         let b = line[a_end + 2..].trim();
@@ -3302,15 +3385,21 @@ mod tests {
     }
 
     #[test]
-    fn render_compare_signals_heading_total_and_one_line_per_signal() {
+    fn render_signals_block_heading_total_and_one_line_per_signal() {
         // The block is: a `Signals` heading, a `Total signals` line, then
         // EXACTLY one line per selected signal — no wrapping or continuation.
-        let rendered = render_compare_signals(&[], &[], None, None);
+        let rendered = render_signals_block(
+            &[],
+            Some(&empty_rows()),
+            None,
+            None,
+            signals_table_label_w(),
+        );
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
         assert_eq!(
             lines.len(),
-            2 + COMPARE_SIGNAL_SELECTION.len(),
+            2 + SIGNAL_SELECTION.len(),
             "heading + total + one line per selected signal"
         );
         assert_eq!(lines[0].trim(), "Signals");
@@ -3320,7 +3409,7 @@ mod tests {
         assert_eq!(a, "—", "absent signal_count must render —");
         assert_eq!(b, "—");
 
-        for (_, label) in COMPARE_SIGNAL_SELECTION {
+        for (_, label) in SIGNAL_SELECTION {
             let hits = lines.iter().filter(|l| l.contains(label)).count();
             assert_eq!(hits, 1, "label '{label}' must appear exactly once");
         }
@@ -3331,14 +3420,20 @@ mod tests {
     }
 
     #[test]
-    fn render_compare_signals_both_sides_and_dash_for_missing_side() {
+    fn render_signals_block_both_sides_and_dash_for_missing_side() {
         // Side A carries a numeric + a text signal; side B has no rows — every
         // B column must be `—`. The total-signals line uses each side's count.
         let a_rows = vec![
             env_row_num("performance/static-context-tokens", 12.5, Some("KB")),
             env_row_text("characteristics/primary-language", "Markdown"),
         ];
-        let rendered = render_compare_signals(&a_rows, &[], Some(24), None);
+        let rendered = render_signals_block(
+            &a_rows,
+            Some(&empty_rows()),
+            Some(24),
+            None,
+            signals_table_label_w(),
+        );
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
 
@@ -3361,11 +3456,13 @@ mod tests {
         assert_eq!(a, "Markdown");
         assert_eq!(b, "—");
 
-        // No line may exceed ~80 chars, so the block never wraps at normal
-        // terminal widths (worst case: 2 + 19 label + 2 + 18 value + 2 + 18).
+        // No line may exceed the table's full width, so the block never wraps
+        // at normal terminal widths (worst case: 2 + 17 label + 2 + 30 value
+        // + 2 + 30 = 83).
         for line in &lines {
             assert!(
-                line.chars().count() <= 80,
+                line.chars().count()
+                    <= 2 + signals_table_label_w() + 2 + COMPARE_VALUE_W + 2 + COMPARE_VALUE_W,
                 "signals line too wide ({}) : {line}",
                 line.chars().count()
             );
@@ -3373,7 +3470,7 @@ mod tests {
     }
 
     #[test]
-    fn render_compare_signals_value_precedence() {
+    fn render_signals_block_value_precedence() {
         // valueNum (unit appended after a single space, no trailing .0) beats
         // valueText; valueText beats severity; severity beats the matching-row
         // count; nothing → —.
@@ -3385,7 +3482,13 @@ mod tests {
             env_row("reliability/unresolvable-internal-references"),
             env_row_num("sentiment/last-commit-age", 0.0, Some("days")),
         ];
-        let rendered = render_compare_signals(&rows, &[], None, None);
+        let rendered = render_signals_block(
+            &rows,
+            Some(&empty_rows()),
+            None,
+            None,
+            signals_table_label_w(),
+        );
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
 
@@ -3407,7 +3510,7 @@ mod tests {
     }
 
     #[test]
-    fn render_compare_signals_empty_value_text_and_watchers() {
+    fn render_signals_block_empty_value_text_and_watchers() {
         // Empty or whitespace-only `valueText` carries no usable value: it must
         // fall through to the severity check and then to `—` — never render a
         // blank cell and never degrade into a bare row count (`1`) on a scalar
@@ -3424,7 +3527,13 @@ mod tests {
             env_row("reliability/unresolvable-internal-references"),
             env_row("reliability/unresolvable-internal-references"),
         ];
-        let rendered = render_compare_signals(&rows, &[], None, None);
+        let rendered = render_signals_block(
+            &rows,
+            Some(&empty_rows()),
+            None,
+            None,
+            signals_table_label_w(),
+        );
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
 
@@ -3452,17 +3561,23 @@ mod tests {
     }
 
     #[test]
-    fn render_compare_signals_longest_label_keeps_value_alignment() {
-        // `Unresolvable refs` (17 chars) is the longest selected label. The
-        // label column is sized from it (17 + 2), so its value columns sit at
-        // exactly the same offsets as every other row's — the label must never
-        // push its values right of the shared geometry.
+    fn render_signals_block_longest_label_keeps_value_alignment() {
+        // `Unresolvable refs` (17 chars) is the longest selected label, so it
+        // defines the shared label column; its value columns sit at exactly
+        // the same offsets as every other row's — the label must never push
+        // its values right of the shared geometry.
         let rows = vec![
             env_row("reliability/unresolvable-internal-references"),
             env_row("reliability/unresolvable-internal-references"),
             env_row_num("sentiment/stars", 7.0, None),
         ];
-        let rendered = render_compare_signals(&rows, &[], None, None);
+        let rendered = render_signals_block(
+            &rows,
+            Some(&empty_rows()),
+            None,
+            None,
+            signals_table_label_w(),
+        );
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
 
@@ -3476,10 +3591,10 @@ mod tests {
         // Every line's label slice (heading + total + one per signal) is
         // exactly its expected label — nothing overflows into the gap or the
         // value columns, which all start at the same byte offsets.
-        let label_w = compare_signals_label_w();
+        let label_w = signals_table_label_w();
         let label_end = 2 + label_w;
         let mut expect = vec!["Total signals"];
-        for (_, label) in COMPARE_SIGNAL_SELECTION {
+        for (_, label) in SIGNAL_SELECTION {
             expect.push(label);
         }
         for i in 0..expect.len() {
@@ -3490,5 +3605,150 @@ mod tests {
                 "row {i}: label must fit its column without overflow"
             );
         }
+    }
+
+    #[test]
+    fn compare_fixed_and_signal_rows_share_value_column_offsets() {
+        // The unified compare geometry (one label width, one value width)
+        // must put value A and value B at identical byte offsets on fixed
+        // rows and signals-block rows alike. This is the alignment contract
+        // behind the whole change: the signals block may not use its own
+        // column widths.
+        let label_w = signals_table_label_w();
+        let val_w = COMPARE_VALUE_W;
+        let a_start = 2 + label_w + 2;
+        let b_start = a_start + val_w + 2;
+
+        // A fixed row, formatted exactly as `handle_compare` prints it.
+        let fixed = format!(
+            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
+            "Findings:",
+            truncate_to_display("1 medium, 1 info", val_w),
+            truncate_to_display("1 info", val_w),
+            label_w = label_w,
+            val_w = val_w,
+        );
+        let fixed = strip_ansi(&fixed);
+
+        // A signals-block row (Stars).
+        let block = render_signals_block(
+            &[env_row_num("sentiment/stars", 1024.0, None)],
+            Some(&empty_rows()),
+            None,
+            None,
+            label_w,
+        );
+        let block_plain = strip_ansi(&block);
+        let signal = block_plain.lines().nth(5).unwrap();
+
+        // The columns START at the same offsets in both rows (value B is not
+        // right-padded, exactly like the fixed rows' `{}` cell, so total row
+        // widths may differ) — value A at `a_start`, value B at `b_start`.
+        let cell = |line: &str, start: usize| -> String {
+            line.chars().skip(start).take(COMPARE_VALUE_W).collect()
+        };
+        assert_eq!(cell(&fixed, a_start).trim(), "1 medium, 1 info");
+        assert_eq!(cell(signal, a_start).trim(), "1024");
+        assert_eq!(cell(&fixed, b_start).trim(), "1 info");
+        assert_eq!(cell(signal, b_start).trim(), "—");
+    }
+
+    #[test]
+    fn render_signals_block_single_column_view() {
+        // `directory view` renders the same block with a single value column:
+        // heading, Total signals, then one line per selected signal, each
+        // value starting at the same column as view's own fixed rows (which
+        // share the same label width) and never clipped.
+        let rows = vec![
+            env_row_num("performance/static-context-tokens", 899.0, None),
+            env_row_text("characteristics/primary-language", "Markdown"),
+        ];
+        let label_w = signals_table_label_w();
+        let rendered = render_signals_block(&rows, None, Some(24), None, label_w);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2 + SIGNAL_SELECTION.len());
+
+        let label_end = 2 + label_w;
+        let a_start = label_end + 2;
+        let cell = |line: &str, start: usize| -> String {
+            line.chars().skip(start).take(COMPARE_VALUE_W).collect()
+        };
+
+        assert_eq!(lines[0].trim(), "Signals");
+        assert_eq!(lines[1][2..label_end].trim_end(), "Total signals");
+        assert_eq!(cell(lines[1], a_start).trim(), "24");
+        assert_eq!(lines[2][2..label_end].trim_end(), "Context tokens");
+        assert_eq!(cell(lines[2], a_start).trim(), "899");
+        assert_eq!(
+            cell(lines[3], a_start).trim(),
+            "—",
+            "missing row falls back to —"
+        );
+        let lang = lines
+            .iter()
+            .find(|l| l.contains("Primary language"))
+            .unwrap();
+        assert_eq!(
+            cell(lang, a_start).trim(),
+            "Markdown",
+            "single-column values are never clipped"
+        );
+
+        // The block's value column starts where view's fixed rows start:
+        // the same label width drives both.
+        let fixed = format!(
+            "  {DIM}{:<label_w$}{RESET}  {}",
+            "Scanned by:",
+            "scanner-suite",
+            label_w = label_w,
+        );
+        assert_eq!(cell(&strip_ansi(&fixed), a_start).trim(), "scanner-suite");
+    }
+
+    #[test]
+    fn signal_value_precedence_shared_formatter() {
+        // The value formatter is the ONE shared by view and compare; its
+        // precedence: valueNum (+unit) → non-empty valueText → severity →
+        // multi-row list count → —.
+        let rows = vec![
+            env_row_num("sentiment/stars", 1024.0, Some("k")),
+            env_row_text("reliability/eval-test-case-count", "12 tests"),
+            env_row_sev("characteristics/archived", "low"),
+            env_row("reliability/unresolvable-internal-references"),
+            env_row("reliability/unresolvable-internal-references"),
+            env_row("performance/static-context-tokens"),
+        ];
+        assert_eq!(signal_value(&rows, "sentiment/stars"), "1024 k");
+        assert_eq!(
+            signal_value(&rows, "reliability/eval-test-case-count"),
+            "12 tests"
+        );
+        assert_eq!(signal_value(&rows, "characteristics/archived"), "low");
+        assert_eq!(
+            signal_value(&rows, "reliability/unresolvable-internal-references"),
+            "2"
+        );
+        assert_eq!(
+            signal_value(&rows, "performance/static-context-tokens"),
+            "—",
+            "a lone scalar row with no usable value is absent, not a bare 1"
+        );
+        assert_eq!(
+            signal_value(&[], "sentiment/stars"),
+            "—",
+            "no rows at all renders —"
+        );
+        assert_eq!(
+            signal_value(&[env_row_text("sentiment/forks", "   ")], "sentiment/forks"),
+            "—",
+            "whitespace-only valueText falls through to —"
+        );
+    }
+
+    /// The empty side B for two-column renderer tests, so a missing side is
+    /// exercised explicitly.
+    fn empty_rows() -> Vec<SignalEnvelopeRow> {
+        Vec::new()
     }
 }
