@@ -75,6 +75,12 @@ pub struct DirectoryCard {
     /// shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signal_categories: Option<Vec<SignalCategorySummary>>,
+    /// Total signal count for the asset (vettd#879). Present on directory
+    /// list/search responses once the server sends it; `None` against an
+    /// older server. Skipped on serialize when absent so `--json` output
+    /// stays byte-identical to the pre-signal-count shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_count: Option<u32>,
     /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
     /// serialize when absent, so `--json` output is byte-identical to the
     /// pre-beta shape unless the server actually sent this field.
@@ -315,6 +321,11 @@ pub struct DirectorySkillDetail {
     /// the pre-signal shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_categories: Option<Vec<SignalCategorySummary>>,
+    /// Total signal count for the asset (vettd#879). `None` against an older
+    /// server. Skipped on serialize when absent so `--json` stays
+    /// byte-identical to the pre-signal-count shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_count: Option<u32>,
     /// Slice 2 freshness field (public directory view only). `None` when no
     /// freshness row exists on the server. Omitted on serialize when absent
     /// (`skip_serializing_if`) so JSON shape stays lossless: fields received
@@ -1714,15 +1725,16 @@ pub fn handle_random(json: bool) {
 // Card display helpers
 // ---------------------------------------------------------------------------
 
-/// Fixed visible width of the rating column in the directory table.
-const RATING_COL_W: usize = 6;
+/// Fixed visible width of the safety (grade badge) column in the directory table.
+const SAFETY_COL_W: usize = 6;
 /// Fixed visible width of the slice-2 freshness column. Anchored to the widest
 /// compact label (`[offline]` = 9 chars) so the name column never shifts.
 const FRESH_COL_W: usize = 9;
 /// Fixed visible width of the source column.
 const SOURCE_COL_W: usize = 10;
-/// Fixed visible width of the "scanned by" column.
-const SCANNED_COL_W: usize = 12;
+/// Fixed visible width of the "signals" (total signal count) column. Wide
+/// enough for a left-aligned count with room to grow, keeping one-line rows.
+const SIGNALS_COL_W: usize = 8;
 /// Separator width between table columns (two spaces).
 const COL_GAP: usize = 2;
 
@@ -1731,57 +1743,73 @@ const COL_GAP: usize = 2;
 /// `show_freshness` controls whether the slice-2 freshness column is rendered.
 /// Directory calls pass `true`; inventory reuses this renderer with `false` so
 /// authenticated inventory output is byte-identical to its pre-freshness shape.
-///
-/// Slug column width is computed from the batch so all rows align. Description
-/// is truncated to fit the remaining terminal width.
 pub(crate) fn print_cards(cards: &[DirectoryCard], show_freshness: bool) {
+    print!(
+        "{}",
+        render_cards_table(cards, show_freshness, terminal_width())
+    );
+}
+
+/// Build the padded, single-line-per-card table (header + separator + rows) as
+/// a string. Split out of `print_cards` so the layout is unit-testable without
+/// capturing stdout.
+fn render_cards_table(cards: &[DirectoryCard], show_freshness: bool, term_w: usize) -> String {
     let slug_w = cards
         .iter()
         .map(|c| c.slug.as_deref().unwrap_or(&c.name).len())
         .max()
         .unwrap_or(0);
-    let term_w = terminal_width();
+    let mut out = String::new();
 
     if show_freshness {
-        println!(
-            "{BOLD}{:<rating$}  {:<fresh$}  {:<w$}  {:<src$}  {:<scan$}  description{RESET}",
-            "rating",
+        out.push_str(&format!(
+            "{BOLD}{:<safety$}  {:<fresh$}  {:<w$}  {:<src$}  {:<sig$}  description{RESET}\n",
+            "safety",
             "fresh.",
             "name",
             "source",
-            "scanned by",
-            rating = RATING_COL_W,
+            "signals",
+            safety = SAFETY_COL_W,
             fresh = FRESH_COL_W,
             w = slug_w,
             src = SOURCE_COL_W,
-            scan = SCANNED_COL_W,
-        );
+            sig = SIGNALS_COL_W,
+        ));
     } else {
-        println!(
-            "{BOLD}{:<rating$}  {:<w$}  {:<src$}  {:<scan$}  description{RESET}",
-            "rating",
+        out.push_str(&format!(
+            "{BOLD}{:<safety$}  {:<w$}  {:<src$}  {:<sig$}  description{RESET}\n",
+            "safety",
             "name",
             "source",
-            "scanned by",
-            rating = RATING_COL_W,
+            "signals",
+            safety = SAFETY_COL_W,
             w = slug_w,
             src = SOURCE_COL_W,
-            scan = SCANNED_COL_W,
-        );
+            sig = SIGNALS_COL_W,
+        ));
     }
-    println!("{DIM}{}{RESET}", "─".repeat(term_w.saturating_sub(5)));
+    out.push_str(&format!(
+        "{DIM}{}{RESET}\n",
+        "─".repeat(term_w.saturating_sub(5))
+    ));
 
     for card in cards {
-        print_card_row(card, slug_w, term_w, show_freshness);
+        out.push_str(&render_card_row(card, slug_w, term_w, show_freshness));
     }
+    out
 }
 
-fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_freshness: bool) {
+fn render_card_row(
+    card: &DirectoryCard,
+    slug_w: usize,
+    term_w: usize,
+    show_freshness: bool,
+) -> String {
     let grade = card.overall_grade.as_deref().unwrap_or("?");
     let gc = grade_color(grade);
     // Grade badge visual text (no ANSI) — always 3 chars like "[A]"
     let grade_visible = format!("[{grade}]");
-    let grade_pad = " ".repeat(6usize.saturating_sub(grade_visible.len()));
+    let grade_pad = " ".repeat(SAFETY_COL_W.saturating_sub(grade_visible.len()));
     let grade_display = format!("{gc}{grade_visible}{RESET}{grade_pad}");
 
     let slug = card.slug.as_deref().unwrap_or(&card.name);
@@ -1791,11 +1819,10 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_fresh
         .as_deref()
         .map(display_source_type)
         .unwrap_or("—");
-    let scanners = match card.scanner_run_count.map(|n| n + 1) {
-        Some(1) => "1 scanner".to_string(),
-        Some(n) => format!("{n} scanners"),
-        None => "—".to_string(),
-    };
+    let signals_display = card
+        .signal_count
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".to_string());
     let desc = card.description.as_deref().unwrap_or("");
 
     // Compute desc budget from visual widths (ANSI codes are invisible).
@@ -1805,14 +1832,14 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_fresh
     } else {
         0
     };
-    let visual_prefix_w = RATING_COL_W
+    let visual_prefix_w = SAFETY_COL_W
         + COL_GAP
         + freshness_col_w
         + slug_w
         + COL_GAP
         + SOURCE_COL_W
         + COL_GAP
-        + SCANNED_COL_W
+        + SIGNALS_COL_W
         + COL_GAP;
     let desc_budget = term_w.saturating_sub(visual_prefix_w).saturating_sub(5);
     let desc_display = truncate_to_display(desc, desc_budget);
@@ -1822,28 +1849,17 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_fresh
             &freshness::fmt_freshness_colored(&card.freshness.as_ref()),
             FRESH_COL_W,
         );
-        println!(
-            "{grade_display}  {freshness_display}  {slug_padded}  {asset_type:<src$}  {scanners:<scan$}  {DIM}{desc_display}{RESET}",
+        format!(
+            "{grade_display}  {freshness_display}  {slug_padded}  {asset_type:<src$}  {signals_display:<sig$}  {DIM}{desc_display}{RESET}\n",
             src = SOURCE_COL_W,
-            scan = SCANNED_COL_W,
-        );
+            sig = SIGNALS_COL_W,
+        )
     } else {
-        println!(
-            "{grade_display}  {slug_padded}  {asset_type:<src$}  {scanners:<scan$}  {DIM}{desc_display}{RESET}",
+        format!(
+            "{grade_display}  {slug_padded}  {asset_type:<src$}  {signals_display:<sig$}  {DIM}{desc_display}{RESET}\n",
             src = SOURCE_COL_W,
-            scan = SCANNED_COL_W,
-        );
-    }
-
-    // Compact per-category signal summary (vettd#981) — one short line when
-    // the card carries any non-empty category; omitted entirely otherwise so
-    // pre-signal directory output stays byte-identical.
-    if let Some(cats) = &card.signal_categories {
-        if let Some(line) = fmt_signal_categories_compact(cats) {
-            let budget = term_w.saturating_sub(4);
-            let line_display = truncate_to_display(&line, budget);
-            println!("  {DIM}signals:{RESET} {line_display}");
-        }
+            sig = SIGNALS_COL_W,
+        )
     }
 }
 
@@ -2296,6 +2312,7 @@ mod tests {
             source_type: None,
             scanner_run_count: None,
             signal_categories: None,
+            signal_count: None,
             language: None,
             agent_compatibility: None,
             rankings: None,
@@ -2361,6 +2378,7 @@ mod tests {
             findings: vec![],
             scanner_runs: vec![],
             signal_categories: None,
+            signal_count: None,
             freshness: None,
         };
         let val: serde_json::Value = serde_json::to_value(&detail).unwrap();
@@ -2830,9 +2848,9 @@ mod tests {
         // The whole point of the fixed freshness column: a colored `[ok]` and
         // colored `[offline]` row must place the slug at the SAME column so the
         // name/description column is stable regardless of freshness label.
-        // We reproduce the layout prefix used by `print_card_row`.
+        // We reproduce the layout prefix used by `render_card_row`.
         let grade = "[A]";
-        let grade_pad = " ".repeat(RATING_COL_W - grade.len());
+        let grade_pad = " ".repeat(SAFETY_COL_W - grade.len());
         let cases = [
             "\x1b[32m[ok]\x1b[0m",
             "\x1b[31m[offline]\x1b[0m",
@@ -2881,5 +2899,209 @@ mod tests {
             assert!(l.len() <= FRESH_COL_W, "{l} exceeds fresh column width");
         }
         assert!(labels.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    // ── card table renderer (vettd#879) ────────────────────────────────
+
+    #[test]
+    fn render_cards_table_uses_safety_header_and_signals_column() {
+        // The table header must say `safety` (was `rating`), drop `scanned by`
+        // entirely, and expose a `signals` column carrying the total signal
+        // count. Each skill renders as exactly one line.
+        let cards = vec![
+            DirectoryCard {
+                slug: Some("pr".into()),
+                name: "pr".into(),
+                overall_grade: Some("B".into()),
+                source_type: Some("github".into()),
+                signal_count: Some(24),
+                ..card_with_freshness(None)
+            },
+            DirectoryCard {
+                slug: Some("pdf-summarizer".into()),
+                name: "pdf-summarizer".into(),
+                overall_grade: Some("A".into()),
+                source_type: Some("scan".into()),
+                signal_count: Some(127),
+                ..card_with_freshness(None)
+            },
+        ];
+        let table = render_cards_table(&cards, true, 120);
+        let lines: Vec<&str> = table.lines().collect();
+        let header = lines[0];
+        assert!(
+            header.contains("safety"),
+            "header must label the grade column `safety`: {header}"
+        );
+        assert!(
+            !header.contains("scanned by"),
+            "header must not contain `scanned by`: {header}"
+        );
+        assert!(
+            header.contains("signals"),
+            "header must include the `signals` column: {header}"
+        );
+
+        let row = strip_ansi(lines[2]);
+        assert!(
+            row.contains("[B]"),
+            "row must render the grade badge: {row}"
+        );
+        assert!(
+            row.contains("24"),
+            "row must render the signal count: {row}"
+        );
+        assert!(
+            !row.contains("signals:"),
+            "no dangling `signals:` continuation line: {row}"
+        );
+        assert_eq!(
+            lines.len(),
+            4,
+            "exactly header + separator + 2 rows — one line per skill"
+        );
+    }
+
+    #[test]
+    fn render_cards_table_drops_dangling_signals_continuation_line() {
+        // A card carrying signal categories used to print a second
+        // `signals: …` line under the row (vettd#981). That continuation line
+        // is removed — every skill must still occupy exactly one table line.
+        let card_with_signals = DirectoryCard {
+            slug: Some("pr".into()),
+            name: "pr".into(),
+            signal_categories: Some(vec![
+                serde_json::from_value(sample_category_summary_json()).unwrap()
+            ]),
+            ..card_with_freshness(None)
+        };
+        let plain_card = DirectoryCard {
+            slug: Some("other".into()),
+            name: "other".into(),
+            ..card_with_freshness(None)
+        };
+        let table = render_cards_table(&[card_with_signals, plain_card], true, 120);
+        let lines: Vec<&str> = table.lines().collect();
+        for line in &lines {
+            assert!(
+                !line.contains("signals:"),
+                "no row may carry a `signals:` continuation line: {line}"
+            );
+        }
+        assert_eq!(
+            lines.len(),
+            4,
+            "header + separator + 2 skills must stay 4 lines (one per skill)"
+        );
+    }
+
+    #[test]
+    fn render_cards_table_signals_absent_renders_dash() {
+        // `signalCount` is additive from the server: against an older server
+        // it is absent, and the signals column must render `—` (matching how
+        // the removed `scanned by` column handled absence).
+        let card = DirectoryCard {
+            slug: Some("pr".into()),
+            name: "pr".into(),
+            overall_grade: Some("B".into()),
+            source_type: Some("github".into()),
+            signal_count: None,
+            ..card_with_freshness(None)
+        };
+        let table = render_cards_table(&[card], true, 120);
+        let row = strip_ansi(table.lines().nth(2).unwrap());
+        let dash_at = row
+            .find("—")
+            .unwrap_or_else(|| panic!("signals column must render —: {row}"));
+        assert!(
+            row[..dash_at].contains("github"),
+            "the — must sit in the signals column after source: {row}"
+        );
+        assert!(
+            !row.contains("scanner"),
+            "scanned-by wording must be gone: {row}"
+        );
+    }
+
+    #[test]
+    fn render_cards_table_inventory_variant_omits_freshness_column() {
+        // Inventory reuses the shared renderer with `show_freshness = false`:
+        // the header and rows must omit the freshness column but still carry
+        // the safety header and the signals column.
+        let card = DirectoryCard {
+            slug: Some("pr".into()),
+            name: "pr".into(),
+            overall_grade: Some("B".into()),
+            source_type: Some("github".into()),
+            signal_count: Some(24),
+            ..card_with_freshness(None)
+        };
+        let table = render_cards_table(&[card], false, 120);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(
+            !lines[0].contains("fresh."),
+            "inventory header must omit the freshness column: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("safety"),
+            "inventory header keeps safety: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("signals"),
+            "inventory header keeps signals: {}",
+            lines[0]
+        );
+        let row = strip_ansi(lines[2]);
+        assert!(
+            row.contains("24"),
+            "inventory row renders the signal count: {row}"
+        );
+        assert_eq!(
+            lines.len(),
+            3,
+            "header + separator + 1 row — one line per asset"
+        );
+    }
+
+    #[test]
+    fn signal_count_serde_parses_and_stays_none_when_absent() {
+        // `signalCount` is an additive camelCase field (vettd#879): it must
+        // parse from the directory JSON and stay `None` when the server omits
+        // it (pre-deploy), without synthesizing a null in `--json` output.
+        let with_count: DirectoryCard = serde_json::from_value(serde_json::json!({
+            "name": "pr",
+            "slug": "pr",
+            "signalCount": 24,
+        }))
+        .unwrap();
+        assert_eq!(with_count.signal_count, Some(24));
+
+        let without: DirectoryCard = serde_json::from_value(serde_json::json!({
+            "name": "pr",
+            "slug": "pr",
+        }))
+        .unwrap();
+        assert_eq!(without.signal_count, None);
+        let val = serde_json::to_value(&without).unwrap();
+        assert!(
+            val.get("signalCount").is_none(),
+            "absent signalCount must be omitted from JSON: {}",
+            val
+        );
+
+        // The detail payload carries the same additive field.
+        let detail: DirectorySkillDetail = serde_json::from_value(serde_json::json!({
+            "name": "pr",
+            "slug": "pr",
+            "findings": [],
+            "scannerRuns": [],
+            "signalCount": 7,
+        }))
+        .unwrap();
+        assert_eq!(detail.signal_count, Some(7));
+        let detail_val = serde_json::to_value(&detail).unwrap();
+        assert_eq!(detail_val["signalCount"], 7);
     }
 }
