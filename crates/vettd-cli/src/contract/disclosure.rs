@@ -789,6 +789,8 @@ mod tests {
                         label: "l".into(),
                         detail: Some("d".into()),
                     }]),
+                    signals: None,
+                    coverage: None,
                 }]),
                 detected_source: None,
             }],

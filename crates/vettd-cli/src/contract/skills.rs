@@ -653,6 +653,8 @@ mod tests {
             verdict: None,
             raw_report: None,
             findings: Some(vec![finding("critical")]),
+            signals: None,
+            coverage: None,
         };
         assert_eq!(grade_from_scanner_result(Some(&r)), "F");
 
