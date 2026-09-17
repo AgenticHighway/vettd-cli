@@ -129,7 +129,7 @@ impl DisclosureCategory {
                 "file paths, classification, capability signals, content hashes, secret references, injection surfaces, dependencies, and risk scores"
             }
             DisclosureCategory::SkillRecords => {
-                "skill name, type, trust grade, execution environment, description, permissions, dependencies, consumers, and external scanner results"
+                "skill name, type, trust grade, execution environment, description, version, license, structural facts (file count, presence of SKILL.md/scripts/references/evals/assets), permissions, dependencies, consumers, and external scanner results"
             }
             DisclosureCategory::AgentRecords => {
                 "source paths, classification, execution model, trust score, version, author, source repo, capabilities, tool bindings, and trust breakdown"
@@ -266,6 +266,18 @@ const SKILL_FIELDS: &[&str] = &[
     "overallGrade",
     "executionEnvironment",
     "description",
+    // v2.6.0 skill-level surface — structural facts + frontmatter metadata
+    // emitted at `skills[].<field>` (see scanner-field-gate.json). `version`
+    // is shared with ExternalScannerResult.version; leaf-name matching covers
+    // both.
+    "version",
+    "license",
+    "fileCount",
+    "hasSkillMd",
+    "hasScripts",
+    "hasReferences",
+    "hasEvals",
+    "hasAssets",
     "permissions",
     "dependencies",
     "consumers",
@@ -601,6 +613,34 @@ mod tests {
         );
     }
 
+    /// Regression (v2.6.0): skill-level structural facts and frontmatter
+    /// metadata (`skills[].version/license/fileCount/hasSkillMd/...`) are new
+    /// serialized leaves. The walker must disclose them or `scan --submit`
+    /// panics on the first real skill payload.
+    #[test]
+    fn populated_skill_level_surface_is_fully_disclosed() {
+        let payload = max_payload();
+        let skill = &payload.skills[0];
+        assert!(
+            skill.file_count.is_some(),
+            "fixture must carry structural facts"
+        );
+        assert!(
+            skill.license.is_some(),
+            "fixture must carry frontmatter license"
+        );
+        assert!(
+            skill.version.is_some(),
+            "fixture must carry frontmatter version"
+        );
+        validate_payload_coverage(&payload);
+        let cats = disclosure_categories(&payload);
+        assert!(
+            cats.contains(&DisclosureCategory::SkillRecords),
+            "skill-level surface belongs to the skill record disclosure"
+        );
+    }
+
     /// The walker must leave no undisclosed field on the *default* shape too —
     /// a regression where a newly required field only appears in a full payload
     /// could slip through a sparse one.
@@ -814,6 +854,14 @@ mod tests {
                 overall_grade: "A".into(),
                 execution_environment: "shell".into(),
                 description: "a skill".into(),
+                version: Some("1.0".into()),
+                license: Some("MIT".into()),
+                file_count: Some(12),
+                has_skill_md: Some(true),
+                has_scripts: Some(true),
+                has_references: Some(true),
+                has_evals: Some(true),
+                has_assets: Some(true),
                 permissions: vec![SkillPermission {
                     name: "fs".into(),
                     required: true,

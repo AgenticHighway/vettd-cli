@@ -49,13 +49,16 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
     let detected_source = detect_skill_source(source_path);
+    let frontmatter = read_skill_frontmatter(artifact);
 
-    let scanner_result = artifact
-        .cached_scan_result
+    let scan_output = artifact
+        .cached_skill_scan
         .clone()
         .or_else(|| super::skill_scan::run_skill_scanner(artifact));
-    let overall_grade = grade_from_scanner_result(scanner_result.as_ref()).to_string();
+    let overall_grade =
+        grade_from_scanner_result(scan_output.as_ref().map(|o| &o.external)).to_string();
     let trust_level = trust_level_from_grade(&overall_grade).to_string();
+    let structural = scan_output.as_ref().map(|o| &o.structural);
 
     Skill {
         id,
@@ -64,7 +67,21 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         trust_level,
         overall_grade,
         execution_environment: "Local Process".to_string(),
-        description: skill_artifact_description(artifact),
+        description: frontmatter
+            .description
+            .clone()
+            .unwrap_or_else(|| "Reusable agent skill instructions".to_string()),
+        // v2.6.0 skill-level surface: structural facts come from the scanner
+        // output; version/license from SKILL.md frontmatter. Never fabricated —
+        // all omit-when-absent.
+        version: frontmatter.version.clone(),
+        license: frontmatter.license.clone(),
+        file_count: structural.map(|s| s.file_count),
+        has_skill_md: structural.map(|s| s.has_skill_md),
+        has_scripts: structural.map(|s| s.has_scripts),
+        has_references: structural.map(|s| s.has_references),
+        has_evals: structural.map(|s| s.has_evals),
+        has_assets: structural.map(|s| s.has_assets),
         permissions,
         dependencies: SkillDependencies {
             libraries: Vec::new(),
@@ -72,7 +89,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
             apis: skill_artifact_apis(&capabilities),
         },
         consumers: find_skill_consumers_by_path(source_path, agents),
-        external_scanner_results: scanner_result.map(|r| vec![r]),
+        external_scanner_results: scan_output.as_ref().map(|o| vec![o.external.clone()]),
         detected_source,
     }
 }
@@ -125,59 +142,177 @@ fn trust_level_from_grade(grade: &str) -> &'static str {
     }
 }
 
-fn skill_artifact_description(artifact: &ArtifactReport) -> String {
-    let path = first_path(artifact);
-    if path != "unknown" {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Some(desc) = extract_frontmatter_description(&content) {
-                return desc;
-            }
-        }
-    }
-    "Reusable agent skill instructions".to_string()
+/// Metadata parsed from a skill's SKILL.md frontmatter.
+///
+/// Mirrors the server's `parseSkillManifest` semantics
+/// (`packages/api/src/skills/skill-manifest.ts`): `version` falls back from
+/// `frontmatter.version` to `metadata.version`; `license` is read from the
+/// top-level `license` key only. Absent fields stay `None` so they are omitted
+/// from the contract payload (omit-when-absent, never `null`).
+#[derive(Debug, Default, Clone)]
+struct SkillFrontmatter {
+    description: Option<String>,
+    version: Option<String>,
+    license: Option<String>,
 }
 
-/// Extract the `description` field from SKILL.md YAML frontmatter.
+/// Which multi-line frontmatter block is currently being collected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Collecting {
+    None,
+    Description,
+    Metadata,
+}
+
+/// Read and parse the SKILL.md frontmatter for an artifact, if the file is
+/// readable. Never fails the skill build — unreadable/missing files yield an
+/// empty frontmatter.
+fn read_skill_frontmatter(artifact: &ArtifactReport) -> SkillFrontmatter {
+    let path = first_path(artifact);
+    if path == "unknown" {
+        return SkillFrontmatter::default();
+    }
+    std::fs::read_to_string(path)
+        .map(|content| parse_skill_frontmatter(&content))
+        .unwrap_or_default()
+}
+
+/// Extract `description`, `version`, and `license` from SKILL.md YAML
+/// frontmatter.
 ///
-/// Handles inline (`description: text`) and block-scalar values.
-/// Returns `None` if the frontmatter is missing or the field is absent/empty.
-fn extract_frontmatter_description(content: &str) -> Option<String> {
-    let rest = content.strip_prefix("---\n")?;
-    let close = rest.find("\n---")?;
+/// Flat key-value subset matching the server's `parseFrontmatter`/`parseSkillManifest`:
+/// handles inline and block-scalar values, single- and double-quoted values
+/// (with the server's escape processing), comment lines, and the
+/// `metadata.version` fallback. Returns an all-`None` struct when the
+/// frontmatter is absent or unparseable.
+fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
+    let mut fm = SkillFrontmatter::default();
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return fm;
+    };
+    let Some(close) = rest.find("\n---") else {
+        return fm;
+    };
     let raw = &rest[..close];
 
-    let mut description = String::new();
-    let mut collecting_block = false;
+    let mut collecting = Collecting::None;
+    let mut metadata_version: Option<String> = None;
 
     for line in raw.lines() {
-        if collecting_block {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                if !description.is_empty() {
-                    description.push(' ');
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Indented continuation of the block currently being collected.
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                match collecting {
+                    Collecting::Description => {
+                        let mut desc = fm.description.take().unwrap_or_default();
+                        if !desc.is_empty() {
+                            desc.push(' ');
+                        }
+                        desc.push_str(trimmed);
+                        fm.description = Some(desc);
+                    }
+                    Collecting::Metadata => {
+                        if let Some((key, value)) = trimmed.split_once(':') {
+                            if key.trim() == "version" {
+                                let v = unquote_yaml_scalar(value.trim());
+                                if !v.is_empty() {
+                                    metadata_version = Some(v);
+                                }
+                            }
+                        }
+                    }
+                    Collecting::None => {}
                 }
-                description.push_str(line.trim());
-                continue;
             }
-            collecting_block = false;
+            continue;
         }
+        collecting = Collecting::None;
 
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("description:") {
-            let inline = rest.trim().trim_matches('"').trim_matches('\'');
-            if inline.is_empty() {
-                collecting_block = true;
-            } else {
-                description = inline.to_string();
-                break;
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        match key.trim() {
+            "description" => {
+                let value = value.trim();
+                if value.is_empty() {
+                    collecting = Collecting::Description;
+                } else {
+                    fm.description = Some(unquote_yaml_scalar(value));
+                }
             }
+            "version" => {
+                let v = unquote_yaml_scalar(value.trim());
+                if !v.is_empty() {
+                    fm.version = Some(v);
+                }
+            }
+            "license" => {
+                let l = unquote_yaml_scalar(value.trim());
+                if !l.is_empty() {
+                    fm.license = Some(l);
+                }
+            }
+            "metadata" => {
+                if value.trim().is_empty() {
+                    collecting = Collecting::Metadata;
+                }
+                // Inline `metadata: {...}` maps are unsupported (server parity).
+            }
+            _ => {}
         }
     }
 
-    if description.is_empty() {
-        None
-    } else {
-        Some(description)
+    if fm.version.is_none() {
+        fm.version = metadata_version;
     }
+    fm
+}
+
+/// Unquote a YAML scalar value the way the server's `parseScalarValue` does:
+/// strip matching surrounding quotes and process the escapes it handles
+/// (double quotes: `\n` `\r` `\t` `\"` `\\`; single quotes: `\'` `\\`).
+fn unquote_yaml_scalar(value: &str) -> String {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    let double = bytes.first() == Some(&b'"') && bytes.last() == Some(&b'"');
+    let single = bytes.first() == Some(&b'\'') && bytes.last() == Some(&b'\'');
+    if !double && !single {
+        return trimmed.to_string();
+    }
+
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let escaped = match chars.next() {
+            Some('n') if double => '\n',
+            Some('r') if double => '\r',
+            Some('t') if double => '\t',
+            Some('"') if double => '"',
+            Some('\'') if single => '\'',
+            Some('\\') => '\\',
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+                continue;
+            }
+            None => {
+                out.push('\\');
+                continue;
+            }
+        };
+        out.push(escaped);
+    }
+    out
 }
 
 fn infer_permissions_from_capabilities(capabilities: &[String]) -> Vec<SkillPermission> {
@@ -287,6 +422,14 @@ fn extract_mcp_command_skills(
             overall_grade: "pending".to_string(),
             execution_environment: "Local Process".to_string(),
             description: format!("Executes MCP server via: {full_cmd}"),
+            version: None,
+            license: None,
+            file_count: None,
+            has_skill_md: None,
+            has_scripts: None,
+            has_references: None,
+            has_evals: None,
+            has_assets: None,
             permissions: vec![SkillPermission {
                 name: "Shell execution".to_string(),
                 required: true,
@@ -332,6 +475,14 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
+        version: None,
+        license: None,
+        file_count: None,
+        has_skill_md: None,
+        has_scripts: None,
+        has_references: None,
+        has_evals: None,
+        has_assets: None,
         permissions,
         dependencies: SkillDependencies {
             libraries: Vec::new(),
@@ -433,7 +584,7 @@ mod tests {
     fn extract_frontmatter_description_inline() {
         let content = "---\nname: my-skill\ndescription: Does something useful\n---\nBody text\n";
         assert_eq!(
-            extract_frontmatter_description(content),
+            parse_skill_frontmatter(content).description,
             Some("Does something useful".to_string())
         );
     }
@@ -442,7 +593,7 @@ mod tests {
     fn extract_frontmatter_description_quoted() {
         let content = "---\ndescription: \"Quoted description here\"\n---\n";
         assert_eq!(
-            extract_frontmatter_description(content),
+            parse_skill_frontmatter(content).description,
             Some("Quoted description here".to_string())
         );
     }
@@ -451,7 +602,7 @@ mod tests {
     fn extract_frontmatter_description_block_scalar() {
         let content = "---\ndescription:\n  Multi-line\n  block value\n---\n";
         assert_eq!(
-            extract_frontmatter_description(content),
+            parse_skill_frontmatter(content).description,
             Some("Multi-line block value".to_string())
         );
     }
@@ -459,13 +610,89 @@ mod tests {
     #[test]
     fn extract_frontmatter_description_missing() {
         let content = "---\nname: my-skill\nauthor: me\n---\nBody\n";
-        assert_eq!(extract_frontmatter_description(content), None);
+        assert_eq!(parse_skill_frontmatter(content).description, None);
     }
 
     #[test]
     fn extract_frontmatter_description_no_frontmatter() {
         let content = "Just a plain markdown file with no frontmatter.";
-        assert_eq!(extract_frontmatter_description(content), None);
+        assert_eq!(parse_skill_frontmatter(content).description, None);
+    }
+
+    // ── SKILL.md frontmatter → version/license (v2.6.0) ────────────────
+
+    #[test]
+    fn frontmatter_version_from_top_level() {
+        let content = "---\nname: my-skill\nversion: 1.2.3\n---\n";
+        assert_eq!(
+            parse_skill_frontmatter(content).version,
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_version_falls_back_to_metadata() {
+        // Server `parseSkillManifest` semantics: `version = frontmatter.version
+        // ?? metadata.version`. A nested `metadata.version` must be honored.
+        let content = "---\nname: my-skill\nmetadata:\n  version: 2.0.0\n  author: me\n---\n";
+        assert_eq!(
+            parse_skill_frontmatter(content).version,
+            Some("2.0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_version_prefers_top_level_over_metadata() {
+        let content = "---\nversion: 1.0.0\nmetadata:\n  version: 2.0.0\n---\n";
+        assert_eq!(
+            parse_skill_frontmatter(content).version,
+            Some("1.0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_license_extracted() {
+        let content = "---\nlicense: MIT\n---\n";
+        assert_eq!(
+            parse_skill_frontmatter(content).license,
+            Some("MIT".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_absent_yields_all_none() {
+        let content = "Just a markdown file with no frontmatter at all.";
+        let fm = parse_skill_frontmatter(content);
+        assert_eq!(fm.description, None);
+        assert_eq!(fm.version, None);
+        assert_eq!(fm.license, None);
+    }
+
+    #[test]
+    fn frontmatter_quoted_values_are_unquoted() {
+        let content = "---\nversion: \"1.2.3\"\nlicense: 'Apache-2.0'\n---\n";
+        let fm = parse_skill_frontmatter(content);
+        assert_eq!(fm.version, Some("1.2.3".to_string()));
+        assert_eq!(fm.license, Some("Apache-2.0".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_double_quoted_escapes_are_processed() {
+        // Server parseScalarValue parity: double-quoted values process
+        // `\"` / `\\` / `\n` escapes.
+        let content = "---\ndescription: \"say \\\"hi\\\"\"\n---\n";
+        assert_eq!(
+            parse_skill_frontmatter(content).description,
+            Some("say \"hi\"".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_comment_lines_are_skipped() {
+        let content = "---\n# a comment\nversion: 1.0.0\n# another comment\nlicense: MIT\n---\n";
+        let fm = parse_skill_frontmatter(content);
+        assert_eq!(fm.version, Some("1.0.0".to_string()));
+        assert_eq!(fm.license, Some("MIT".to_string()));
     }
 
     fn make_agent(name: &str, tools: Vec<&str>) -> Agent {
@@ -787,5 +1014,172 @@ mod tests {
             .permissions
             .iter()
             .any(|permission| permission.name == "Network access"));
+    }
+
+    // ── v2.6.0 skill-level surface: structural facts + frontmatter ─────
+
+    fn artifact_with_scan_output() -> (tempfile::TempDir, ArtifactReport) {
+        use crate::contract::skill_scan::SkillStructuralFacts;
+        use crate::contract::types::ExternalScannerResult;
+        use crate::contract::SkillScanOutput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        std::fs::write(
+            &skill_md,
+            "---\nname: release-notes\ndescription: Writes release notes\nversion: 1.2.0\nlicense: MIT\n---\nBody\n",
+        )
+        .unwrap();
+
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.metadata.insert(
+            "paths".to_string(),
+            serde_json::json!([skill_md.to_string_lossy()]),
+        );
+        a.compute_hash();
+        a.cached_skill_scan = Some(SkillScanOutput {
+            external: ExternalScannerResult {
+                source: "vettd".into(),
+                version: Some("0.2.0".into()),
+                status: "success".into(),
+                verdict: None,
+                raw_report: None,
+                findings: None,
+                signals: None,
+                coverage: None,
+            },
+            structural: SkillStructuralFacts {
+                file_count: 7,
+                has_skill_md: true,
+                has_scripts: true,
+                has_references: true,
+                has_evals: false,
+                has_assets: false,
+            },
+        });
+        (dir, a)
+    }
+
+    #[test]
+    fn artifact_skill_emits_six_structural_values_and_frontmatter() {
+        let (_dir, a) = artifact_with_scan_output();
+        let skills = build_skills(&[a], &[]);
+        assert_eq!(skills.len(), 1);
+        let s = &skills[0];
+
+        // Six structural facts surfaced at the skill level from the scanner.
+        assert_eq!(s.file_count, Some(7));
+        assert_eq!(s.has_skill_md, Some(true));
+        assert_eq!(s.has_scripts, Some(true));
+        assert_eq!(s.has_references, Some(true));
+        assert_eq!(s.has_evals, Some(false));
+        assert_eq!(s.has_assets, Some(false));
+        // version/license from SKILL.md frontmatter (server parseSkillManifest parity).
+        assert_eq!(s.version.as_deref(), Some("1.2.0"));
+        assert_eq!(s.license.as_deref(), Some("MIT"));
+        assert_eq!(s.description, "Writes release notes");
+    }
+
+    #[test]
+    fn artifact_skill_payload_carries_eight_camel_case_fields() {
+        let (_dir, a) = artifact_with_scan_output();
+        let skills = build_skills(&[a], &[]);
+        let payload = serde_json::to_value(&skills[0]).unwrap();
+        let obj = payload.as_object().unwrap();
+
+        assert_eq!(obj["version"], "1.2.0");
+        assert_eq!(obj["license"], "MIT");
+        assert_eq!(obj["fileCount"], 7);
+        assert_eq!(obj["hasSkillMd"], true);
+        assert_eq!(obj["hasScripts"], true);
+        assert_eq!(obj["hasReferences"], true);
+        assert_eq!(obj["hasEvals"], false);
+        assert_eq!(obj["hasAssets"], false);
+    }
+
+    #[test]
+    fn artifact_skill_without_scan_omits_all_eight_fields() {
+        // An artifact skill with no resolvable path (so the scanner never
+        // runs and returns no output) must omit the eight fields entirely —
+        // never fabricate false/0.
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.compute_hash();
+
+        let skills = build_skills(&[a], &[]);
+        assert_eq!(skills.len(), 1);
+        let payload = serde_json::to_value(&skills[0]).unwrap();
+        let obj = payload.as_object().unwrap();
+        for key in [
+            "version",
+            "license",
+            "fileCount",
+            "hasSkillMd",
+            "hasScripts",
+            "hasReferences",
+            "hasEvals",
+            "hasAssets",
+        ] {
+            assert!(
+                obj.get(key).is_none(),
+                "field '{key}' must be omitted when the skill was not scanned"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_derived_skill_omits_all_eight_fields() {
+        let a = ArtifactReport::new("agents_md", 0.8);
+        let skill = tool_to_skill("shell", &a, &[]);
+        let payload = serde_json::to_value(&skill).unwrap();
+        let obj = payload.as_object().unwrap();
+        for key in [
+            "version",
+            "license",
+            "fileCount",
+            "hasSkillMd",
+            "hasScripts",
+            "hasReferences",
+            "hasEvals",
+            "hasAssets",
+        ] {
+            assert!(
+                obj.get(key).is_none(),
+                "inferred-tool skill must omit '{key}', got: {obj:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_derived_skill_omits_all_eight_fields() {
+        let val = serde_json::json!({
+            "mcpServers": {
+                "srv": {
+                    "command": "npx",
+                    "args": ["-y", "srv"]
+                }
+            }
+        });
+        let mut skills = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        extract_mcp_command_skills(&val, &mut seen, &mut skills, &[]);
+
+        assert_eq!(skills.len(), 1);
+        let payload = serde_json::to_value(&skills[0]).unwrap();
+        let obj = payload.as_object().unwrap();
+        for key in [
+            "version",
+            "license",
+            "fileCount",
+            "hasSkillMd",
+            "hasScripts",
+            "hasReferences",
+            "hasEvals",
+            "hasAssets",
+        ] {
+            assert!(
+                obj.get(key).is_none(),
+                "MCP-derived skill must omit '{key}', got: {obj:?}"
+            );
+        }
     }
 }

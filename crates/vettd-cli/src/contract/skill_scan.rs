@@ -30,12 +30,34 @@ const MAX_WALK_DEPTH: usize = 5;
 /// Maximum number of files to load for a single skill.
 const MAX_FILES: usize = 200;
 
+/// Structural facts computed by the skill scanner, surfaced at the skill level
+/// (`skills[].hasSkillMd`, `skills[].fileCount`, ...) rather than inside
+/// `externalScannerResults[]` — see scanner-field-gate.json.
+#[derive(Debug, Clone)]
+pub(crate) struct SkillStructuralFacts {
+    pub file_count: usize,
+    pub has_skill_md: bool,
+    pub has_scripts: bool,
+    pub has_references: bool,
+    pub has_evals: bool,
+    pub has_assets: bool,
+}
+
+/// Full output of one skill scan: the contract-shaped `ExternalScannerResult`
+/// plus the raw structural facts the skill builder surfaces at the skill level.
+#[derive(Debug, Clone)]
+pub(crate) struct SkillScanOutput {
+    pub external: ExternalScannerResult,
+    pub structural: SkillStructuralFacts,
+}
+
 /// Run the skill scanner against the artifact's source directory and return
-/// an `ExternalScannerResult` for inclusion in the contract payload.
+/// the full scan output (contract result + structural facts) for inclusion in
+/// the contract payload.
 ///
 /// Returns `None` if the artifact has no resolvable path or the source
 /// directory cannot be located.
-pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<ExternalScannerResult> {
+pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOutput> {
     let skill_md_path = first_path(artifact);
     if skill_md_path == "unknown" {
         return None;
@@ -115,26 +137,36 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<ExternalSca
         })
         .collect();
 
-    Some(ExternalScannerResult {
-        source: "vettd".to_string(),
-        version: Some(CURRENT_SCANNER_VERSION.to_string()),
-        status: "success".to_string(),
-        verdict: None,
-        raw_report: None,
-        findings: if findings.is_empty() {
-            None
-        } else {
-            Some(findings)
+    Some(SkillScanOutput {
+        external: ExternalScannerResult {
+            source: "vettd".to_string(),
+            version: Some(CURRENT_SCANNER_VERSION.to_string()),
+            status: "success".to_string(),
+            verdict: None,
+            raw_report: None,
+            findings: if findings.is_empty() {
+                None
+            } else {
+                Some(findings)
+            },
+            signals: if signals.is_empty() {
+                None
+            } else {
+                Some(signals)
+            },
+            coverage: if coverage.is_empty() {
+                None
+            } else {
+                Some(coverage)
+            },
         },
-        signals: if signals.is_empty() {
-            None
-        } else {
-            Some(signals)
-        },
-        coverage: if coverage.is_empty() {
-            None
-        } else {
-            Some(coverage)
+        structural: SkillStructuralFacts {
+            file_count: scan_result.file_count,
+            has_skill_md: scan_result.has_skill_md,
+            has_scripts: scan_result.has_scripts,
+            has_references: scan_result.has_references,
+            has_evals: scan_result.has_evals,
+            has_assets: scan_result.has_assets,
         },
     })
 }
@@ -274,7 +306,7 @@ mod tests {
         let a = skill_artifact_with_path("/nonexistent/path/SKILL.md");
         let result = run_skill_scanner(&a);
         assert!(result.is_some());
-        let r = result.unwrap();
+        let r = result.unwrap().external;
         assert_eq!(r.source, "vettd");
         assert_eq!(r.status, "success");
         assert_eq!(r.version, Some(CURRENT_SCANNER_VERSION.to_string()));
@@ -287,7 +319,11 @@ mod tests {
         let a = skill_artifact_with_path("/nonexistent/SKILL.md");
         let result = run_skill_scanner(&a).unwrap();
         assert!(
-            result.findings.as_ref().is_some_and(|f| !f.is_empty()),
+            result
+                .external
+                .findings
+                .as_ref()
+                .is_some_and(|f| !f.is_empty()),
             "findings must be non-empty"
         );
     }
@@ -298,7 +334,7 @@ mod tests {
         // the vettd wire format (lowercase, kebab-case for best-practices).
         let a = skill_artifact_with_path("/nonexistent/SKILL.md");
         let result = run_skill_scanner(&a).unwrap();
-        let findings = result.findings.unwrap();
+        let findings = result.external.findings.unwrap();
         for f in &findings {
             // Category must be one of the known wire values
             assert!(
@@ -324,6 +360,22 @@ mod tests {
                 f.severity
             );
         }
+    }
+
+    #[test]
+    fn output_carries_structural_facts_at_skill_level() {
+        // The six structural facts must travel with the scan output so the
+        // skill builder can surface them at `skills[].<field>` (v2.6.0). A
+        // nonexistent path yields the missing-SKILL.md stub, so the facts are
+        // all "absent" — but they must still be present, not swallowed.
+        let a = skill_artifact_with_path("/nonexistent/SKILL.md");
+        let output = run_skill_scanner(&a).unwrap();
+        assert_eq!(output.structural.file_count, 0);
+        assert!(!output.structural.has_skill_md);
+        assert!(!output.structural.has_scripts);
+        assert!(!output.structural.has_references);
+        assert!(!output.structural.has_evals);
+        assert!(!output.structural.has_assets);
     }
 
     // ── signals / coverage wire-shape tests ─────────────────────────────
