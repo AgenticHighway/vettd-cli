@@ -1431,7 +1431,10 @@ pub(crate) fn fmt_signal_categories_compact(cats: &[SignalCategorySummary]) -> O
 // ---------------------------------------------------------------------------
 
 /// Selected signals shown in `directory compare`, in display order:
-/// `(ruleId, display label)`.
+/// `(ruleId, display label)`. The license row already shows the license, so
+/// the `characteristics/declared-license` signal (which carries an empty
+/// `valueText`) is excluded; `sentiment/watchers` is shown in its place,
+/// keeping the sentiment family together.
 const COMPARE_SIGNAL_SELECTION: &[(&str, &str)] = &[
     ("performance/static-context-tokens", "Context tokens"),
     ("reliability/eval-test-case-count", "Eval test cases"),
@@ -1441,25 +1444,40 @@ const COMPARE_SIGNAL_SELECTION: &[(&str, &str)] = &[
     ),
     ("sentiment/stars", "Stars"),
     ("sentiment/forks", "Forks"),
+    ("sentiment/watchers", "Watchers"),
     ("sentiment/open-issues", "Open issues"),
     ("sentiment/last-commit-age", "Last commit age"),
     ("characteristics/archived", "Archived"),
-    ("characteristics/declared-license", "Declared license"),
     ("characteristics/primary-language", "Primary language"),
 ];
 
-/// Width of the label column in the compare signals block (longest selected
-/// label, `Unresolvable refs`, is 17 chars).
-const COMPARE_SIGNALS_LABEL_W: usize = 17;
+/// Width of the label column in the compare signals block: the longest
+/// selected label plus a 2-space gap, so every row's value columns line up
+/// exactly and a separator always separates label from value (the longest
+/// label today, `Unresolvable refs`, is 17 chars → 19). Computed from the
+/// selection so the column can never drift out of sync with the labels.
+fn compare_signals_label_w() -> usize {
+    let longest = COMPARE_SIGNAL_SELECTION
+        .iter()
+        .map(|(_, label)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    // `Total signals` shares the column on its own line.
+    let widest = longest.max("Total signals".chars().count());
+    widest + 2
+}
+
 /// Width of each side's value column in the compare signals block. With the
 /// 2-space indent, label column and inter-column gaps the whole line stays
-/// around 60 chars, under normal terminal widths.
+/// under ~61 chars, well within normal terminal widths.
 const COMPARE_SIGNALS_VALUE_W: usize = 18;
 
 /// Pick the display value for one signal rule on one side.
 ///
-/// Precedence: `valueNum` (unit appended; no trailing `.0`) → `valueText` →
-/// `severity` → count of the rule's rows on this side → `—`.
+/// Precedence: `valueNum` (unit appended after a single space; no trailing
+/// `.0`) → non-empty `valueText` → `severity` → count of the rule's list rows
+/// on this side (only when there is more than one — a lone scalar row with no
+/// usable value is absent, not a list) → `—`.
 fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     let matching: Vec<&SignalEnvelopeRow> = rows
         .iter()
@@ -1468,11 +1486,17 @@ fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     let first = matching.first();
     if let Some(v) = first.and_then(|r| r.value_num) {
         let unit = first.and_then(|r| r.unit.as_deref()).unwrap_or("");
-        return format!("{v}{unit}");
+        if !unit.is_empty() {
+            return format!("{v} {unit}");
+        }
+        return format!("{v}");
     }
+    // Empty or whitespace-only `valueText` carries no usable value — treat it
+    // as absent so it falls through to the severity check instead of
+    // rendering a blank cell or degrading into a bare row count.
     if let Some(t) = first
         .and_then(|r| r.value_text.as_deref())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.trim().is_empty())
     {
         return t.to_string();
     }
@@ -1482,7 +1506,10 @@ fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     {
         return sev.to_string();
     }
-    if !matching.is_empty() {
+    // Row-count fallback — only for genuine list rules (multiple rows on this
+    // side). A single scalar row with no usable value is NOT a list and must
+    // not be reported as a bare count.
+    if matching.len() > 1 {
         return matching.len().to_string();
     }
     "—".to_string()
@@ -1500,6 +1527,7 @@ fn render_compare_signals(
     a_signal_count: Option<u32>,
     b_signal_count: Option<u32>,
 ) -> String {
+    let label_w = compare_signals_label_w();
     let mut out = String::new();
     out.push_str(&format!("  {DIM}Signals{RESET}\n"));
     out.push_str(&format!(
@@ -1507,7 +1535,7 @@ fn render_compare_signals(
         "Total signals",
         a_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
         b_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
-        label_w = COMPARE_SIGNALS_LABEL_W,
+        label_w = label_w,
         val_w = COMPARE_SIGNALS_VALUE_W,
     ));
     for (rule_id, label) in COMPARE_SIGNAL_SELECTION {
@@ -1518,7 +1546,7 @@ fn render_compare_signals(
             label,
             truncate_to_display(&a, COMPARE_SIGNALS_VALUE_W),
             truncate_to_display(&b, COMPARE_SIGNALS_VALUE_W),
-            label_w = COMPARE_SIGNALS_LABEL_W,
+            label_w = label_w,
             val_w = COMPARE_SIGNALS_VALUE_W,
         ));
     }
@@ -3258,12 +3286,18 @@ mod tests {
     }
 
     /// Split one ANSI-stripped signals-block line into (label, a-value, b-value)
-    /// using the block's fixed geometry (2 indent + 17 label + 2 gap → value A
-    /// at byte 21, 18 wide → value B at byte 41).
+    /// using the block's geometry: 2-space indent, label column (longest
+    /// selected label + 2 — see `compare_signals_label_w`), 2-space gap,
+    /// 18-wide value A, 2-space gap, then value B. Derives the offsets from
+    /// the same width the renderer uses, so the parse always matches layout.
     fn split_signal_line(line: &str) -> (&str, &str, &str) {
-        let label = line[2..19].trim_end();
-        let a = line[21..39].trim();
-        let b = line[41..].trim();
+        let label_w = compare_signals_label_w();
+        let label_end = 2 + label_w;
+        let a_start = label_end + 2;
+        let a_end = a_start + COMPARE_SIGNALS_VALUE_W;
+        let label = line[2..label_end].trim_end();
+        let a = line[a_start..a_end].trim();
+        let b = line[a_end + 2..].trim();
         (label, a, b)
     }
 
@@ -3290,6 +3324,10 @@ mod tests {
             let hits = lines.iter().filter(|l| l.contains(label)).count();
             assert_eq!(hits, 1, "label '{label}' must appear exactly once");
         }
+        assert!(
+            !plain.contains("Declared license"),
+            "declared-license is not in the selection (the license row above already shows it)"
+        );
     }
 
     #[test]
@@ -3298,7 +3336,7 @@ mod tests {
         // B column must be `—`. The total-signals line uses each side's count.
         let a_rows = vec![
             env_row_num("performance/static-context-tokens", 12.5, Some("KB")),
-            env_row_text("characteristics/declared-license", "MIT"),
+            env_row_text("characteristics/primary-language", "Markdown"),
         ];
         let rendered = render_compare_signals(&a_rows, &[], Some(24), None);
         let plain = strip_ansi(&rendered);
@@ -3309,22 +3347,25 @@ mod tests {
         assert_eq!(b, "—");
 
         let (_, a, b) = split_signal_line(lines[2]); // Context tokens
-        assert_eq!(a, "12.5KB", "unit must be appended to valueNum");
+        assert_eq!(
+            a, "12.5 KB",
+            "unit must follow valueNum with a single space"
+        );
         assert_eq!(b, "—");
 
-        let license_line = lines
+        let language_line = lines
             .iter()
-            .find(|l| l.contains("Declared license"))
+            .find(|l| l.contains("Primary language"))
             .unwrap();
-        let (_, a, b) = split_signal_line(license_line);
-        assert_eq!(a, "MIT");
+        let (_, a, b) = split_signal_line(language_line);
+        assert_eq!(a, "Markdown");
         assert_eq!(b, "—");
 
-        // No line may exceed ~60 chars, so the block never wraps at normal
-        // terminal widths.
+        // No line may exceed ~80 chars, so the block never wraps at normal
+        // terminal widths (worst case: 2 + 19 label + 2 + 18 value + 2 + 18).
         for line in &lines {
             assert!(
-                line.chars().count() <= 60,
+                line.chars().count() <= 80,
                 "signals line too wide ({}) : {line}",
                 line.chars().count()
             );
@@ -3333,19 +3374,24 @@ mod tests {
 
     #[test]
     fn render_compare_signals_value_precedence() {
-        // valueNum (unit appended, no trailing .0) beats valueText; valueText
-        // beats severity; severity beats the matching-row count; nothing → —.
+        // valueNum (unit appended after a single space, no trailing .0) beats
+        // valueText; valueText beats severity; severity beats the matching-row
+        // count; nothing → —.
         let rows = vec![
             env_row_num("sentiment/stars", 1024.0, None),
             env_row_text("reliability/eval-test-case-count", "12 tests"),
             env_row_sev("characteristics/archived", "low"),
             env_row("reliability/unresolvable-internal-references"),
             env_row("reliability/unresolvable-internal-references"),
+            env_row_num("sentiment/last-commit-age", 0.0, Some("days")),
         ];
         let rendered = render_compare_signals(&rows, &[], None, None);
         let plain = strip_ansi(&rendered);
         let lines = plain.lines().collect::<Vec<_>>();
 
+        // Selection order: Signals, Total, Context tokens, Eval test cases,
+        // Unresolvable refs, Stars, Forks, Watchers, Open issues,
+        // Last commit age, Archived, Primary language.
         let (_, a, _) = split_signal_line(lines[2]); // Context tokens — absent
         assert_eq!(a, "—");
         let (_, a, _) = split_signal_line(lines[3]); // Eval test cases — valueText
@@ -3354,7 +3400,95 @@ mod tests {
         assert_eq!(a, "2");
         let (_, a, _) = split_signal_line(lines[5]); // Stars — valueNum
         assert_eq!(a, "1024", "valueNum must not print a trailing .0");
-        let (_, a, _) = split_signal_line(lines[9]); // Archived — severity
+        let (_, a, _) = split_signal_line(lines[9]); // Last commit age — unit spacing
+        assert_eq!(a, "0 days", "valueNum and unit joined by a single space");
+        let (_, a, _) = split_signal_line(lines[10]); // Archived — severity
         assert_eq!(a, "low");
+    }
+
+    #[test]
+    fn render_compare_signals_empty_value_text_and_watchers() {
+        // Empty or whitespace-only `valueText` carries no usable value: it must
+        // fall through to the severity check and then to `—` — never render a
+        // blank cell and never degrade into a bare row count (`1`) on a scalar
+        // rule. A genuine multi-row list still gets its count, and the
+        // `watchers` replacement signal renders its valueNum like the other
+        // sentiment rows (the license is already shown by the License row).
+        let mut sev_row = env_row_text("characteristics/archived", "  ");
+        sev_row.severity = Some("low".to_string());
+        let rows = vec![
+            env_row_text("reliability/eval-test-case-count", ""),
+            env_row_text("sentiment/forks", "   "),
+            sev_row,
+            env_row_num("sentiment/watchers", 1460.0, None),
+            env_row("reliability/unresolvable-internal-references"),
+            env_row("reliability/unresolvable-internal-references"),
+        ];
+        let rendered = render_compare_signals(&rows, &[], None, None);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+
+        let (_, a, _) = split_signal_line(lines[3]); // Eval test cases — empty valueText
+        assert_eq!(
+            a, "—",
+            "empty valueText must not render as a bare row count"
+        );
+        let (_, a, _) = split_signal_line(lines[6]); // Forks — whitespace-only valueText
+        assert_eq!(
+            a, "—",
+            "whitespace-only valueText must be treated as absent"
+        );
+        let (_, a, _) = split_signal_line(lines[7]); // Watchers — valueNum
+        assert_eq!(a, "1460");
+        let (_, a, _) = split_signal_line(lines[4]); // Unresolvable refs — real list
+        assert_eq!(a, "2", "a genuine multi-row list still gets the row count");
+        let (_, a, _) = split_signal_line(lines[10]); // Archived — severity wins over blank valueText
+        assert_eq!(a, "low", "blank valueText must fall through to severity");
+
+        assert!(
+            !plain.contains("Declared license"),
+            "declared-license must be replaced by watchers"
+        );
+    }
+
+    #[test]
+    fn render_compare_signals_longest_label_keeps_value_alignment() {
+        // `Unresolvable refs` (17 chars) is the longest selected label. The
+        // label column is sized from it (17 + 2), so its value columns sit at
+        // exactly the same offsets as every other row's — the label must never
+        // push its values right of the shared geometry.
+        let rows = vec![
+            env_row("reliability/unresolvable-internal-references"),
+            env_row("reliability/unresolvable-internal-references"),
+            env_row_num("sentiment/stars", 7.0, None),
+        ];
+        let rendered = render_compare_signals(&rows, &[], None, None);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+
+        // The longest label parses cleanly at the shared offsets and its
+        // values land in the value columns, not shifted by the label length.
+        let (label, a, b) = split_signal_line(lines[4]); // Unresolvable refs
+        assert_eq!(label, "Unresolvable refs");
+        assert_eq!(a, "2");
+        assert_eq!(b, "—");
+
+        // Every line's label slice (heading + total + one per signal) is
+        // exactly its expected label — nothing overflows into the gap or the
+        // value columns, which all start at the same byte offsets.
+        let label_w = compare_signals_label_w();
+        let label_end = 2 + label_w;
+        let mut expect = vec!["Total signals"];
+        for (_, label) in COMPARE_SIGNAL_SELECTION {
+            expect.push(label);
+        }
+        for i in 0..expect.len() {
+            // Line 0 is the `Signals` heading; `expect[i]` is line i + 1.
+            assert_eq!(
+                lines[i + 1][2..label_end].trim_end(),
+                expect[i],
+                "row {i}: label must fit its column without overflow"
+            );
+        }
     }
 }
