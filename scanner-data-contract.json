@@ -459,137 +459,46 @@
 							},
 							"signals": {
 								"type": "array",
-								"description": "Non-finding signals emitted by this scanner run (e.g. a declared license or capability). Display-only: never feeds grade or verdict computation. Omit entirely when the scanner produced no signals.",
 								"items": {
 									"type": "object",
-									"required": [
-										"dataCategory",
-										"sourceClass",
-										"ruleId",
-										"observedAt"
-									],
 									"additionalProperties": false,
+									"required": ["dataCategory", "sourceClass", "ruleId", "observedAt"],
 									"properties": {
-										"dataCategory": {
-											"type": "string",
-											"description": "Data category the signal belongs to (e.g. 'characteristics')."
-										},
-										"sourceClass": {
-											"type": "string",
-											"description": "Source class within the category (e.g. 'scan')."
-										},
-										"ruleId": {
-											"type": "string",
-											"description": "Rule identifier that produced this signal (e.g. 'characteristics/declared-license')."
-										},
-										"observedAt": {
-											"type": "string",
-											"description": "Caller-supplied observation time, ISO-8601. Carried unmodified; represents 'when observed', not write time."
-										},
-										"source": {
-											"type": "string",
-											"description": "Emitter of the signal. Defaults to 'vettd' and is omitted when set to that default."
-										},
-										"subjectType": {
-											"type": "string",
-											"description": "Optional subject identity type; the server stamps these server-side."
-										},
-										"subjectId": {
-											"type": "string",
-											"description": "Optional subject identity id."
-										},
-										"relatedType": {
-											"type": "string",
-											"description": "Optional related-subject type for pairwise signals."
-										},
-										"relatedId": {
-											"type": "string",
-											"description": "Optional related-subject id for pairwise signals."
-										},
-										"severity": {
-											"type": "string",
-											"description": "Severity. Open string, not a closed enum."
-										},
-										"label": {
-											"type": "string",
-											"description": "Human-readable label."
-										},
-										"detail": {
-											"type": "string",
-											"description": "Extended detail."
-										},
-										"valueNum": {
-											"type": "number",
-											"description": "Numeric value for measurable signals."
-										},
-										"valueText": {
-											"type": "string",
-											"description": "Text value for non-numeric signals."
-										},
-										"unit": {
-											"type": "string",
-											"description": "Unit of valueNum."
-										},
-										"method": {
-											"type": "string",
-											"description": "Method used to derive the signal."
-										},
-										"derivation": {
-											"type": "string",
-											"description": "Derivation of the signal value."
-										},
-										"confidence": {
-											"type": "number",
-											"description": "Confidence in the signal, 0.0-1.0."
-										},
-										"sampleSize": {
-											"type": "integer",
-											"description": "Sample size the signal is based on."
-										},
-										"synthetic": {
-											"type": "boolean",
-											"description": "Whether this is a synthetic/derived signal. Omitted when false."
-										},
-										"payload": {
-											"type": "object",
-											"description": "Arbitrary structured payload (JSON object only)."
-										}
+										"dataCategory": { "type": "string" },
+										"sourceClass": { "type": "string" },
+										"ruleId": { "type": "string" },
+										"observedAt": { "type": "string", "format": "date-time" },
+										"subjectType": { "type": "string" },
+										"subjectId": { "type": "string" },
+										"relatedType": { "type": "string" },
+										"relatedId": { "type": "string" },
+										"severity": { "type": "string" },
+										"label": { "type": "string" },
+										"detail": { "type": "string" },
+										"valueNum": { "type": "number" },
+										"valueText": { "type": "string" },
+										"unit": { "type": "string" },
+										"method": { "type": "string" },
+										"derivation": { "type": "string" },
+										"confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+										"sampleSize": { "type": "integer" },
+										"synthetic": { "type": "boolean" },
+										"payload": { "type": "object" }
 									}
 								}
 							},
 							"coverage": {
 								"type": "array",
-								"description": "Scan coverage / attestation entries describing the analysis rather than the asset (e.g. which rules ran). Display-only. Omit entirely when the scanner produced no coverage entries.",
 								"items": {
 									"type": "object",
-									"required": [
-										"kind",
-										"ruleId",
-										"label",
-										"detail"
-									],
 									"additionalProperties": false,
+									"required": ["kind", "ruleId", "label", "detail"],
 									"properties": {
-										"kind": {
-											"type": "string",
-											"description": "What the entry describes. Open string (e.g. 'applicable', 'not_applicable', 'attestation')."
-										},
-										"ruleId": {
-											"type": "string",
-											"description": "Rule identifier the coverage entry refers to."
-										},
-										"label": {
-											"type": "string",
-											"description": "Short human-readable label."
-										},
-										"detail": {
-											"type": "string",
-											"description": "Extended detail."
-										},
-										"category": {
-											"type": "string",
-											"description": "Optional category for the coverage entry."
-										}
+										"kind": { "type": "string" },
+										"ruleId": { "type": "string" },
+										"label": { "type": "string" },
+										"detail": { "type": "string" },
+										"category": { "type": "string" }
 									}
 								}
 							}

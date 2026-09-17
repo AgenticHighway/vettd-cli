@@ -291,6 +291,29 @@ const SKILL_FIELDS: &[&str] = &[
     "severity",
     "label",
     "detail",
+    // ScannerSignal (v2.5.0, display-only) — surfaced additively in
+    // `externalScannerResults[].signals`.
+    "signals",
+    "dataCategory",
+    "sourceClass",
+    "observedAt",
+    "subjectType",
+    "subjectId",
+    "relatedType",
+    "relatedId",
+    "valueNum",
+    "valueText",
+    "unit",
+    "method",
+    "derivation",
+    "confidence",
+    "sampleSize",
+    "synthetic",
+    "payload",
+    // ScannerCoverage (v2.5.0, display-only) — surfaced additively in
+    // `externalScannerResults[].coverage`.
+    "coverage",
+    "kind",
     // DetectedSkillSource (issue #219)
     "detectedSource",
     "repoUrl",
@@ -381,11 +404,12 @@ fn walk_coverage(value: &serde_json::Value, path: &str) {
                          disclosure.rs (and a category variant if needed) before shipping."
                     );
                 }
-                // `rawReport` is an opaque, arbitrary JSON blob from an external
-                // scanner — its internal keys cannot be enumerated from the
-                // contract types. It is fully covered (transmitted) by
-                // SkillRecords, so we don't require per-key disclosure inside it.
-                if key == "rawReport" {
+                // `rawReport` and signal `payload` are opaque, arbitrary JSON
+                // blobs from the external scanner — their internal keys cannot
+                // be enumerated from the contract types. Both are fully
+                // covered (transmitted) by SkillRecords, so we don't require
+                // per-key disclosure inside them.
+                if key == "rawReport" || key == "payload" {
                     continue;
                 }
                 walk_coverage(child, &child_path);
@@ -546,6 +570,35 @@ mod tests {
     fn every_serialized_payload_field_maps_to_a_known_category() {
         let payload = max_payload();
         validate_payload_coverage(&payload);
+    }
+
+    /// Regression (epic #879 review): the v0.2.0 scanner pin emits `signals`
+    /// and `coverage` for real skills, and `scan --submit` panicked on the
+    /// first unknown serialized key (`dataCategory`, `valueNum`, ...) because
+    /// the walker had no mapping for the signal/coverage rows. A skill with
+    /// BOTH populated signals and coverage must walk cleanly — this panics
+    /// without the `SKILL_FIELDS` additions.
+    #[test]
+    fn populated_signals_and_coverage_are_fully_disclosed() {
+        let mut payload = max_payload();
+        let results = payload.skills[0]
+            .external_scanner_results
+            .as_mut()
+            .expect("fixture must carry external scanner results");
+        assert!(
+            results[0].signals.is_some(),
+            "fixture must exercise a populated signals array"
+        );
+        assert!(
+            results[0].coverage.is_some(),
+            "fixture must exercise a populated coverage array"
+        );
+        validate_payload_coverage(&payload);
+        let cats = disclosure_categories(&payload);
+        assert!(
+            cats.contains(&DisclosureCategory::SkillRecords),
+            "signals/coverage belong to the skill record disclosure"
+        );
     }
 
     /// The walker must leave no undisclosed field on the *default* shape too —
@@ -789,8 +842,41 @@ mod tests {
                         label: "l".into(),
                         detail: Some("d".into()),
                     }]),
-                    signals: None,
-                    coverage: None,
+                    signals: Some(vec![ScannerSignal {
+                        data_category: "characteristics".into(),
+                        source_class: "scan".into(),
+                        rule_id: "characteristics/declared-license".into(),
+                        observed_at: "2026-01-01T00:00:00Z".into(),
+                        source: Some("vettd".into()),
+                        subject_type: Some("skill".into()),
+                        subject_id: Some("sk1".into()),
+                        related_type: Some("skill".into()),
+                        related_id: Some("sk2".into()),
+                        severity: Some("low".into()),
+                        label: Some("Declared license".into()),
+                        detail: Some("MIT".into()),
+                        value_num: Some(1.0),
+                        value_text: Some("MIT".into()),
+                        unit: Some("count".into()),
+                        method: Some("parse".into()),
+                        derivation: Some("frontmatter".into()),
+                        confidence: Some(0.9),
+                        sample_size: Some(1),
+                        synthetic: false,
+                        payload: Some(
+                            serde_json::json!({"opaque": {"inner": "key"}})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                    }]),
+                    coverage: Some(vec![ScannerCoverage {
+                        kind: "applicable".into(),
+                        rule_id: "rules/license".into(),
+                        label: "License rule ran".into(),
+                        detail: "checked frontmatter".into(),
+                        category: Some("structure".into()),
+                    }]),
                 }]),
                 detected_source: None,
             }],
