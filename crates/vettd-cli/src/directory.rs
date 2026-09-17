@@ -69,6 +69,12 @@ pub struct DirectoryCard {
     pub overall_grade: Option<String>,
     pub source_type: Option<String>,
     pub scanner_run_count: Option<u32>,
+    /// Compact per-category signal summary (vettd#981). Present on directory
+    /// list/search responses that carry signal data; skipped on serialize
+    /// when absent so `--json` output stays byte-identical to the pre-signal
+    /// shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal_categories: Option<Vec<SignalCategorySummary>>,
     /// Present only from `SEARCH_BETA_TESTING` search responses. Skipped on
     /// serialize when absent, so `--json` output is byte-identical to the
     /// pre-beta shape unless the server actually sent this field.
@@ -284,6 +290,9 @@ pub(crate) fn parse_rank_filters(
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectorySkillDetail {
+    /// The SkillAudit PK — used as the signals endpoint's `subjectId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub slug: Option<String>,
     pub name: String,
     pub description: Option<String>,
@@ -301,6 +310,11 @@ pub struct DirectorySkillDetail {
     pub completed_at: Option<String>,
     pub findings: Vec<DirectoryFinding>,
     pub scanner_runs: Vec<ScannerRun>,
+    /// Compact per-category signal summary on the detail payload (vettd#981).
+    /// Skipped on serialize when absent so `--json` stays byte-identical to
+    /// the pre-signal shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_categories: Option<Vec<SignalCategorySummary>>,
     /// Slice 2 freshness field (public directory view only). `None` when no
     /// freshness row exists on the server. Omitted on serialize when absent
     /// (`skip_serializing_if`) so JSON shape stays lossless: fields received
@@ -332,6 +346,132 @@ pub struct ScannerRun {
     pub finding_count: Option<i32>,
     pub critical_count: Option<i32>,
     pub high_count: Option<i32>,
+}
+
+// ---------------------------------------------------------------------------
+// Signal category summaries (vettd#981)
+//
+// The directory API returns a compact `signalCategories` summary on cards,
+// detail payloads, and compare entries. These mirror the server's
+// `CategorySummary` / `SignalEnvelopeRow` shapes (vettd
+// `packages/api/src/signals/verdicts.ts` + `types.ts`) with all fields
+// optional and camelCase, so an unknown or absent value degrades to a plain
+// display rather than a decode failure. Display-only — never fed into the
+// local grade or verdict logic.
+// ---------------------------------------------------------------------------
+
+/// One category's verdict. The server union is
+/// `null | {form:"graded"; grade:string} | {form:"measured"; magnitudes:[…]} |
+/// {form:"unjudged"}`; modelled as a flat all-optional struct so any future
+/// form still decodes (`form` is the discriminator, the other fields are the
+/// payload of whichever form is present).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCategoryVerdict {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub magnitudes: Option<Vec<SignalCategoryMagnitude>>,
+}
+
+/// One magnitude behind a `measured` verdict.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCategoryMagnitude {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+}
+
+/// One normalized envelope row (findings / signals / coverage projected into
+/// one shape). Mirrors `SignalEnvelopeRow` with all fields optional.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalEnvelopeRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_num: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthetic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_party: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+}
+
+/// Compact per-category summary over a skill's signal envelope.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCategorySummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<SignalCategoryVerdict>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<SignalEnvelopeRow>>,
+}
+
+/// Response envelope for the public signals read
+/// (`GET /api/assets/skill_audit/{id}/signals`).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSignalsResponse {
+    pub subject_type: Option<String>,
+    pub subject_id: Option<String>,
+    pub signals: Vec<SignalEnvelopeRow>,
+    pub categories: Vec<SignalCategorySummary>,
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1139,193 @@ pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
     }
 }
 
+/// Fetch and render the public signal record for a skill
+/// (`GET /api/assets/skill_audit/{id}/signals`). The audit `id` is read from
+/// the directory detail payload, and the request itself is anonymous via
+/// [`read_client`] — never sets `Authorization`.
+pub fn handle_signals(slug: &str, json: bool) {
+    let detail = fetch_skill(slug);
+    let id = match detail.id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            eprintln!("Error: skill '{slug}' has no audit id on the directory record.");
+            std::process::exit(1);
+        }
+    };
+
+    let endpoint = crate::submit::load_auth_config()
+        .map(|c| c.endpoint)
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
+    let url =
+        crate::network::derive_api_url(&endpoint, &format!("assets/skill_audit/{id}/signals"));
+
+    match read_client::fetch_json::<SkillSignalsResponse>(&url) {
+        Ok(resp) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+                return;
+            }
+            print_signal_categories(&resp, &detail.name, slug);
+        }
+        Err(ReadError::NotFound) => {
+            eprintln!("Error: no published signal record for skill '{slug}'.");
+            std::process::exit(1);
+        }
+        Err(ReadError::Unreachable(msg)) => {
+            eprintln!("Error: could not reach the vettd directory: {msg}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error fetching signals for skill '{slug}': {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Render a [`SkillSignalsResponse`] in human form: the categories in server
+/// order (all seven catalog categories, including empty ones) with their
+/// verdict form and row count, then each category's rows.
+fn print_signal_categories(resp: &SkillSignalsResponse, name: &str, slug: &str) {
+    println!("{BOLD}Signals for {name}{RESET}  {DIM}({slug}){RESET}");
+    println!();
+
+    if resp.categories.is_empty() {
+        println!("  {DIM}No published signal categories for this skill.{RESET}");
+        return;
+    }
+
+    let subject = match (&resp.subject_type, &resp.subject_id) {
+        (Some(t), Some(id)) => format!("{t} {id}"),
+        (Some(t), None) => t.clone(),
+        (None, Some(id)) => id.clone(),
+        (None, None) => "—".to_string(),
+    };
+    println!("  {DIM}Subject:{RESET} {subject}");
+    println!();
+
+    for cat in &resp.categories {
+        let label = cat.label.as_deref().unwrap_or("—");
+        let form = cat.form.as_deref().unwrap_or("?");
+        let rows = cat.rows.as_ref().map(|r| r.len()).unwrap_or(0);
+        let verdict_s = fmt_signal_verdict(&cat.verdict);
+        println!(
+            "  {BOLD}{label}{RESET}  {DIM}{form}{RESET}  {rows} row{}  {verdict_s}",
+            if rows == 1 { "" } else { "s" }
+        );
+        if let Some(cat_rows) = &cat.rows {
+            for row in cat_rows {
+                println!("    {}", fmt_signal_row(row));
+            }
+        }
+        println!();
+    }
+
+    println!("  {DIM}Run `vettd directory signals {slug} --json` for the raw payload.{RESET}");
+}
+
+/// Compact verdict token for a category: `verdict: <grade>` for graded,
+/// `verdict: measured (N magnitude(s))` for measured, `unjudged` for
+/// unjudged, `no verdict` when null (absence is not a verdict).
+fn fmt_signal_verdict(verdict: &Option<SignalCategoryVerdict>) -> String {
+    match verdict {
+        None => format!("{DIM}no verdict{RESET}"),
+        Some(v) => match v.form.as_deref() {
+            Some("graded") => match &v.grade {
+                Some(g) => format!("verdict: {g}"),
+                None => format!("{DIM}graded (no grade){RESET}"),
+            },
+            Some("measured") => {
+                let n = v.magnitudes.as_ref().map(|m| m.len()).unwrap_or(0);
+                format!(
+                    "verdict: measured ({} magnitude{})",
+                    n,
+                    if n == 1 { "" } else { "s" }
+                )
+            }
+            Some("unjudged") => format!("{DIM}unjudged{RESET}"),
+            Some(other) => format!("verdict: {other}"),
+            None => format!("{DIM}no verdict form{RESET}"),
+        },
+    }
+}
+
+/// One compact line for a single envelope row.
+fn fmt_signal_row(row: &SignalEnvelopeRow) -> String {
+    let origin = row.origin.as_deref().unwrap_or("row");
+    let rule = row.rule_id.as_deref().unwrap_or("—");
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(sev) = row.severity.as_deref() {
+        let sc = severity_color(&sev.to_ascii_lowercase());
+        parts.push(format!("{sc}[{}]{RESET}", sev.to_uppercase()));
+    }
+    if let Some(label) = row.label.as_deref() {
+        if !label.is_empty() {
+            parts.push(label.to_string());
+        }
+    }
+    if let Some(vt) = row.value_text.as_deref().filter(|vt| !vt.is_empty()) {
+        parts.push(format!("= {vt}"));
+    } else if let Some(vn) = row.value_num {
+        let unit = row.unit.as_deref().unwrap_or("");
+        parts.push(format!("= {vn}{unit}"));
+    }
+    let head = if parts.is_empty() {
+        rule.to_string()
+    } else {
+        format!("{}  {DIM}({rule}){RESET}", parts.join(" "))
+    };
+    format!("{DIM}[{origin}]{RESET} {head}")
+}
+
+/// Compact one-line signal summary for directory cards (list/search output).
+/// One short token per non-empty category, joined with `·`; `None` when no
+/// category has rows (keeps the table from flooding).
+pub(crate) fn fmt_signal_categories_compact(cats: &[SignalCategorySummary]) -> Option<String> {
+    let tokens: Vec<String> = cats
+        .iter()
+        .filter(|c| c.rows.as_ref().is_some_and(|r| !r.is_empty()))
+        .map(|c| {
+            let label = c.label.as_deref().unwrap_or("—");
+            match &c.verdict {
+                Some(v) if v.form.as_deref() == Some("graded") => match &v.grade {
+                    Some(g) => format!("{label}: {g}"),
+                    None => format!("{label}: graded"),
+                },
+                Some(v) if v.form.as_deref() == Some("measured") => {
+                    if let Some(m) = v
+                        .magnitudes
+                        .as_ref()
+                        .and_then(|mags| mags.first())
+                        .and_then(|m| m.value)
+                    {
+                        let unit = v
+                            .magnitudes
+                            .as_ref()
+                            .and_then(|mags| mags.first())
+                            .and_then(|m| m.unit.as_deref())
+                            .unwrap_or("");
+                        format!("{label}: {m}{unit}")
+                    } else {
+                        format!("{label}: measured")
+                    }
+                }
+                _ => {
+                    let n = c.rows.as_ref().map(|r| r.len()).unwrap_or(0);
+                    format!("{label}: {n}")
+                }
+            }
+        })
+        .collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" · "))
+    }
+}
+
 pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     let detail_a = fetch_skill(slug_a);
     let detail_b = fetch_skill(slug_b);
@@ -1418,6 +1745,17 @@ fn print_card_row(card: &DirectoryCard, slug_w: usize, term_w: usize, show_fresh
             src = SOURCE_COL_W,
             scan = SCANNED_COL_W,
         );
+    }
+
+    // Compact per-category signal summary (vettd#981) — one short line when
+    // the card carries any non-empty category; omitted entirely otherwise so
+    // pre-signal directory output stays byte-identical.
+    if let Some(cats) = &card.signal_categories {
+        if let Some(line) = fmt_signal_categories_compact(cats) {
+            let budget = term_w.saturating_sub(4);
+            let line_display = truncate_to_display(&line, budget);
+            println!("  {DIM}signals:{RESET} {line_display}");
+        }
     }
 }
 
@@ -1867,6 +2205,7 @@ mod tests {
             overall_grade: None,
             source_type: None,
             scanner_run_count: None,
+            signal_categories: None,
             language: None,
             agent_compatibility: None,
             rankings: None,
@@ -1913,6 +2252,7 @@ mod tests {
     #[test]
     fn directory_detail_json_omits_freshness_when_absent() {
         let detail = DirectorySkillDetail {
+            id: None,
             slug: None,
             name: "PDF Summarizer".into(),
             description: None,
@@ -1930,6 +2270,7 @@ mod tests {
             completed_at: None,
             findings: vec![],
             scanner_runs: vec![],
+            signal_categories: None,
             freshness: None,
         };
         let val: serde_json::Value = serde_json::to_value(&detail).unwrap();
@@ -1940,6 +2281,206 @@ mod tests {
             "absent freshness must be omitted from detail JSON: {}",
             val
         );
+    }
+
+    // ── signal category summary tests ─────────────────────────────────
+
+    fn sample_category_summary_json() -> serde_json::Value {
+        serde_json::json!({
+            "category": "safety",
+            "label": "Safety",
+            "form": "graded",
+            "verdict": {"form": "graded", "grade": "C"},
+            "rows": [
+                {
+                    "origin": "signal",
+                    "id": "sig-1",
+                    "subjectType": "skill_audit",
+                    "subjectId": "audit-1",
+                    "relatedType": "",
+                    "relatedId": "",
+                    "dataCategory": "safety",
+                    "sourceClass": "scan",
+                    "source": "vettd",
+                    "ruleId": "VTD-0001",
+                    "severity": "medium",
+                    "label": "Prompt injection",
+                    "detail": null,
+                    "valueNum": null,
+                    "valueText": null,
+                    "unit": null,
+                    "method": null,
+                    "derivation": null,
+                    "confidence": null,
+                    "sampleSize": null,
+                    "synthetic": false,
+                    "firstParty": true,
+                    "observedAt": "2026-08-24T00:00:00.000Z",
+                    "payload": null
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn signal_categories_decode_from_server_shape() {
+        // The allow-list struct must decode the live `CategorySummary` shape
+        // (verdict union + envelope rows) with all fields present.
+        let cat: SignalCategorySummary =
+            serde_json::from_value(sample_category_summary_json()).unwrap();
+        assert_eq!(cat.category.as_deref(), Some("safety"));
+        assert_eq!(cat.form.as_deref(), Some("graded"));
+        let verdict = cat.verdict.unwrap();
+        assert_eq!(verdict.form.as_deref(), Some("graded"));
+        assert_eq!(verdict.grade.as_deref(), Some("C"));
+        let rows = cat.rows.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rule_id.as_deref(), Some("VTD-0001"));
+        assert_eq!(rows[0].origin.as_deref(), Some("signal"));
+        assert_eq!(rows[0].severity.as_deref(), Some("medium"));
+        assert_eq!(
+            rows[0].observed_at.as_deref(),
+            Some("2026-08-24T00:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn signal_categories_decode_unjudged_and_measured_verdicts() {
+        // unjudged (no grade, no magnitudes)
+        let unjudged: SignalCategorySummary = serde_json::from_value(serde_json::json!({
+            "category": "characteristics",
+            "label": "Characteristics",
+            "form": "unjudged",
+            "verdict": {"form": "unjudged"},
+            "rows": []
+        }))
+        .unwrap();
+        assert_eq!(unjudged.verdict.unwrap().form.as_deref(), Some("unjudged"));
+
+        // measured with magnitudes
+        let measured: SignalCategorySummary = serde_json::from_value(serde_json::json!({
+            "category": "performance",
+            "label": "Performance",
+            "form": "measured",
+            "verdict": {
+                "form": "measured",
+                "magnitudes": [
+                    {"ruleId": "perf/context", "label": "Context", "value": 42.5, "unit": "KB", "method": "count"}
+                ]
+            },
+            "rows": []
+        }))
+        .unwrap();
+        let m = measured.verdict.unwrap();
+        assert_eq!(m.form.as_deref(), Some("measured"));
+        let mags = m.magnitudes.unwrap();
+        assert_eq!(mags[0].value, Some(42.5));
+        assert_eq!(mags[0].unit.as_deref(), Some("KB"));
+    }
+
+    #[test]
+    fn signal_categories_absent_from_json_is_omitted() {
+        // A card without signal data must not synthesize `signalCategories`
+        // in `--json` output — byte-identical to the pre-signal shape.
+        let card = card_with_freshness(None);
+        let val: serde_json::Value = serde_json::to_value(&card).unwrap();
+        assert!(
+            val.get("signalCategories").is_none(),
+            "absent signalCategories must be omitted: {}",
+            val
+        );
+    }
+
+    #[test]
+    fn signal_categories_json_forwards_when_present() {
+        // Cards that DO carry signal data must forward it losslessly.
+        let card = DirectoryCard {
+            signal_categories: Some(vec![
+                serde_json::from_value(sample_category_summary_json()).unwrap()
+            ]),
+            ..card_with_freshness(None)
+        };
+        let val: serde_json::Value = serde_json::to_value(&card).unwrap();
+        assert_eq!(val["signalCategories"][0]["category"], "safety");
+        assert_eq!(val["signalCategories"][0]["verdict"]["grade"], "C");
+    }
+
+    #[test]
+    fn fmt_signal_categories_compact_lists_nonempty_categories_only() {
+        let cats: Vec<SignalCategorySummary> = vec![
+            serde_json::from_value(sample_category_summary_json()).unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "category": "reliability",
+                "label": "Reliability",
+                "form": "graded",
+                "verdict": null,
+                "rows": []
+            }))
+            .unwrap(),
+        ];
+        let line = fmt_signal_categories_compact(&cats).unwrap();
+        assert!(line.contains("Safety: C"));
+        assert!(
+            !line.contains("Reliability"),
+            "empty categories must be skipped: {line}"
+        );
+    }
+
+    #[test]
+    fn fmt_signal_categories_compact_none_when_no_rows() {
+        let cats: Vec<SignalCategorySummary> = vec![serde_json::from_value(serde_json::json!({
+            "category": "safety",
+            "label": "Safety",
+            "form": "graded",
+            "verdict": null,
+            "rows": []
+        }))
+        .unwrap()];
+        assert!(fmt_signal_categories_compact(&cats).is_none());
+    }
+
+    #[test]
+    fn skill_signals_response_decodes_envelope() {
+        // The public signals endpoint returns {subjectType, subjectId,
+        // signals, categories}; the response struct must decode it.
+        let resp: SkillSignalsResponse = serde_json::from_value(serde_json::json!({
+            "subjectType": "skill_audit",
+            "subjectId": "audit-1",
+            "signals": [
+                {
+                    "origin": "coverage",
+                    "id": "cov-1",
+                    "subjectType": "skill_audit",
+                    "subjectId": "audit-1",
+                    "relatedType": "",
+                    "relatedId": "",
+                    "dataCategory": "safety",
+                    "sourceClass": "scan",
+                    "source": "vettd",
+                    "ruleId": "VTD-0092",
+                    "severity": null,
+                    "label": "No behavioral signals",
+                    "detail": null,
+                    "valueNum": null,
+                    "valueText": null,
+                    "unit": null,
+                    "method": null,
+                    "derivation": null,
+                    "confidence": null,
+                    "sampleSize": null,
+                    "synthetic": false,
+                    "firstParty": true,
+                    "observedAt": "2026-08-24T00:00:00.000Z",
+                    "payload": null
+                }
+            ],
+            "categories": [serde_json::from_value::<SignalCategorySummary>(sample_category_summary_json()).unwrap()]
+        }))
+        .unwrap();
+        assert_eq!(resp.subject_type.as_deref(), Some("skill_audit"));
+        assert_eq!(resp.subject_id.as_deref(), Some("audit-1"));
+        assert_eq!(resp.signals.len(), 1);
+        assert_eq!(resp.categories.len(), 1);
     }
 
     // ── ANSI-aware width helpers ──────────────────────────────────────
