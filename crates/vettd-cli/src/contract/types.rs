@@ -102,6 +102,26 @@ pub struct Skill {
     pub overall_grade: String,
     pub execution_environment: String,
     pub description: String,
+    // v2.6.0 addition — skill-level metadata surfaced from the skill scanner
+    // and SKILL.md frontmatter (see scanner-field-gate.json). Optional and
+    // omitted when absent; never fabricated as `false`/`0` for assets that
+    // were not scanned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_skill_md: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_scripts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_references: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_evals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_assets: Option<bool>,
     pub permissions: Vec<SkillPermission>,
     pub dependencies: SkillDependencies,
     pub consumers: Vec<SkillConsumer>,

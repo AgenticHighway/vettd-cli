@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "Vettd Scanner Data Contract",
 	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-	"version": "2.5.0",
+	"version": "2.6.0",
 	"type": "object",
 	"required": [
 		"scanMeta",
@@ -294,6 +294,39 @@
 						"type": "string",
 						"description": "One-line summary of what the skill does. Must be specific \u2014 not just 'python capability' but e.g. 'Executes Python scripts via local interpreter with unrestricted filesystem access'."
 					},
+					"version": {
+						"type": "string",
+						"description": "Skill version from SKILL.md frontmatter (`version`, falling back to `metadata.version`). Omit when the skill was not scanned or the frontmatter has no version."
+					},
+					"license": {
+						"type": "string",
+						"description": "Skill license from SKILL.md frontmatter (`license`). Omit when the skill was not scanned or the frontmatter has no license."
+					},
+					"fileCount": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Total number of files in the skill package (text + binary) as computed by the skill scanner. Omit when the skill was not scanned."
+					},
+					"hasSkillMd": {
+						"type": "boolean",
+						"description": "Whether a SKILL.md or skill.md exists at the skill package root. Omit when the skill was not scanned."
+					},
+					"hasScripts": {
+						"type": "boolean",
+						"description": "Whether a scripts/ directory exists in the skill package. Omit when the skill was not scanned."
+					},
+					"hasReferences": {
+						"type": "boolean",
+						"description": "Whether a references/ directory exists in the skill package. Omit when the skill was not scanned."
+					},
+					"hasEvals": {
+						"type": "boolean",
+						"description": "Whether an evals/ directory or evals.json exists in the skill package. Omit when the skill was not scanned."
+					},
+					"hasAssets": {
+						"type": "boolean",
+						"description": "Whether an assets/ directory exists in the skill package. Omit when the skill was not scanned."
+					},
 					"permissions": {
 						"type": "array",
 						"description": "OS/runtime permissions this skill requires.",
@@ -503,6 +536,34 @@
 								}
 							}
 						}
+					},
+					"detectedSource": {
+						"type": "object",
+						"description": "Git remote detected by the scanner for the skill's source directory. Informational only, never treated as verified by the server. Omitted when no remote was detected.",
+						"oneOf": [
+							{
+								"type": "object",
+								"description": "Detected GitHub remote.",
+								"required": ["status", "repoUrl", "branch", "path"],
+								"additionalProperties": false,
+								"properties": {
+									"status": {"const": "gitHub"},
+									"repoUrl": {"type": "string"},
+									"branch": {"type": "string"},
+									"path": {"type": "string"}
+								}
+							},
+							{
+								"type": "object",
+								"description": "Detected non-GitHub remote.",
+								"required": ["status", "remoteUrl"],
+								"additionalProperties": false,
+								"properties": {
+									"status": {"const": "unsupportedRemote"},
+									"remoteUrl": {"type": "string"}
+								}
+							}
+						]
 					}
 				}
 			}
