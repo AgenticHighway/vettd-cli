@@ -79,21 +79,8 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
         }
     };
 
-    let findings: Vec<ExternalScannerFinding> = scan_result
-        .findings
-        .iter()
-        .map(|f| ExternalScannerFinding {
-            rule_id: f.rule_id.clone(),
-            category: f.category.as_str().to_string(),
-            severity: f.severity.as_str().to_string(),
-            label: f.label.clone(),
-            detail: if f.detail.is_empty() {
-                None
-            } else {
-                Some(f.detail.clone())
-            },
-        })
-        .collect();
+    let findings: Vec<ExternalScannerFinding> =
+        scan_result.findings.iter().map(map_finding).collect();
 
     // Signals are display-only — they travel separately from findings and are
     // never mapped into `ExternalScannerFinding` nor into the local grade.
@@ -169,6 +156,25 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
             has_assets: scan_result.has_assets,
         },
     })
+}
+
+/// Map one scanner [`vettd_skill_scanner::Finding`] onto the contract
+/// [`ExternalScannerFinding`] shape.
+///
+/// Pure (no I/O) so the mapping is unit-testable without a real scan run.
+fn map_finding(f: &vettd_skill_scanner::Finding) -> ExternalScannerFinding {
+    ExternalScannerFinding {
+        rule_id: f.rule_id.clone(),
+        category: f.category.as_str().to_string(),
+        severity: f.severity.as_str().to_string(),
+        label: f.label.clone(),
+        detail: if f.detail.is_empty() {
+            None
+        } else {
+            Some(f.detail.clone())
+        },
+        filepath: f.filepath.clone(),
+    }
 }
 
 /// Load text files and collect all paths from a skill root directory.
@@ -509,5 +515,72 @@ mod tests {
             result.signals.as_ref().unwrap()[0].rule_id,
             "characteristics/declared-license"
         );
+    }
+
+    // ── finding filepath forwarding (v2.7.0) ─────────────────────────
+
+    fn scanner_finding(filepath: Option<String>) -> vettd_skill_scanner::Finding {
+        use vettd_skill_scanner::{FindingCategory, Severity};
+        vettd_skill_scanner::Finding {
+            rule_id: "VTD-0001".to_string(),
+            category: FindingCategory::Structure,
+            severity: Severity::Info,
+            label: "Test finding".to_string(),
+            detail: "Detail text".to_string(),
+            filepath,
+            owasp_llm_category: None,
+            chain_id: None,
+            intent: None,
+            source: "vettd".to_string(),
+        }
+    }
+
+    fn contract_finding(filepath: Option<String>) -> ExternalScannerFinding {
+        ExternalScannerFinding {
+            rule_id: "VTD-0001".to_string(),
+            category: "structure".to_string(),
+            severity: "info".to_string(),
+            label: "Test finding".to_string(),
+            detail: Some("Detail text".to_string()),
+            filepath,
+        }
+    }
+
+    #[test]
+    fn finding_filepath_is_forwarded_into_contract_finding() {
+        // CLI-ingested findings must carry the scanner's `filepath` so they
+        // land in the DB with the same file attribution as GitHub/zip ingest.
+        // A file-scoped finding keeps its path; a package-level finding (no
+        // filepath) maps to `None`, never an empty string.
+        let with = map_finding(&scanner_finding(Some("SKILL.md".to_string())));
+        assert_eq!(with.filepath.as_deref(), Some("SKILL.md"));
+
+        let without = map_finding(&scanner_finding(None));
+        assert_eq!(without.filepath, None);
+    }
+
+    #[test]
+    fn finding_filepath_serde_omitted_when_none_present_when_some() {
+        // `filepath` is optional and additive on the wire: absent findings
+        // must NOT emit `filepath: null` (keeps pre-2.7.0 payloads
+        // byte-identical), present findings must emit the value.
+        let none = contract_finding(None);
+        let v = serde_json::to_value(&none).unwrap();
+        assert!(
+            v.get("filepath").is_none(),
+            "absent filepath must be omitted, not null: {v}"
+        );
+        assert_eq!(v["ruleId"], "VTD-0001");
+
+        let some = contract_finding(Some("SKILL.md".to_string()));
+        let v = serde_json::to_value(&some).unwrap();
+        assert_eq!(v["filepath"], "SKILL.md");
+
+        // Round-trip: a finding carrying a filepath survives serialize →
+        // deserialize → serialize without losing the value.
+        let round: ExternalScannerFinding = serde_json::from_value(v).unwrap();
+        assert_eq!(round.filepath.as_deref(), Some("SKILL.md"));
+        let again = serde_json::to_value(&round).unwrap();
+        assert_eq!(again["filepath"], "SKILL.md");
     }
 }

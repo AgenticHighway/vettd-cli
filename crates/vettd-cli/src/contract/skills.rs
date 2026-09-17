@@ -867,6 +867,7 @@ mod tests {
             severity: severity.to_string(),
             label: "test".to_string(),
             detail: None,
+            filepath: None,
         };
 
         // No findings → A
