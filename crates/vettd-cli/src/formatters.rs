@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::capabilities::derive_capabilities;
+use crate::contract::types::ScannerSignal;
 use crate::models::{ArtifactReport, ScanReport};
 use crate::scoring::{
     SEVERITY_CRITICAL_SCORE, SEVERITY_HIGH_SCORE, SEVERITY_LOW_SCORE, SEVERITY_MEDIUM_SCORE,
@@ -232,6 +233,20 @@ fn print_risk_card(a: &ArtifactReport) {
     if !caps.is_empty() {
         println!("    {CYAN}{}{RESET}", caps.join(", "));
     }
+
+    // Compact scanner signal/coverage count (overview risk cards stay terse —
+    // the full detail view renders the actual rows).
+    if let Some(result) = &a.cached_scan_result {
+        let n_sig = result.signals.as_ref().map(|s| s.len()).unwrap_or(0);
+        let n_cov = result.coverage.as_ref().map(|c| c.len()).unwrap_or(0);
+        if n_sig > 0 || n_cov > 0 {
+            println!(
+                "    {DIM}Scanner:{RESET} {n_sig} signal{sig_s}, {n_cov} coverage {cov_s}",
+                sig_s = if n_sig == 1 { "" } else { "s" },
+                cov_s = if n_cov == 1 { "entry" } else { "entries" }
+            );
+        }
+    }
 }
 
 /// Group remaining artifacts by parent directory and print a compact summary.
@@ -371,8 +386,80 @@ fn print_artifact_details(report: &ScanReport) {
         if !a.signals.is_empty() {
             println!("    {DIM}Signals:{RESET} {}", a.signals.join(", "));
         }
+
+        for line in scanner_signal_lines(a) {
+            println!("    {line}");
+        }
         println!();
     }
+}
+
+/// Compact display lines for a skill artifact's scanner-emitted `signals` and
+/// `coverage` (from the pinned vettd-skill-scanner). Signals are grouped by
+/// `dataCategory`; coverage entries are rendered one per line. Display-only —
+/// never folded into findings or the local grade. Empty when the artifact has
+/// no scanner result or the result carries neither array.
+fn scanner_signal_lines(a: &ArtifactReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(result) = &a.cached_scan_result else {
+        return lines;
+    };
+
+    if let Some(signals) = &result.signals {
+        if !signals.is_empty() {
+            lines.push(format!("{DIM}Scanner signals:{RESET}"));
+            let mut by_category: HashMap<&str, Vec<&ScannerSignal>> = HashMap::new();
+            for s in signals {
+                by_category
+                    .entry(s.data_category.as_str())
+                    .or_default()
+                    .push(s);
+            }
+            let mut cats: Vec<_> = by_category.into_iter().collect();
+            cats.sort_by(|x, y| x.0.cmp(y.0));
+            for (cat, sigs) in cats {
+                let tokens: Vec<String> = sigs
+                    .iter()
+                    .map(|s| {
+                        let mut t = s
+                            .label
+                            .as_deref()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| l.to_string())
+                            .unwrap_or_else(|| s.rule_id.clone());
+                        if let Some(vt) = s.value_text.as_deref().filter(|vt| !vt.is_empty()) {
+                            t.push_str(&format!(" = {vt}"));
+                        } else if let Some(vn) = s.value_num {
+                            let unit = s.unit.as_deref().unwrap_or("");
+                            t.push_str(&format!(" = {vn}{unit}"));
+                        }
+                        t.push_str(&format!("  {DIM}({}){RESET}", s.rule_id));
+                        t
+                    })
+                    .collect();
+                lines.push(format!("      {DIM}{cat}:{RESET} {}", tokens.join(", ")));
+            }
+        }
+    }
+
+    if let Some(coverage) = &result.coverage {
+        if !coverage.is_empty() {
+            lines.push(format!("{DIM}Scanner coverage:{RESET}"));
+            for c in coverage {
+                let cat = c
+                    .category
+                    .as_deref()
+                    .map(|c| format!(" ({c})"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "      {}: {}{cat} — {}",
+                    c.rule_id, c.label, c.detail
+                ));
+            }
+        }
+    }
+
+    lines
 }
 
 // ── Human-readable signal/reason labels ─────────────────────────────────
@@ -830,5 +917,109 @@ mod tests {
     #[test]
     fn humanize_reason_passthrough_unknown() {
         assert_eq!(humanize_reason("something_custom"), "something_custom");
+    }
+
+    // ── scanner signal/coverage display lines ────────────────────────
+
+    fn artifact_with_scanner_result(
+        result: Option<crate::contract::types::ExternalScannerResult>,
+    ) -> ArtifactReport {
+        let mut a = make_artifact("skill", 10, SEVERITY_INFO);
+        a.cached_scan_result = result;
+        a
+    }
+
+    #[test]
+    fn scanner_signal_lines_empty_without_result() {
+        let a = artifact_with_scanner_result(None);
+        assert!(scanner_signal_lines(&a).is_empty());
+    }
+
+    #[test]
+    fn scanner_signal_lines_group_signals_by_category() {
+        use crate::contract::types::{ExternalScannerResult, ScannerSignal};
+        let result = ExternalScannerResult {
+            source: "vettd".to_string(),
+            version: None,
+            status: "success".to_string(),
+            verdict: None,
+            raw_report: None,
+            findings: None,
+            signals: Some(vec![
+                ScannerSignal {
+                    data_category: "characteristics".to_string(),
+                    source_class: "scan".to_string(),
+                    rule_id: "characteristics/declared-license".to_string(),
+                    observed_at: "2026-08-24T00:00:00Z".to_string(),
+                    source: None,
+                    subject_type: None,
+                    subject_id: None,
+                    related_type: None,
+                    related_id: None,
+                    severity: None,
+                    label: Some("License".to_string()),
+                    detail: None,
+                    value_num: None,
+                    value_text: Some("MIT".to_string()),
+                    unit: None,
+                    method: None,
+                    derivation: None,
+                    confidence: None,
+                    sample_size: None,
+                    synthetic: false,
+                    payload: None,
+                },
+                ScannerSignal {
+                    data_category: "characteristics".to_string(),
+                    source_class: "scan".to_string(),
+                    rule_id: "characteristics/declared-capability".to_string(),
+                    observed_at: "2026-08-24T00:00:00Z".to_string(),
+                    source: None,
+                    subject_type: None,
+                    subject_id: None,
+                    related_type: None,
+                    related_id: None,
+                    severity: None,
+                    label: Some("Capability".to_string()),
+                    detail: None,
+                    value_num: None,
+                    value_text: Some("fs".to_string()),
+                    unit: None,
+                    method: None,
+                    derivation: None,
+                    confidence: None,
+                    sample_size: None,
+                    synthetic: false,
+                    payload: None,
+                },
+            ]),
+            coverage: Some(vec![crate::contract::types::ScannerCoverage {
+                kind: "applicable".to_string(),
+                rule_id: "VTD-0001".to_string(),
+                label: "Checked".to_string(),
+                detail: "Rule ran".to_string(),
+                category: Some("structure".to_string()),
+            }]),
+        };
+        let a = artifact_with_scanner_result(Some(result));
+        let lines = scanner_signal_lines(&a);
+        assert!(
+            lines.iter().any(|l| l.contains("Scanner signals:")),
+            "signals header missing: {lines:?}"
+        );
+        // Signals grouped under one `characteristics` line.
+        let cat_line = lines
+            .iter()
+            .find(|l| l.contains("characteristics:"))
+            .unwrap();
+        assert!(
+            cat_line.contains("License = MIT"),
+            "missing value: {cat_line}"
+        );
+        assert!(cat_line.contains("Capability = fs"));
+        // Coverage rendered per-line with category suffix.
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("VTD-0001: Checked (structure) — Rule ran")));
     }
 }
