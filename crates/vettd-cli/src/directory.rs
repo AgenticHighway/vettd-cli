@@ -405,7 +405,7 @@ pub struct SignalCategoryMagnitude {
 
 /// One normalized envelope row (findings / signals / coverage projected into
 /// one shape). Mirrors `SignalEnvelopeRow` with all fields optional.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalEnvelopeRow {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -476,7 +476,7 @@ pub struct SignalCategorySummary {
 
 /// Response envelope for the public signals read
 /// (`GET /api/assets/skill_audit/{id}/signals`).
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSignalsResponse {
     pub subject_type: Option<String>,
@@ -489,22 +489,29 @@ pub struct SkillSignalsResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Derive the directory API base URL from the configured ingest endpoint.
+/// Resolve the effective ingest endpoint for directory reads.
 ///
-/// `VETTD_DIRECTORY_ENDPOINT` overrides the ingest endpoint used for
-/// derivation, for pointing directory search at a test/staging API. Only
-/// honored when `SEARCH_BETA_TESTING` is enabled (see
-/// [`crate::network::search_beta_testing_enabled`]).
-pub(crate) fn directory_base_url() -> String {
+/// Priority: `VETTD_DIRECTORY_ENDPOINT` (honored only when
+/// `SEARCH_BETA_TESTING` is enabled, see
+/// [`crate::network::search_beta_testing_enabled`]) → auth-config endpoint →
+/// [`crate::submit::DEFAULT_PRODUCTION_ENDPOINT`].
+///
+/// Shared by every directory surface (list, detail, signals, compare) so the
+/// same base is used across the whole command, including the signals fetch.
+fn directory_endpoint() -> String {
     let override_endpoint = crate::network::search_beta_testing_enabled()
         .then(|| std::env::var("VETTD_DIRECTORY_ENDPOINT").ok())
         .flatten()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let endpoint = override_endpoint
+    override_endpoint
         .or_else(|| crate::submit::load_auth_config().map(|c| c.endpoint))
-        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
-    crate::network::derive_api_url(&endpoint, "directory")
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string())
+}
+
+/// Derive the directory API base URL from the effective ingest endpoint.
+pub(crate) fn directory_base_url() -> String {
+    crate::network::derive_api_url(&directory_endpoint(), "directory")
 }
 
 /// Percent-encode a query parameter value (UTF-8, RFC 3986 unreserved chars
@@ -1231,14 +1238,21 @@ pub fn handle_signals(slug: &str, json: bool) {
 /// Value untouched so `--json` can print it losslessly (neutral `null`s and
 /// unknown fields survive); the human path deserializes a copy instead.
 fn fetch_signals(detail_id: &str) -> Result<serde_json::Value, ReadError> {
-    let endpoint = crate::submit::load_auth_config()
-        .map(|c| c.endpoint)
-        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
     let url = crate::network::derive_api_url(
-        &endpoint,
+        &directory_endpoint(),
         &format!("assets/skill_audit/{detail_id}/signals"),
     );
     fetch_signals_url(&url)
+}
+
+/// Fetch and decode the signals envelope for one compare side.
+///
+/// `Result`-returning so compare can map any [`ReadError`] (including a 404 —
+/// no published signal record) to "no signal rows" without exiting, unlike
+/// [`handle_signals`] which exits on the same errors.
+fn fetch_signals_for_compare(detail_id: &str) -> Result<SkillSignalsResponse, ReadError> {
+    let raw = fetch_signals(detail_id)?;
+    serde_json::from_value(raw).map_err(|e| ReadError::Decode(e.to_string()))
 }
 
 /// The anonymous signals GET at an explicit URL — `Result`-returning so the
@@ -1407,6 +1421,110 @@ pub(crate) fn fmt_signal_categories_compact(cats: &[SignalCategorySummary]) -> O
     }
 }
 
+// ---------------------------------------------------------------------------
+// Compare signals block (vettd#879)
+//
+// `directory compare` shows a fixed selection of signals vertically, one per
+// line, sourced from the full 7-category envelope (`GET
+// /api/assets/skill_audit/{id}/signals`) rather than the deliberately narrow
+// 3-category `signalCategories` summary on the detail payload.
+// ---------------------------------------------------------------------------
+
+/// Selected signals shown in `directory compare`, in display order:
+/// `(ruleId, display label)`.
+const COMPARE_SIGNAL_SELECTION: &[(&str, &str)] = &[
+    ("performance/static-context-tokens", "Context tokens"),
+    ("reliability/eval-test-case-count", "Eval test cases"),
+    (
+        "reliability/unresolvable-internal-references",
+        "Unresolvable refs",
+    ),
+    ("sentiment/stars", "Stars"),
+    ("sentiment/forks", "Forks"),
+    ("sentiment/open-issues", "Open issues"),
+    ("sentiment/last-commit-age", "Last commit age"),
+    ("characteristics/archived", "Archived"),
+    ("characteristics/declared-license", "Declared license"),
+    ("characteristics/primary-language", "Primary language"),
+];
+
+/// Width of the label column in the compare signals block (longest selected
+/// label, `Unresolvable refs`, is 17 chars).
+const COMPARE_SIGNALS_LABEL_W: usize = 17;
+/// Width of each side's value column in the compare signals block. With the
+/// 2-space indent, label column and inter-column gaps the whole line stays
+/// around 60 chars, under normal terminal widths.
+const COMPARE_SIGNALS_VALUE_W: usize = 18;
+
+/// Pick the display value for one signal rule on one side.
+///
+/// Precedence: `valueNum` (unit appended; no trailing `.0`) → `valueText` →
+/// `severity` → count of the rule's rows on this side → `—`.
+fn compare_signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
+    let matching: Vec<&SignalEnvelopeRow> = rows
+        .iter()
+        .filter(|r| r.rule_id.as_deref() == Some(rule_id))
+        .collect();
+    let first = matching.first();
+    if let Some(v) = first.and_then(|r| r.value_num) {
+        let unit = first.and_then(|r| r.unit.as_deref()).unwrap_or("");
+        return format!("{v}{unit}");
+    }
+    if let Some(t) = first
+        .and_then(|r| r.value_text.as_deref())
+        .filter(|t| !t.is_empty())
+    {
+        return t.to_string();
+    }
+    if let Some(sev) = first
+        .and_then(|r| r.severity.as_deref())
+        .filter(|s| !s.is_empty())
+    {
+        return sev.to_string();
+    }
+    if !matching.is_empty() {
+        return matching.len().to_string();
+    }
+    "—".to_string()
+}
+
+/// Render the vertical signals block for `directory compare`: a dim heading,
+/// a `Total signals` line (per-side `signal_count`, `—` when absent), then one
+/// line per selected signal with the side-A and side-B values.
+///
+/// Pure — no stdout, so the layout is unit-testable without capturing output
+/// (mirrors how `render_cards_table` was split out of `print_cards`).
+fn render_compare_signals(
+    a_rows: &[SignalEnvelopeRow],
+    b_rows: &[SignalEnvelopeRow],
+    a_signal_count: Option<u32>,
+    b_signal_count: Option<u32>,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("  {DIM}Signals{RESET}\n"));
+    out.push_str(&format!(
+        "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}\n",
+        "Total signals",
+        a_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
+        b_signal_count.map_or_else(|| "—".to_string(), |n| n.to_string()),
+        label_w = COMPARE_SIGNALS_LABEL_W,
+        val_w = COMPARE_SIGNALS_VALUE_W,
+    ));
+    for (rule_id, label) in COMPARE_SIGNAL_SELECTION {
+        let a = compare_signal_value(a_rows, rule_id);
+        let b = compare_signal_value(b_rows, rule_id);
+        out.push_str(&format!(
+            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}\n",
+            label,
+            truncate_to_display(&a, COMPARE_SIGNALS_VALUE_W),
+            truncate_to_display(&b, COMPARE_SIGNALS_VALUE_W),
+            label_w = COMPARE_SIGNALS_LABEL_W,
+            val_w = COMPARE_SIGNALS_VALUE_W,
+        ));
+    }
+    out
+}
+
 pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     let detail_a = fetch_skill(slug_a);
     let detail_b = fetch_skill(slug_b);
@@ -1504,14 +1622,18 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
 
     let findings_a = fmt_severity_breakdown(ca, ha, ma, la, ia);
     let findings_b = fmt_severity_breakdown(cb, hb, mb, lb, ib);
-    let signals_a = detail_a
-        .signal_categories
-        .as_deref()
-        .and_then(fmt_signal_categories_compact);
-    let signals_b = detail_b
-        .signal_categories
-        .as_deref()
-        .and_then(fmt_signal_categories_compact);
+    // Full 7-category signal envelope per side, fetched from the public
+    // signals endpoint using the audit `id` as `subjectId`. A side whose
+    // detail carries no audit id, or for which the signals read fails
+    // (including 404 — no published signal record), degrades to no rows.
+    let signals_a = match detail_a.id.as_deref() {
+        Some(id) if !id.is_empty() => fetch_signals_for_compare(id).unwrap_or_default(),
+        _ => SkillSignalsResponse::default(),
+    };
+    let signals_b = match detail_b.id.as_deref() {
+        Some(id) if !id.is_empty() => fetch_signals_for_compare(id).unwrap_or_default(),
+        _ => SkillSignalsResponse::default(),
+    };
     let scanners_a_s = format!(
         "{scanners_a} scanner{}",
         if scanners_a == 1 { "" } else { "s" }
@@ -1575,16 +1697,18 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
         col(&findings_a),
         col(&findings_b)
     );
-    // Symmetric signals row — emitted when EITHER side has signal categories,
-    // with `—` for the missing side (same convention as the freshness rows).
-    if signals_a.is_some() || signals_b.is_some() {
-        println!(
-            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
-            "Signals:",
-            col(signals_a.as_deref().unwrap_or("—")),
-            col(signals_b.as_deref().unwrap_or("—"))
-        );
-    }
+    // Vertical signals block — replaces the old horizontal `Signals:` row,
+    // which truncated the narrow 3-category summary. Shows a fixed selection
+    // of signals one per line for both sides (see `render_compare_signals`).
+    print!(
+        "{}",
+        render_compare_signals(
+            &signals_a.signals,
+            &signals_b.signals,
+            detail_a.signal_count,
+            detail_b.signal_count,
+        )
+    );
     println!(
         "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
         "Scanners:",
@@ -3103,5 +3227,134 @@ mod tests {
         assert_eq!(detail.signal_count, Some(7));
         let detail_val = serde_json::to_value(&detail).unwrap();
         assert_eq!(detail_val["signalCount"], 7);
+    }
+
+    // ── compare signals block (vettd#879) ────────────────────────────
+
+    fn env_row(rule_id: &str) -> SignalEnvelopeRow {
+        SignalEnvelopeRow {
+            rule_id: Some(rule_id.to_string()),
+            ..SignalEnvelopeRow::default()
+        }
+    }
+
+    fn env_row_num(rule_id: &str, value: f64, unit: Option<&str>) -> SignalEnvelopeRow {
+        let mut r = env_row(rule_id);
+        r.value_num = Some(value);
+        r.unit = unit.map(|u| u.to_string());
+        r
+    }
+
+    fn env_row_text(rule_id: &str, text: &str) -> SignalEnvelopeRow {
+        let mut r = env_row(rule_id);
+        r.value_text = Some(text.to_string());
+        r
+    }
+
+    fn env_row_sev(rule_id: &str, sev: &str) -> SignalEnvelopeRow {
+        let mut r = env_row(rule_id);
+        r.severity = Some(sev.to_string());
+        r
+    }
+
+    /// Split one ANSI-stripped signals-block line into (label, a-value, b-value)
+    /// using the block's fixed geometry (2 indent + 17 label + 2 gap → value A
+    /// at byte 21, 18 wide → value B at byte 41).
+    fn split_signal_line(line: &str) -> (&str, &str, &str) {
+        let label = line[2..19].trim_end();
+        let a = line[21..39].trim();
+        let b = line[41..].trim();
+        (label, a, b)
+    }
+
+    #[test]
+    fn render_compare_signals_heading_total_and_one_line_per_signal() {
+        // The block is: a `Signals` heading, a `Total signals` line, then
+        // EXACTLY one line per selected signal — no wrapping or continuation.
+        let rendered = render_compare_signals(&[], &[], None, None);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2 + COMPARE_SIGNAL_SELECTION.len(),
+            "heading + total + one line per selected signal"
+        );
+        assert_eq!(lines[0].trim(), "Signals");
+
+        let (label, a, b) = split_signal_line(lines[1]);
+        assert_eq!(label, "Total signals");
+        assert_eq!(a, "—", "absent signal_count must render —");
+        assert_eq!(b, "—");
+
+        for (_, label) in COMPARE_SIGNAL_SELECTION {
+            let hits = lines.iter().filter(|l| l.contains(label)).count();
+            assert_eq!(hits, 1, "label '{label}' must appear exactly once");
+        }
+    }
+
+    #[test]
+    fn render_compare_signals_both_sides_and_dash_for_missing_side() {
+        // Side A carries a numeric + a text signal; side B has no rows — every
+        // B column must be `—`. The total-signals line uses each side's count.
+        let a_rows = vec![
+            env_row_num("performance/static-context-tokens", 12.5, Some("KB")),
+            env_row_text("characteristics/declared-license", "MIT"),
+        ];
+        let rendered = render_compare_signals(&a_rows, &[], Some(24), None);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+
+        let (_, a, b) = split_signal_line(lines[1]);
+        assert_eq!(a, "24");
+        assert_eq!(b, "—");
+
+        let (_, a, b) = split_signal_line(lines[2]); // Context tokens
+        assert_eq!(a, "12.5KB", "unit must be appended to valueNum");
+        assert_eq!(b, "—");
+
+        let license_line = lines
+            .iter()
+            .find(|l| l.contains("Declared license"))
+            .unwrap();
+        let (_, a, b) = split_signal_line(license_line);
+        assert_eq!(a, "MIT");
+        assert_eq!(b, "—");
+
+        // No line may exceed ~60 chars, so the block never wraps at normal
+        // terminal widths.
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 60,
+                "signals line too wide ({}) : {line}",
+                line.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn render_compare_signals_value_precedence() {
+        // valueNum (unit appended, no trailing .0) beats valueText; valueText
+        // beats severity; severity beats the matching-row count; nothing → —.
+        let rows = vec![
+            env_row_num("sentiment/stars", 1024.0, None),
+            env_row_text("reliability/eval-test-case-count", "12 tests"),
+            env_row_sev("characteristics/archived", "low"),
+            env_row("reliability/unresolvable-internal-references"),
+            env_row("reliability/unresolvable-internal-references"),
+        ];
+        let rendered = render_compare_signals(&rows, &[], None, None);
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+
+        let (_, a, _) = split_signal_line(lines[2]); // Context tokens — absent
+        assert_eq!(a, "—");
+        let (_, a, _) = split_signal_line(lines[3]); // Eval test cases — valueText
+        assert_eq!(a, "12 tests");
+        let (_, a, _) = split_signal_line(lines[4]); // Unresolvable refs — row count
+        assert_eq!(a, "2");
+        let (_, a, _) = split_signal_line(lines[5]); // Stars — valueNum
+        assert_eq!(a, "1024", "valueNum must not print a trailing .0");
+        let (_, a, _) = split_signal_line(lines[9]); // Archived — severity
+        assert_eq!(a, "low");
     }
 }

@@ -185,6 +185,11 @@ pub struct ExternalScannerFinding {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Relative path from the skill root to the file that produced this
+    /// finding. Absent for package-level findings (v2.7.0). Forwarded from the
+    /// pinned scanner's `Finding.filepath`; never synthesized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filepath: Option<String>,
 }
 
 // v2.5.0 addition — scanner signal/coverage output surfaced additively.

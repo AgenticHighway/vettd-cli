@@ -303,6 +303,7 @@ const SKILL_FIELDS: &[&str] = &[
     "severity",
     "label",
     "detail",
+    "filepath",
     // ScannerSignal (v2.5.0, display-only) — surfaced additively in
     // `externalScannerResults[].signals`.
     "signals",
@@ -641,6 +642,29 @@ mod tests {
         );
     }
 
+    /// Regression (v2.7.0): findings now carry an optional `filepath`
+    /// (forwarded from the scanner). The walker must disclose it, and the
+    /// maximal fixture must exercise it with a populated value — otherwise
+    /// `scan --submit` panics on the first real skill payload that has a
+    /// file-scoped finding.
+    #[test]
+    fn populated_finding_filepath_is_fully_disclosed() {
+        let payload = max_payload();
+        let results = payload.skills[0]
+            .external_scanner_results
+            .as_ref()
+            .expect("fixture must carry external scanner results");
+        let findings = results[0]
+            .findings
+            .as_ref()
+            .expect("fixture must carry findings");
+        assert!(
+            findings[0].filepath.is_some(),
+            "fixture must exercise a populated finding filepath"
+        );
+        validate_payload_coverage(&payload);
+    }
+
     /// The walker must leave no undisclosed field on the *default* shape too —
     /// a regression where a newly required field only appears in a full payload
     /// could slip through a sparse one.
@@ -889,6 +913,7 @@ mod tests {
                         severity: "high".into(),
                         label: "l".into(),
                         detail: Some("d".into()),
+                        filepath: Some("SKILL.md".into()),
                     }]),
                     signals: Some(vec![ScannerSignal {
                         data_category: "characteristics".into(),
