@@ -1172,7 +1172,7 @@ pub fn handle_view(slug: &str, json: bool) {
         label_w = label_w
     );
     // Slice 2 freshness detail.
-    for line in freshness::fmt_freshness_detail(&detail.freshness.as_ref()) {
+    for line in freshness::fmt_freshness_detail(&detail.freshness.as_ref(), label_w) {
         println!("  {line}");
     }
     println!();
