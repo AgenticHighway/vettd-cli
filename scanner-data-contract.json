@@ -296,36 +296,36 @@
 					},
 					"version": {
 						"type": "string",
-						"description": "Skill version from SKILL.md frontmatter (`version`, falling back to `metadata.version`). Omit when the skill was not scanned or the frontmatter has no version."
+						"description": "Semantic version of the skill as declared in its manifest (e.g. '1.2.3'). Omitted when the skill does not declare a version."
 					},
 					"license": {
 						"type": "string",
-						"description": "Skill license from SKILL.md frontmatter (`license`). Omit when the skill was not scanned or the frontmatter has no license."
+						"description": "SPDX license identifier of the skill (e.g. 'MIT'). Omitted when the skill does not declare a license."
 					},
 					"fileCount": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "Total number of files in the skill package (text + binary) as computed by the skill scanner. Omit when the skill was not scanned."
+						"description": "Number of files in the skill directory. Omitted when the scanner did not measure it."
 					},
 					"hasSkillMd": {
 						"type": "boolean",
-						"description": "Whether a SKILL.md or skill.md exists at the skill package root. Omit when the skill was not scanned."
+						"description": "Whether the skill directory contains a SKILL.md file."
 					},
 					"hasScripts": {
 						"type": "boolean",
-						"description": "Whether a scripts/ directory exists in the skill package. Omit when the skill was not scanned."
+						"description": "Whether the skill directory contains a scripts/ directory."
 					},
 					"hasReferences": {
 						"type": "boolean",
-						"description": "Whether a references/ directory exists in the skill package. Omit when the skill was not scanned."
+						"description": "Whether the skill directory contains a references/ directory."
 					},
 					"hasEvals": {
 						"type": "boolean",
-						"description": "Whether an evals/ directory or evals.json exists in the skill package. Omit when the skill was not scanned."
+						"description": "Whether the skill directory contains an evals/ directory."
 					},
 					"hasAssets": {
 						"type": "boolean",
-						"description": "Whether an assets/ directory exists in the skill package. Omit when the skill was not scanned."
+						"description": "Whether the skill directory contains an assets/ directory."
 					},
 					"permissions": {
 						"type": "array",
@@ -536,7 +536,8 @@
 								}
 							}
 						}
-					},
+					}
+				},
 					"detectedSource": {
 						"type": "object",
 						"description": "Git remote detected by the scanner for the skill's source directory. Informational only, never treated as verified by the server. Omitted when no remote was detected.",
@@ -565,7 +566,6 @@
 							}
 						]
 					}
-				}
 			}
 			}
 		},
