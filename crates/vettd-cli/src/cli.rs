@@ -266,7 +266,8 @@ pub enum DirectorySubcommand {
     ///
     /// Reads the public signals endpoint for the skill's audit (anonymous).
     /// Renders the seven signal categories in order with their verdict form
-    /// and row count, then the signal rows. Use --json for the raw payload.
+    /// and row count, then the signal rows. Use --json for the raw endpoint
+    /// payload, printed verbatim (neutral nulls and unknown fields preserved).
     Signals {
         /// Entry slug
         slug: String,

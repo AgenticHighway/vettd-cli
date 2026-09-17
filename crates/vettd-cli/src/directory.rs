@@ -612,14 +612,9 @@ fn fmt_severity_breakdown_colored(c: usize, h: usize, m: usize, l: usize, i: usi
 
 /// Fetch a single skill detail, mapping errors to clear exit messages.
 fn fetch_skill(slug: &str) -> DirectorySkillDetail {
-    let base = directory_base_url();
-    let url = format!("{base}/{}", percent_encode(slug));
-    match read_client::fetch_json::<DirectorySkillDetail>(&url) {
+    match fetch_skill_result(slug) {
         Ok(detail) => detail,
-        Err(ReadError::NotFound) => {
-            eprintln!("Error: skill '{slug}' not found (not public or does not exist).");
-            std::process::exit(1);
-        }
+        Err(ReadError::NotFound) => exit_detail_not_found(slug),
         Err(ReadError::Unreachable(msg)) => {
             eprintln!("Error: could not reach the vettd directory: {msg}");
             std::process::exit(1);
@@ -629,6 +624,36 @@ fn fetch_skill(slug: &str) -> DirectorySkillDetail {
             std::process::exit(1);
         }
     }
+}
+
+/// The anonymous directory detail GET — `Result`-returning so the transport
+/// contract (no `Authorization` header, distinct 404) is unit-testable against
+/// a mock server without exiting the process.
+fn fetch_skill_result(slug: &str) -> Result<DirectorySkillDetail, ReadError> {
+    fetch_skill_url(&skill_detail_url(slug))
+}
+
+/// The anonymous directory detail GET at an explicit URL.
+fn fetch_skill_url(url: &str) -> Result<DirectorySkillDetail, ReadError> {
+    read_client::fetch_json::<DirectorySkillDetail>(url)
+}
+
+/// Build the directory detail URL for `slug`.
+fn skill_detail_url(slug: &str) -> String {
+    format!("{}/{}", directory_base_url(), percent_encode(slug))
+}
+
+/// Distinct 404 exit for the detail route — `directory signals` first fetches
+/// the detail, so this must not be conflated with a missing signal record.
+fn exit_detail_not_found(slug: &str) -> ! {
+    eprintln!("{}", skill_not_found_message(slug));
+    std::process::exit(1);
+}
+
+/// The detail-route 404 message, as a value so tests can assert it is distinct
+/// from the signals-route 404 message.
+fn skill_not_found_message(slug: &str) -> String {
+    format!("Error: skill '{slug}' not found (not public or does not exist).")
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,6 +1092,13 @@ pub fn handle_view(slug: &str, json: bool) {
         "Findings:",
         fmt_severity_breakdown_colored(c, h, m, l, i)
     );
+    if let Some(signals) = detail
+        .signal_categories
+        .as_deref()
+        .and_then(fmt_signal_categories_compact)
+    {
+        println!("  {DIM}{:<13}{RESET}  {}", "Signals:", signals);
+    }
     println!("  {DIM}{:<13}{RESET}  {}", "Scanned by:", scanned_by_str);
     println!("  {DIM}{:<13}{RESET}  {}", "Last scanned:", last_scanned);
     println!(
@@ -1153,27 +1185,26 @@ pub fn handle_signals(slug: &str, json: bool) {
         }
     };
 
-    let endpoint = crate::submit::load_auth_config()
-        .map(|c| c.endpoint)
-        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
-    let url =
-        crate::network::derive_api_url(&endpoint, &format!("assets/skill_audit/{id}/signals"));
-
-    match read_client::fetch_json::<SkillSignalsResponse>(&url) {
-        Ok(resp) => {
+    match fetch_signals(&id) {
+        Ok(raw) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&resp).unwrap_or_default()
-                );
+                // Print the raw endpoint payload. Re-serializing the typed
+                // allow-list view would drop neutral `null`s and unknown
+                // fields (`skip_serializing_if`), so `--json` must forward the
+                // fetched Value verbatim.
+                println!("{}", render_signals_json(&raw));
                 return;
             }
+            let resp: SkillSignalsResponse = match serde_json::from_value(raw) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("Error decoding signals for skill '{slug}': {e}");
+                    std::process::exit(1);
+                }
+            };
             print_signal_categories(&resp, &detail.name, slug);
         }
-        Err(ReadError::NotFound) => {
-            eprintln!("Error: no published signal record for skill '{slug}'.");
-            std::process::exit(1);
-        }
+        Err(ReadError::NotFound) => exit_signals_not_found(slug),
         Err(ReadError::Unreachable(msg)) => {
             eprintln!("Error: could not reach the vettd directory: {msg}");
             std::process::exit(1);
@@ -1183,6 +1214,45 @@ pub fn handle_signals(slug: &str, json: bool) {
             std::process::exit(1);
         }
     }
+}
+
+/// Fetch the raw public signals payload for an audit id. Returns the JSON
+/// Value untouched so `--json` can print it losslessly (neutral `null`s and
+/// unknown fields survive); the human path deserializes a copy instead.
+fn fetch_signals(detail_id: &str) -> Result<serde_json::Value, ReadError> {
+    let endpoint = crate::submit::load_auth_config()
+        .map(|c| c.endpoint)
+        .unwrap_or_else(|| crate::submit::DEFAULT_PRODUCTION_ENDPOINT.to_string());
+    let url = crate::network::derive_api_url(
+        &endpoint,
+        &format!("assets/skill_audit/{detail_id}/signals"),
+    );
+    fetch_signals_url(&url)
+}
+
+/// The anonymous signals GET at an explicit URL — `Result`-returning so the
+/// transport contract (no `Authorization` header, distinct 404) is
+/// unit-testable against a mock server without exiting the process.
+fn fetch_signals_url(url: &str) -> Result<serde_json::Value, ReadError> {
+    read_client::fetch_json::<serde_json::Value>(url)
+}
+
+/// Pretty-printed JSON passthrough for `directory signals --json`.
+fn render_signals_json(raw: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(raw).unwrap_or_default()
+}
+
+/// Distinct 404 exit for the signals route — a missing published signal
+/// record must not be conflated with a missing skill.
+fn exit_signals_not_found(slug: &str) -> ! {
+    eprintln!("{}", signals_not_found_message(slug));
+    std::process::exit(1);
+}
+
+/// The signals-route 404 message, as a value so tests can assert it is
+/// distinct from the detail-route 404 message.
+fn signals_not_found_message(slug: &str) -> String {
+    format!("Error: no published signal record for skill '{slug}'.")
 }
 
 /// Render a [`SkillSignalsResponse`] in human form: the categories in server
@@ -1423,6 +1493,14 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
 
     let findings_a = fmt_severity_breakdown(ca, ha, ma, la, ia);
     let findings_b = fmt_severity_breakdown(cb, hb, mb, lb, ib);
+    let signals_a = detail_a
+        .signal_categories
+        .as_deref()
+        .and_then(fmt_signal_categories_compact);
+    let signals_b = detail_b
+        .signal_categories
+        .as_deref()
+        .and_then(fmt_signal_categories_compact);
     let scanners_a_s = format!(
         "{scanners_a} scanner{}",
         if scanners_a == 1 { "" } else { "s" }
@@ -1486,6 +1564,16 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
         col(&findings_a),
         col(&findings_b)
     );
+    // Symmetric signals row — emitted when EITHER side has signal categories,
+    // with `—` for the missing side (same convention as the freshness rows).
+    if signals_a.is_some() || signals_b.is_some() {
+        println!(
+            "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
+            "Signals:",
+            col(signals_a.as_deref().unwrap_or("—")),
+            col(signals_b.as_deref().unwrap_or("—"))
+        );
+    }
     println!(
         "  {DIM}{:<label_w$}{RESET}  {:<val_w$}  {}",
         "Scanners:",
@@ -1835,6 +1923,8 @@ fn pad_to_visible(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::MockServer;
+    use serde_json::json;
 
     #[test]
     fn severity_ordering_is_correct() {
@@ -2481,6 +2571,218 @@ mod tests {
         assert_eq!(resp.subject_id.as_deref(), Some("audit-1"));
         assert_eq!(resp.signals.len(), 1);
         assert_eq!(resp.categories.len(), 1);
+    }
+
+    #[test]
+    fn signals_json_passthrough_preserves_neutral_nulls_and_unknown_fields() {
+        // The typed allow-list view drops neutral `null`s and unknown fields on
+        // reserialize (`skip_serializing_if`), so `directory signals --json`
+        // must print the raw endpoint Value verbatim rather than re-encoding
+        // the typed view. This test guards the raw passthrough specifically.
+        let raw: serde_json::Value = serde_json::json!({
+            "subjectType": "skill_audit",
+            "subjectId": "audit-1",
+            "signals": [
+                {
+                    "origin": "signal",
+                    "id": "sig-1",
+                    "dataCategory": "safety",
+                    "sourceClass": "scan",
+                    "ruleId": "VTD-0001",
+                    "severity": null,
+                    "label": "Prompt injection",
+                    "detail": null,
+                    "valueNum": null,
+                    "valueText": null,
+                    "unit": null,
+                    "method": null,
+                    "derivation": null,
+                    "confidence": null,
+                    "sampleSize": null,
+                    "synthetic": false,
+                    "payload": null,
+                    "futureField": {"anything": [1, 2, 3]}
+                }
+            ],
+            "categories": []
+        });
+        let printed = render_signals_json(&raw);
+        assert!(
+            printed.contains("\"valueNum\": null"),
+            "neutral null must survive --json: {printed}"
+        );
+        assert!(
+            printed.contains("\"severity\": null"),
+            "neutral null must survive --json: {printed}"
+        );
+        assert!(
+            printed.contains("\"payload\": null"),
+            "neutral null must survive --json: {printed}"
+        );
+        assert!(
+            printed.contains("\"futureField\""),
+            "unknown fields must survive --json: {printed}"
+        );
+
+        // And the typed view really is lossy here — proving why --json cannot
+        // re-encode it (this is the regression this finding guards against).
+        let typed: SkillSignalsResponse = serde_json::from_value(raw).unwrap();
+        let reencoded = serde_json::to_string(&typed).unwrap();
+        assert!(
+            !reencoded.contains("\"valueNum\""),
+            "typed reserialize must drop neutral nulls: {reencoded}"
+        );
+        assert!(
+            !reencoded.contains("\"futureField\""),
+            "typed reserialize must drop unknown fields: {reencoded}"
+        );
+    }
+
+    // ── anonymous read transport contract (epic #879) ─────────────────
+
+    /// A directory detail body as the API would serve it (carries the `id`
+    /// that the signals drill-down reads as its `subjectId`).
+    fn sample_detail_json(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "slug": "pdf-summarizer",
+            "name": "PDF Summarizer",
+            "description": null,
+            "version": "1.0",
+            "author": "test",
+            "category": null,
+            "overallGrade": "A",
+            "license": "MIT",
+            "sourceType": "github",
+            "sourceUrl": null,
+            "hasSkillMd": true,
+            "hasScripts": false,
+            "hasEvals": false,
+            "fileCount": 3,
+            "completedAt": "2026-08-24T00:00:00.000Z",
+            "findings": [],
+            "scannerRuns": [],
+            "freshness": null
+        })
+    }
+
+    #[test]
+    fn directory_detail_and_signals_requests_send_no_authorization() {
+        // The detail GET and the signals GET are public reads — the transport
+        // (`read_client`) must never attach an `Authorization` header. Each
+        // route gets a mock that 401s IF an authorization header is present,
+        // plus the real 200 mock; a passing 200 therefore proves the header
+        // was left off (same pattern as directory_download's resolve_download
+        // test).
+        let server = MockServer::start();
+        let base = server.base_url();
+
+        // Detail route: GET /api/directory/pdf-summarizer
+        let detail_auth_401 = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/directory/pdf-summarizer")
+                .header_exists("authorization");
+            then.status(401).json_body(json!({"error": "unauthorized"}));
+        });
+        let detail_ok = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/directory/pdf-summarizer");
+            then.status(200).json_body(sample_detail_json("audit-1"));
+        });
+
+        let detail = fetch_skill_url(&format!("{base}/api/directory/pdf-summarizer"))
+            .unwrap_or_else(|e| panic!("detail GET must succeed without Authorization: {e}"));
+        assert_eq!(detail.name, "PDF Summarizer");
+
+        // Signals route: GET /api/assets/skill_audit/audit-1/signals
+        let signals_auth_401 = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/assets/skill_audit/audit-1/signals")
+                .header_exists("authorization");
+            then.status(401).json_body(json!({"error": "unauthorized"}));
+        });
+        let signals_ok = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/assets/skill_audit/audit-1/signals");
+            then.status(200).json_body(json!({
+                "subjectType": "skill_audit",
+                "subjectId": "audit-1",
+                "signals": [],
+                "categories": []
+            }));
+        });
+
+        let raw = fetch_signals_url(&format!("{base}/api/assets/skill_audit/audit-1/signals"))
+            .unwrap_or_else(|e| panic!("signals GET must succeed without Authorization: {e}"));
+        assert_eq!(raw["subjectId"], "audit-1");
+
+        assert_eq!(
+            detail_auth_401.calls(),
+            0,
+            "detail request must not send Authorization"
+        );
+        assert_eq!(
+            signals_auth_401.calls(),
+            0,
+            "signals request must not send Authorization"
+        );
+        assert_eq!(detail_ok.calls(), 1);
+        assert_eq!(signals_ok.calls(), 1);
+    }
+
+    #[test]
+    fn directory_detail_and_signals_404s_are_distinct_not_generic_errors() {
+        let server = MockServer::start();
+        let base = server.base_url();
+
+        // 404 on the detail route → NotFound (not a generic ServerError).
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/directory/missing");
+            then.status(404).json_body(json!({"error": "not found"}));
+        });
+        let detail_err = fetch_skill_url(&format!("{base}/api/directory/missing")).unwrap_err();
+        assert!(
+            matches!(detail_err, ReadError::NotFound),
+            "detail 404 must be NotFound: {detail_err}"
+        );
+
+        // 404 on the signals route → NotFound.
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/assets/skill_audit/absent/signals");
+            then.status(404)
+                .json_body(json!({"error": "no signal record"}));
+        });
+        let signals_err =
+            fetch_signals_url(&format!("{base}/api/assets/skill_audit/absent/signals"))
+                .unwrap_err();
+        assert!(
+            matches!(signals_err, ReadError::NotFound),
+            "signals 404 must be NotFound: {signals_err}"
+        );
+
+        // 500 on the signals route stays a ServerError — 404 is not folded in.
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/api/assets/skill_audit/boom/signals");
+            then.status(500).json_body(json!({"error": "boom"}));
+        });
+        let boom =
+            fetch_signals_url(&format!("{base}/api/assets/skill_audit/boom/signals")).unwrap_err();
+        assert!(
+            matches!(boom, ReadError::ServerError(500)),
+            "signals 500 must stay ServerError: {boom}"
+        );
+
+        // The two 404 messages the handlers print are distinct per route.
+        assert_ne!(
+            skill_not_found_message("x"),
+            signals_not_found_message("x"),
+            "detail 404 and signals 404 must render different messages"
+        );
+        assert!(skill_not_found_message("pdf-summarizer").contains("pdf-summarizer"));
+        assert!(signals_not_found_message("pdf-summarizer").contains("pdf-summarizer"));
     }
 
     // ── ANSI-aware width helpers ──────────────────────────────────────
