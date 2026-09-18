@@ -243,7 +243,10 @@ pub fn run_scan_with_cache(
         verify(artifact);
         classify_artifact(artifact, mode);
         if artifact.artifact_type == "skill" {
-            artifact.cached_scan_result = crate::contract::run_skill_scanner(artifact);
+            if let Some(output) = crate::contract::run_skill_scanner(artifact) {
+                artifact.cached_scan_result = Some(output.external.clone());
+                artifact.cached_skill_scan = Some(output);
+            }
         }
     }
     timings.emit(

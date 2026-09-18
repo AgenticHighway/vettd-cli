@@ -99,7 +99,10 @@ pub fn fmt_freshness_colored(dto: &Option<&PublicFreshness>) -> String {
 ///
 /// Note: the `retryable` flag is deliberately NOT rendered as a line — the
 /// user explicitly does not want the "Retryable:" detail emitted.
-pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>) -> Vec<String> {
+/// `label_w` sizes the label column so callers can align these rows with the
+/// rest of their table (view uses its shared label width; tests pass a width
+/// large enough for `Last verified:`).
+pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>, label_w: usize) -> Vec<String> {
     let reset = "\x1b[0m";
     let dim = "\x1b[2m";
 
@@ -107,7 +110,10 @@ pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>) -> Vec<String> {
         Some(d) => d,
         None => {
             // Explicit unknown — never silently omit missing freshness.
-            return vec![format!("{dim}Freshness:{reset} \x1b[2m[unknown]{reset}")];
+            return vec![format!(
+                "{dim}{:<label_w$}{reset}  \x1b[2m[unknown]{reset}",
+                "Freshness:"
+            )];
         }
     };
 
@@ -121,35 +127,38 @@ pub fn fmt_freshness_detail(dto: &Option<&PublicFreshness>) -> Vec<String> {
     };
 
     // Status line — always shown when a DTO exists.
-    lines.push(format!("{dim}Freshness:{reset} {color}[{status}]{reset}"));
+    lines.push(format!(
+        "{dim}{:<label_w$}{reset}  {color}[{status}]{reset}",
+        "Freshness:"
+    ));
 
     // Reason.
     if let Some(r) = d.reason.as_deref() {
-        lines.push(format!("{dim}Reason:{reset} {r}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {r}", "Reason:"));
     }
     // Rename context.
     if let Some(r) = d.renamed_to.as_deref() {
-        lines.push(format!("{dim}Renamed to:{reset} {r}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {r}", "Renamed to:"));
     }
 
     // Timestamps.
     if let Some(ts) = d.last_checked_at.as_deref() {
-        lines.push(format!("{dim}Last checked:{reset} {ts}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {ts}", "Last checked:"));
     }
     if let Some(ts) = d.last_verified_at.as_deref() {
-        lines.push(format!("{dim}Last verified:{reset} {ts}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {ts}", "Last verified:"));
     }
     if let Some(ts) = d.last_change_detected_at.as_deref() {
-        lines.push(format!("{dim}Last change:{reset} {ts}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {ts}", "Last change:"));
     }
 
     // Hashes — full values (no abbreviation here; callers abbreviate if they
     // need to fit a compare column).
     if let Some(h) = d.scanned_hash.as_deref() {
-        lines.push(format!("{dim}Scanned hash:{reset} {h}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {h}", "Scanned hash:"));
     }
     if let Some(h) = d.latest_upstream_hash.as_deref() {
-        lines.push(format!("{dim}Upstream hash:{reset} {h}"));
+        lines.push(format!("{dim}{:<label_w$}{reset}  {h}", "Upstream hash:"));
     }
 
     lines
@@ -485,7 +494,7 @@ mod tests {
             scanned_hash: Some("abc123".into()),
             latest_upstream_hash: Some("def456".into()),
         };
-        let lines = fmt_freshness_detail(&Some(&f));
+        let lines = fmt_freshness_detail(&Some(&f), 14);
         assert!(!lines.is_empty());
         let text: String = lines.join("\n");
         assert!(text.contains("[current]"));
@@ -499,7 +508,7 @@ mod tests {
     fn detail_for_null_freshness_renders_explicit_unknown() {
         // Missing freshness must never be silently omitted in the rich view —
         // an explicit "unknown" state is shown instead (see slice requirement).
-        let lines = fmt_freshness_detail(&None);
+        let lines = fmt_freshness_detail(&None, 14);
         assert!(!lines.is_empty());
         let text: String = lines.join("\n");
         assert!(text.contains("[unknown]"), "got: {text}");
@@ -522,7 +531,7 @@ mod tests {
             scanned_hash: None,
             latest_upstream_hash: None,
         };
-        let lines = fmt_freshness_detail(&Some(&f));
+        let lines = fmt_freshness_detail(&Some(&f), 14);
         let text: String = lines.join("\n");
         // check_failed is non-current (unknown), reason preserved.
         assert!(text.contains("[unknown]"), "got: {text}");
@@ -554,7 +563,7 @@ mod tests {
             scanned_hash: None,
             latest_upstream_hash: None,
         };
-        let text: String = fmt_freshness_detail(&Some(&f)).join("\n");
+        let text: String = fmt_freshness_detail(&Some(&f), 14).join("\n");
         // Status honesty retained; retryable is never surfaced.
         assert!(text.contains("[unreachable]"), "got: {text}");
         assert!(

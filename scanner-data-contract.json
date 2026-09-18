@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "Vettd Scanner Data Contract",
 	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-	"version": "2.4.0",
+	"version": "2.7.0",
 	"type": "object",
 	"required": [
 		"scanMeta",
@@ -294,6 +294,39 @@
 						"type": "string",
 						"description": "One-line summary of what the skill does. Must be specific \u2014 not just 'python capability' but e.g. 'Executes Python scripts via local interpreter with unrestricted filesystem access'."
 					},
+					"version": {
+						"type": "string",
+						"description": "Semantic version of the skill as declared in its manifest (e.g. '1.2.3'). Omitted when the skill does not declare a version."
+					},
+					"license": {
+						"type": "string",
+						"description": "SPDX license identifier of the skill (e.g. 'MIT'). Omitted when the skill does not declare a license."
+					},
+					"fileCount": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Number of files in the skill directory. Omitted when the scanner did not measure it."
+					},
+					"hasSkillMd": {
+						"type": "boolean",
+						"description": "Whether the skill directory contains a SKILL.md file."
+					},
+					"hasScripts": {
+						"type": "boolean",
+						"description": "Whether the skill directory contains a scripts/ directory."
+					},
+					"hasReferences": {
+						"type": "boolean",
+						"description": "Whether the skill directory contains a references/ directory."
+					},
+					"hasEvals": {
+						"type": "boolean",
+						"description": "Whether the skill directory contains an evals/ directory."
+					},
+					"hasAssets": {
+						"type": "boolean",
+						"description": "Whether the skill directory contains an assets/ directory."
+					},
 					"permissions": {
 						"type": "array",
 						"description": "OS/runtime permissions this skill requires.",
@@ -450,17 +483,94 @@
 												"type": "string",
 												"description": "Short human-readable label for the finding (e.g. 'Prompt injection (AITech-1.1.1)')."
 											},
-											"detail": {
-												"type": "string",
-												"description": "Extended finding detail: file path, line number, remediation. Optional."
-											}
+"detail": {
+											"type": "string",
+											"description": "Extended finding detail: file path, line number, remediation. Optional."
+										},
+										"filepath": {
+											"type": "string",
+											"description": "Relative path from the skill root to the file that produced this finding. Omitted when the finding is package-level."
 										}
+									}
+								}
+							},
+							"signals": {
+								"type": "array",
+								"items": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": ["dataCategory", "sourceClass", "ruleId", "observedAt"],
+									"properties": {
+										"dataCategory": { "type": "string" },
+										"sourceClass": { "type": "string" },
+										"ruleId": { "type": "string" },
+										"observedAt": { "type": "string", "format": "date-time" },
+										"subjectType": { "type": "string" },
+										"subjectId": { "type": "string" },
+										"relatedType": { "type": "string" },
+										"relatedId": { "type": "string" },
+										"severity": { "type": "string" },
+										"label": { "type": "string" },
+										"detail": { "type": "string" },
+										"valueNum": { "type": "number" },
+										"valueText": { "type": "string" },
+										"unit": { "type": "string" },
+										"method": { "type": "string" },
+										"derivation": { "type": "string" },
+										"confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+										"sampleSize": { "type": "integer" },
+										"synthetic": { "type": "boolean" },
+										"payload": { "type": "object" }
+									}
+								}
+							},
+							"coverage": {
+								"type": "array",
+								"items": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": ["kind", "ruleId", "label", "detail"],
+									"properties": {
+										"kind": { "type": "string" },
+										"ruleId": { "type": "string" },
+										"label": { "type": "string" },
+										"detail": { "type": "string" },
+										"category": { "type": "string" }
 									}
 								}
 							}
 						}
 					}
-				}
+				},
+					"detectedSource": {
+						"type": "object",
+						"description": "Git remote detected by the scanner for the skill's source directory. Informational only, never treated as verified by the server. Omitted when no remote was detected.",
+						"oneOf": [
+							{
+								"type": "object",
+								"description": "Detected GitHub remote.",
+								"required": ["status", "repoUrl", "branch", "path"],
+								"additionalProperties": false,
+								"properties": {
+									"status": {"const": "gitHub"},
+									"repoUrl": {"type": "string"},
+									"branch": {"type": "string"},
+									"path": {"type": "string"}
+								}
+							},
+							{
+								"type": "object",
+								"description": "Detected non-GitHub remote.",
+								"required": ["status", "remoteUrl"],
+								"additionalProperties": false,
+								"properties": {
+									"status": {"const": "unsupportedRemote"},
+									"remoteUrl": {"type": "string"}
+								}
+							}
+						]
+					}
+			}
 			}
 		},
 		"mcpServers": {

@@ -18,7 +18,7 @@ path = "src/main.rs"
 #   scanner-field-gate.json BEFORE the bump; unclassified fields fail CI
 #   via scripts/check-scanner-field-gate.sh. Default leaning (D4 ruling):
 #   ADDITIVE surfacing for optional additively-shaped fields.
-vettd-skill-scanner = { git = "https://github.com/AgenticHighway/vettd-skill-scanner", tag = "v0.1.4" }
+vettd-skill-scanner = { git = "https://github.com/AgenticHighway/vettd-skill-scanner", tag = "v0.2.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

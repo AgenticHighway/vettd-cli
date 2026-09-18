@@ -415,9 +415,9 @@ pre-beta shape. Same mechanism drops a wire `null`.
 - `--json` → the pretty-printed *re-serialized struct*, nothing else.
   Without it → the formatted table. Same on the beta and non-beta paths.
 - **Skill table** (`print_cards`): columns
-  `rating · name · source · scanned by · description`. Grade → a color-coded
-  `[A]` badge; `sourceType` → `display_source_type`; `scannerRunCount + 1` →
-  "N scanners".
+  `safety · name · source · signals · description`. Grade → a color-coded
+  `[A]` badge; `sourceType` → `display_source_type`; `signalCount` → the total
+  signal count (`—` when the server hasn't shipped it yet).
 - **MCP table** (`print_mcp_cards`): columns
   `mcp · category · registry · stars · dep vulns · description`. "dep vulns"
   is `security_direct_deps_vuln_count`.
@@ -492,9 +492,9 @@ Without `--json`, the same call prints the table (verdicts not shown there —
 
 ```
 $ $BIN directory search "e2e-testing"
-rating  name         source      scanned by    description
+safety  name         source      signals   description
 ────────────────────────────────────────────────────────────────
-[A]     e2e-testing  GitHub      1 scanner     Playwright E2E testing patterns, Page Object Model…
+[A]     e2e-testing  GitHub      12        Playwright E2E testing patterns, Page Object Model…
 ```
 
 `vettd_scan` is absent above: this skill's catalog entry carried no

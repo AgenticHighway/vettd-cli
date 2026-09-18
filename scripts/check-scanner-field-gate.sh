@@ -10,22 +10,33 @@
 #   The pinned crate's SkillScanResult is the crate-side output surface.
 #   Every field on it must be classified in scanner-field-gate.json as
 #   either:
-#   surface — surfaced additively into scanner-data-contract.json
-#               (must actually be mapped in contract/skill_scan.rs, the
-#               scanner→ExternalScannerResult adapter)
-#   gate    — kept out of the contract (must NOT be mapped there)
-#   Unclassified fields FAIL the bump.
+#   surface — surfaced into scanner-data-contract.json, at the boundary
+#               named by the field's contractPath:
+#               - `skills[].externalScannerResults[].*` → the scanner
+#                 adapter (contract/skill_scan.rs), which must map the
+#                 field into ExternalScannerResult;
+#               - `skills[].<field>` (skill level) → the skill builder
+#                 (contract/skills.rs), which must reference the field
+#                 via its access form (`.<field>`), and the camelCase
+#                 leaf must be a property of `skills.items` in
+#                 scanner-data-contract.json.
+#   gate    — kept out of the contract (must NOT be referenced at either
+#               boundary).
+#   Unclassified fields FAIL the bump; unknown decision values FAIL.
 #
 # CHECKS (exit non-zero on any failure):
 #   1. Pin match      — the tag pinned in crates/vettd-cli/Cargo.toml must
 #                       equal scanner-field-gate.json pinTag.
 #   2. Completeness   — every SkillScanResult field on the pinned crate
 #                       must have a manifest entry (no silent new fields).
-#   3. Surface mapped — a field classified `surface` must be referenced by
-#                       contract/skill_scan.rs (the adapter that maps
-#                       SkillScanResult into ExternalScannerResult).
-#   4. Gate unmapped  — a field classified `gate` must not be referenced
-#                       there either.
+#   3. Decision valid — every manifest decision must be exactly
+#                       `surface` or `gate`.
+#   4. Surface mapped — a `surface` field must actually reach the contract
+#                       at the boundary its contractPath names (adapter
+#                       reference, or skill-builder access form + contract
+#                       JSON property).
+#   5. Gate unmapped  — a `gate` field must not be referenced at either
+#                       boundary.
 #   (stale manifest entries — classified fields no longer on the crate —
 #   are a warning, not a failure.)
 #
@@ -42,12 +53,19 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 MANIFEST="$REPO_ROOT/scanner-field-gate.json"
 CLI_CARGO="$REPO_ROOT/crates/vettd-cli/Cargo.toml"
-# The scanner→contract mapping boundary: the adapter that threads
-# SkillScanResult fields into ExternalScannerResult. The word-based
-# consistency check is scoped here (not the whole contract/ dir) so
-# unrelated CLI-side fields that happen to share a name (e.g. the
-# Prompt/Agent `signals` fields) cannot produce false results.
+CONTRACT_JSON="$REPO_ROOT/scanner-data-contract.json"
+# The scanner→contract mapping boundary for `externalScannerResults[]`
+# fields: the adapter that threads SkillScanResult fields into
+# ExternalScannerResult. The word-based consistency check is scoped here
+# (not the whole contract/ dir) so unrelated CLI-side fields that happen to
+# share a name (e.g. the Prompt/Agent `signals` fields) cannot produce
+# false results.
 ADAPTER="$REPO_ROOT/crates/vettd-cli/src/contract/skill_scan.rs"
+# The skill builder that surfaces skill-level fields (`skills[].<field>`).
+# The check here is access-form based (`.<field>`, e.g. `scan_result.file_count`),
+# not a bare word match — skills.rs is far larger than the adapter and a
+# bare word would be too noisy.
+SKILLS_RS="$REPO_ROOT/crates/vettd-cli/src/contract/skills.rs"
 
 failures=0
 warnings=0
@@ -109,31 +127,66 @@ sys.exit(0 if '$field' in manifest.get('fields', {}) else 1)
                 fi
             done <<<"$crate_fields"
 
-            # ── 3+4. Consistency: surface ⇔ mapped, gate ⇔ unmapped ──
+            # ── 3+4+5. Consistency: decision validity, surface ⇔ mapped, gate ⇔ unmapped ──
             while IFS= read -r field; do
                 decision="$(python3 -c "
 import json
 manifest = json.load(open('$MANIFEST'))
 print(manifest['fields']['$field']['decision'])
-" 2>/dev/null || echo '__unknown__')"
+" 2>/dev/null || echo '__unreadable__')"
 
-                if [ "$decision" = "__unknown__" ]; then
-                    continue  # staleness handled below
+                if [ "$decision" != "surface" ] && [ "$decision" != "gate" ]; then
+                    fail "field '$field' has unknown decision '$decision' — must be exactly 'surface' or 'gate'. Unknown decisions silently fell through before; now they fail the bump."
+                    continue
                 fi
 
-                # Match the field as it appears in the adapter — both as a
-                # `scan_result.<field>` access and as a bare identifier.
-                if grep -q "\b${field}\b" "$ADAPTER"; then
-                    mapped_in_contract=1
+                contract_path="$(python3 -c "
+import json
+manifest = json.load(open('$MANIFEST'))
+print(manifest['fields']['$field'].get('contractPath', ''))
+" 2>/dev/null || echo '')"
+
+                if [ "$decision" = "gate" ]; then
+                    # Must not be referenced at either boundary.
+                    if grep -q "\b${field}\b" "$ADAPTER" || grep -qP "\.${field}\b" "$SKILLS_RS"; then
+                        fail "field '$field' is classified gate but IS referenced at a contract boundary (adapter $ADAPTER or skill builder $SKILLS_RS) — a gated field must not enter the contract surface."
+                    fi
+                    continue
+                fi
+
+                # ── surface: resolve the boundary from contractPath ──
+                if [[ "$contract_path" == "skills[].externalScannerResults"* ]]; then
+                    # Adapter boundary: mapped into ExternalScannerResult.
+                    if grep -q "\b${field}\b" "$ADAPTER"; then
+                        mapped=1
+                    else
+                        mapped=0
+                    fi
+                    if [ "$mapped" -eq 0 ]; then
+                        fail "field '$field' is classified surface (contractPath '$contract_path') but is not mapped in $ADAPTER — a surface field must actually reach the contract payload."
+                    fi
+                elif [[ "$contract_path" == "skills[]."* ]]; then
+                    leaf="${contract_path#skills[].}"
+                    if [ -z "$leaf" ] || [[ "$leaf" == *.* ]]; then
+                        fail "field '$field' has malformed skill-level contractPath '$contract_path' (expected 'skills[].<field>')."
+                        continue
+                    fi
+                    # Skill-level boundary: (a) access-form reference in the
+                    # skill builder, (b) camelCase property in the contract JSON.
+                    if ! grep -qP "\.${field}\b" "$SKILLS_RS"; then
+                        fail "field '$field' is surfaced at the skill level ($contract_path) but is not referenced in $SKILLS_RS via its access form ('.$field') — a surface field must actually reach the skill payload."
+                    fi
+                    if ! python3 - "$CONTRACT_JSON" "$leaf" <<'PY'
+import json, sys
+contract = json.load(open(sys.argv[1]))
+props = contract.get('properties', {}).get('skills', {}).get('items', {}).get('properties', {})
+sys.exit(0 if sys.argv[2] in props else 1)
+PY
+                    then
+                        fail "field '$field' is surfaced at the skill level ($contract_path) but '$leaf' is missing from scanner-data-contract.json skills.items.properties — the contract JSON and the manifest disagree."
+                    fi
                 else
-                    mapped_in_contract=0
-                fi
-
-                if [ "$decision" = "surface" ] && [ "$mapped_in_contract" -eq 0 ]; then
-                    fail "field '$field' is classified surface but is not mapped in $ADAPTER — a surface field must actually reach the contract payload."
-                fi
-                if [ "$decision" = "gate" ] && [ "$mapped_in_contract" -eq 1 ]; then
-                    fail "field '$field' is classified gate but IS referenced in $ADAPTER — a gated field must not enter the contract surface."
+                    fail "surface field '$field' has unrecognized contractPath '$contract_path' (expected 'skills[].externalScannerResults[].*' or 'skills[].<field>')."
                 fi
             done <<<"$crate_fields"
 
