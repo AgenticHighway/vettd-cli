@@ -1015,7 +1015,10 @@ fn print_mcp_cards(cards: &[McpCard]) {
 pub fn handle_view(slug: &str, json: bool) {
     let detail = fetch_skill(slug);
     if json {
-        let mut val = serde_json::to_value(&detail).unwrap_or_default();
+        let mut val = with_signals(
+            serde_json::to_value(&detail).unwrap_or_default(),
+            signals_raw_for_detail(detail.id.as_deref()),
+        );
         if let Some(obj) = val.as_object_mut() {
             obj.remove("findings");
         }
@@ -1307,6 +1310,33 @@ fn signals_for_detail(detail_id: Option<&str>) -> SkillSignalsResponse {
         Some(id) if !id.is_empty() => fetch_signals_envelope(id).unwrap_or_default(),
         _ => SkillSignalsResponse::default(),
     }
+}
+
+/// The raw public signal envelope for a directory detail record — the exact
+/// endpoint payload (neutral nulls and unknown fields preserved), or `None`
+/// when the record carries no audit id or the read fails.
+///
+/// Used by the `--json` paths: the human table prints a curated selection of
+/// signals, so the machine output must carry the comprehensive record instead.
+fn signals_raw_for_detail(detail_id: Option<&str>) -> Option<serde_json::Value> {
+    let id = detail_id.filter(|s| !s.is_empty())?;
+    fetch_signals(id).ok()
+}
+
+/// Attach the raw signal envelope under `signals` (`null` when unavailable) so
+/// `directory view --json` / `directory compare --json` are comprehensive
+/// rather than limited to the rows the human table renders.
+fn with_signals(
+    mut detail: serde_json::Value,
+    signals: Option<serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(obj) = detail.as_object_mut() {
+        obj.insert(
+            "signals".to_string(),
+            signals.unwrap_or(serde_json::Value::Null),
+        );
+    }
+    detail
 }
 
 /// The anonymous signals GET at an explicit URL — `Result`-returning so the
@@ -1644,18 +1674,22 @@ pub fn handle_compare(slug_a: &str, slug_b: &str, json: bool) {
     let detail_b = fetch_skill(slug_b);
 
     if json {
+        let a = with_signals(
+            serde_json::to_value(&detail_a).unwrap_or_default(),
+            signals_raw_for_detail(detail_a.id.as_deref()),
+        );
+        let b = with_signals(
+            serde_json::to_value(&detail_b).unwrap_or_default(),
+            signals_raw_for_detail(detail_b.id.as_deref()),
+        );
         #[derive(Serialize)]
-        struct CompareOutput<'a> {
-            a: &'a DirectorySkillDetail,
-            b: &'a DirectorySkillDetail,
+        struct CompareOutput {
+            a: serde_json::Value,
+            b: serde_json::Value,
         }
         println!(
             "{}",
-            serde_json::to_string_pretty(&CompareOutput {
-                a: &detail_a,
-                b: &detail_b,
-            })
-            .unwrap_or_default()
+            serde_json::to_string_pretty(&CompareOutput { a, b }).unwrap_or_default()
         );
         return;
     }
@@ -2888,6 +2922,34 @@ mod tests {
             !reencoded.contains("\"futureField\""),
             "typed reserialize must drop unknown fields: {reencoded}"
         );
+    }
+
+    #[test]
+    fn json_detail_carries_the_comprehensive_signal_envelope() {
+        // The human tables print a curated selection of signals; --json must
+        // carry the full endpoint payload under `signals` (and an explicit null
+        // when the record has no published envelope) so machine consumers are
+        // never limited to the curated rows.
+        let detail = serde_json::json!({"id": "audit-1", "slug": "pr"});
+        let envelope = serde_json::json!({
+            "subjectType": "skill_audit",
+            "subjectId": "audit-1",
+            "signals": [{"ruleId": "sentiment/stars", "valueNum": 264255.0}],
+            "categories": [{"category": "sentiment", "form": "unjudged"}]
+        });
+        let merged = with_signals(detail, Some(envelope));
+        assert_eq!(merged["slug"], "pr");
+        assert_eq!(merged["signals"]["subjectId"], "audit-1");
+        assert_eq!(
+            merged["signals"]["signals"][0]["ruleId"], "sentiment/stars",
+            "the full envelope must be embedded, not a curated subset"
+        );
+        assert_eq!(merged["signals"]["categories"][0]["category"], "sentiment");
+
+        // No envelope available → explicit null, never a missing key.
+        let bare = with_signals(serde_json::json!({"slug": "pr"}), None);
+        assert!(bare.get("signals").is_some(), "signals key must exist");
+        assert!(bare["signals"].is_null());
     }
 
     // ── anonymous read transport contract (epic #879) ─────────────────
