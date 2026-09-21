@@ -1015,13 +1015,13 @@ fn print_mcp_cards(cards: &[McpCard]) {
 pub fn handle_view(slug: &str, json: bool) {
     let detail = fetch_skill(slug);
     if json {
-        let mut val = with_signals(
+        // Comprehensive machine output: `findings` is KEPT (it used to be
+        // stripped here, which made `view --json` thinner than
+        // `compare --json` for the same record). Signals ride along too.
+        let val = with_signals(
             serde_json::to_value(&detail).unwrap_or_default(),
             signals_raw_for_detail(detail.id.as_deref()),
         );
-        if let Some(obj) = val.as_object_mut() {
-            obj.remove("findings");
-        }
         println!("{}", serde_json::to_string_pretty(&val).unwrap_or_default());
         return;
     }
