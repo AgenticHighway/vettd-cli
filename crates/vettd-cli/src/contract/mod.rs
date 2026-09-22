@@ -9,6 +9,8 @@ mod apps;
 mod disclosure;
 mod helpers;
 mod mcp;
+#[cfg(test)]
+mod parity;
 mod prompts;
 mod skill_scan;
 pub(crate) use skill_scan::{run_skill_scanner, SkillScanOutput};

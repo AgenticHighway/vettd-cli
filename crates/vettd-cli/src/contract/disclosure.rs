@@ -26,6 +26,11 @@
 
 use super::types::*;
 use super::{ContractPayload, McpServer};
+// Test-only: the maximally-populated fixture (used by the disclosure tests
+// below AND the contract parity test in parity.rs) builds network-evidence
+// rows, so the types are needed at module level under `#[cfg(test)]`.
+#[cfg(test)]
+use crate::network_evidence::{EnvVarRef, HostNetworkInfo, NetworkEvidence};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Categories — one variant per disclosed data type
@@ -570,10 +575,241 @@ pub fn disclosure_category_labels(categories: &[DisclosureCategory]) -> Vec<&str
     categories.iter().map(|c| c.label()).collect()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared test fixture — maximally-populated payload
+// ═══════════════════════════════════════════════════════════════════════════
+// Lives at module level (before the test module, per clippy) so BOTH the
+// disclosure tests below and the contract parity test in parity.rs exercise
+// the same fixture — one source of truth for "every serialized field".
+
+#[cfg(test)]
+pub(crate) fn make_scan_meta() -> ScanMeta {
+    ScanMeta {
+        scan_id: "test-id".into(),
+        endpoint_hostname: "test-host".into(),
+        scanned_at: "2026-01-01T00:00:00Z".into(),
+        scanner_version: "0.1.0".into(),
+        scan_duration_ms: 0,
+        scan_roots: vec!["/tmp/test".into()],
+        host_network: HostNetworkInfo::default(),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn make_scan_meta_full() -> ScanMeta {
+    ScanMeta {
+        scan_id: "test-id".into(),
+        endpoint_hostname: "test-host".into(),
+        scanned_at: "2026-01-01T00:00:00Z".into(),
+        scanner_version: "0.1.0".into(),
+        scan_duration_ms: 100,
+        scan_roots: vec!["/tmp/test".into()],
+        host_network: HostNetworkInfo {
+            firewall_enabled: true,
+            firewall_mode: "active".into(),
+            stealth_mode: false,
+            firewall_rules: vec![],
+        },
+    }
+}
+
+/// A maximally-populated payload exercising every serialized field of every
+/// contract type, so the coverage walker touches them all.
+#[cfg(test)]
+pub(crate) fn max_payload() -> ContractPayload {
+    ContractPayload {
+        scan_meta: make_scan_meta_full(),
+        prompts: vec![Prompt {
+            id: "p1".into(),
+            name: "test".into(),
+            source_file_path: "/tmp/prompt.md".into(),
+            classification: "system".into(),
+            tokens: 100,
+            content_hash: "abc".into(),
+            last_changed_date: "2026-01-01".into(),
+            capabilities: vec![PromptCapability {
+                text: "shell".into(),
+                level: "high".into(),
+            }],
+            secret_refs: vec![SecretRef {
+                label: "k".into(),
+                detail: "d".into(),
+                tone: "warn".into(),
+            }],
+            injection_surfaces: vec![InjectionSurface {
+                text: "x".into(),
+                severity: "high".into(),
+            }],
+            dependencies: vec!["dep".into()],
+            risk_score: 50,
+        }],
+        skills: vec![Skill {
+            id: "sk1".into(),
+            name: "test-skill".into(),
+            skill_type: "agent".into(),
+            trust_level: "high".into(),
+            overall_grade: "A".into(),
+            execution_environment: "shell".into(),
+            description: "a skill".into(),
+            version: Some("1.0".into()),
+            license: Some("MIT".into()),
+            file_count: Some(12),
+            has_skill_md: Some(true),
+            has_scripts: Some(true),
+            has_references: Some(true),
+            has_evals: Some(true),
+            has_assets: Some(true),
+            permissions: vec![SkillPermission {
+                name: "fs".into(),
+                required: true,
+            }],
+            dependencies: SkillDependencies {
+                libraries: vec!["lib".into()],
+                binaries: vec!["bin".into()],
+                apis: vec!["api".into()],
+            },
+            consumers: vec![SkillConsumer {
+                id: "c1".into(),
+                name: "consumer".into(),
+                consumer_type: "agent".into(),
+                invocations: 3,
+            }],
+            external_scanner_results: Some(vec![ExternalScannerResult {
+                source: "suite".into(),
+                version: Some("1.0".into()),
+                status: "done".into(),
+                verdict: Some("pass".into()),
+                raw_report: Some(serde_json::json!({"k": "v"})),
+                findings: Some(vec![ExternalScannerFinding {
+                    rule_id: "r1".into(),
+                    category: "sec".into(),
+                    severity: "high".into(),
+                    label: "l".into(),
+                    detail: Some("d".into()),
+                    filepath: Some("SKILL.md".into()),
+                }]),
+                signals: Some(vec![ScannerSignal {
+                    data_category: "characteristics".into(),
+                    source_class: "scan".into(),
+                    rule_id: "characteristics/declared-license".into(),
+                    observed_at: "2026-01-01T00:00:00Z".into(),
+                    source: Some("vettd".into()),
+                    subject_type: Some("skill".into()),
+                    subject_id: Some("sk1".into()),
+                    related_type: Some("skill".into()),
+                    related_id: Some("sk2".into()),
+                    severity: Some("low".into()),
+                    label: Some("Declared license".into()),
+                    detail: Some("MIT".into()),
+                    value_num: Some(1.0),
+                    value_text: Some("MIT".into()),
+                    unit: Some("count".into()),
+                    method: Some("parse".into()),
+                    derivation: Some("frontmatter".into()),
+                    confidence: Some(0.9),
+                    sample_size: Some(1),
+                    synthetic: false,
+                    payload: Some(
+                        serde_json::json!({"opaque": {"inner": "key"}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                }]),
+                coverage: Some(vec![ScannerCoverage {
+                    kind: "applicable".into(),
+                    rule_id: "rules/license".into(),
+                    label: "License rule ran".into(),
+                    detail: "checked frontmatter".into(),
+                    category: Some("structure".into()),
+                }]),
+            }]),
+            detected_source: None,
+        }],
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "server".into(),
+            transport: "stdio".into(),
+            network: "local".into(),
+            auth: "none".into(),
+            verified: false,
+            command: "npx server".into(),
+            tools: vec![McpTool {
+                name: "read_file".into(),
+                risk: "low".into(),
+                description: "a".into(),
+            }],
+            dependent_agents: vec![],
+            network_evidence: vec![NetworkEvidence {
+                source: "logs".into(),
+                category: "outbound-url".into(),
+                detail: "observed".into(),
+                url: Some("https://example.com".into()),
+            }],
+            env_vars: vec![EnvVarRef {
+                name: "API_KEY".into(),
+                is_set: true,
+                source_key: "args".into(),
+            }],
+        }],
+        agents: vec![Agent {
+            id: "a1".into(),
+            name: "test-agent".into(),
+            source_file_path: "/tmp/AGENTS.md".into(),
+            classification: "tool-use".into(),
+            execution_model: "sequential".into(),
+            trust_score: 80,
+            version: "1.0".into(),
+            author: "test".into(),
+            source_repo: "test/repo".into(),
+            capabilities: vec![AgentCapability {
+                name: "fs".into(),
+                enabled: true,
+            }],
+            tools: vec![AgentTool {
+                name: "tool".into(),
+                tool_type: "mcp".into(),
+            }],
+            trust_breakdown: vec![TrustFactor {
+                label: "auth".into(),
+                delta: -5,
+            }],
+        }],
+        agentic_apps: vec![AgenticApp {
+            id: "aa1".into(),
+            name: "test-app".into(),
+            source_file_path: "/tmp/docker-compose.yml".into(),
+            framework: "docker".into(),
+            agent_count: 1,
+            risk: "medium".into(),
+            review_status: "pending".into(),
+            description: "an app".into(),
+            agents: vec![AppAgent {
+                id: "a1".into(),
+                name: "agent".into(),
+            }],
+            tools_by_agent: vec![vec!["tool".into()]],
+            workflow: vec![WorkflowStep {
+                step: 1,
+                agent: "a1".into(),
+                action: "run".into(),
+            }],
+            integrations: vec![Integration {
+                name: "slack".into(),
+                integration_type: "webhook".into(),
+                risk: "low".into(),
+            }],
+            verification_checks: vec!["check".into()],
+            risk_tags: vec!["tag".into()],
+            risk_summary: "low".into(),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network_evidence::{EnvVarRef, HostNetworkInfo, NetworkEvidence};
+    use crate::network_evidence::EnvVarRef;
 
     /// Every serialized field in a maximally-populated [`ContractPayload`] must
     /// map to a known [`DisclosureCategory`]. If anyone adds a public field to
@@ -810,226 +1046,5 @@ mod tests {
             agentic_apps: vec![],
         };
         print_submit_disclosure(&payload);
-    }
-
-    fn make_scan_meta() -> ScanMeta {
-        ScanMeta {
-            scan_id: "test-id".into(),
-            endpoint_hostname: "test-host".into(),
-            scanned_at: "2026-01-01T00:00:00Z".into(),
-            scanner_version: "0.1.0".into(),
-            scan_duration_ms: 0,
-            scan_roots: vec!["/tmp/test".into()],
-            host_network: HostNetworkInfo::default(),
-        }
-    }
-
-    fn make_scan_meta_full() -> ScanMeta {
-        ScanMeta {
-            scan_id: "test-id".into(),
-            endpoint_hostname: "test-host".into(),
-            scanned_at: "2026-01-01T00:00:00Z".into(),
-            scanner_version: "0.1.0".into(),
-            scan_duration_ms: 100,
-            scan_roots: vec!["/tmp/test".into()],
-            host_network: HostNetworkInfo {
-                firewall_enabled: true,
-                firewall_mode: "active".into(),
-                stealth_mode: false,
-                firewall_rules: vec![],
-            },
-        }
-    }
-
-    /// A maximally-populated payload exercising every serialized field of every
-    /// contract type, so the coverage walker touches them all.
-    fn max_payload() -> ContractPayload {
-        ContractPayload {
-            scan_meta: make_scan_meta_full(),
-            prompts: vec![Prompt {
-                id: "p1".into(),
-                name: "test".into(),
-                source_file_path: "/tmp/prompt.md".into(),
-                classification: "system".into(),
-                tokens: 100,
-                content_hash: "abc".into(),
-                last_changed_date: "2026-01-01".into(),
-                capabilities: vec![PromptCapability {
-                    text: "shell".into(),
-                    level: "high".into(),
-                }],
-                secret_refs: vec![SecretRef {
-                    label: "k".into(),
-                    detail: "d".into(),
-                    tone: "warn".into(),
-                }],
-                injection_surfaces: vec![InjectionSurface {
-                    text: "x".into(),
-                    severity: "high".into(),
-                }],
-                dependencies: vec!["dep".into()],
-                risk_score: 50,
-            }],
-            skills: vec![Skill {
-                id: "sk1".into(),
-                name: "test-skill".into(),
-                skill_type: "agent".into(),
-                trust_level: "high".into(),
-                overall_grade: "A".into(),
-                execution_environment: "shell".into(),
-                description: "a skill".into(),
-                version: Some("1.0".into()),
-                license: Some("MIT".into()),
-                file_count: Some(12),
-                has_skill_md: Some(true),
-                has_scripts: Some(true),
-                has_references: Some(true),
-                has_evals: Some(true),
-                has_assets: Some(true),
-                permissions: vec![SkillPermission {
-                    name: "fs".into(),
-                    required: true,
-                }],
-                dependencies: SkillDependencies {
-                    libraries: vec!["lib".into()],
-                    binaries: vec!["bin".into()],
-                    apis: vec!["api".into()],
-                },
-                consumers: vec![SkillConsumer {
-                    id: "c1".into(),
-                    name: "consumer".into(),
-                    consumer_type: "agent".into(),
-                    invocations: 3,
-                }],
-                external_scanner_results: Some(vec![ExternalScannerResult {
-                    source: "suite".into(),
-                    version: Some("1.0".into()),
-                    status: "done".into(),
-                    verdict: Some("pass".into()),
-                    raw_report: Some(serde_json::json!({"k": "v"})),
-                    findings: Some(vec![ExternalScannerFinding {
-                        rule_id: "r1".into(),
-                        category: "sec".into(),
-                        severity: "high".into(),
-                        label: "l".into(),
-                        detail: Some("d".into()),
-                        filepath: Some("SKILL.md".into()),
-                    }]),
-                    signals: Some(vec![ScannerSignal {
-                        data_category: "characteristics".into(),
-                        source_class: "scan".into(),
-                        rule_id: "characteristics/declared-license".into(),
-                        observed_at: "2026-01-01T00:00:00Z".into(),
-                        source: Some("vettd".into()),
-                        subject_type: Some("skill".into()),
-                        subject_id: Some("sk1".into()),
-                        related_type: Some("skill".into()),
-                        related_id: Some("sk2".into()),
-                        severity: Some("low".into()),
-                        label: Some("Declared license".into()),
-                        detail: Some("MIT".into()),
-                        value_num: Some(1.0),
-                        value_text: Some("MIT".into()),
-                        unit: Some("count".into()),
-                        method: Some("parse".into()),
-                        derivation: Some("frontmatter".into()),
-                        confidence: Some(0.9),
-                        sample_size: Some(1),
-                        synthetic: false,
-                        payload: Some(
-                            serde_json::json!({"opaque": {"inner": "key"}})
-                                .as_object()
-                                .unwrap()
-                                .clone(),
-                        ),
-                    }]),
-                    coverage: Some(vec![ScannerCoverage {
-                        kind: "applicable".into(),
-                        rule_id: "rules/license".into(),
-                        label: "License rule ran".into(),
-                        detail: "checked frontmatter".into(),
-                        category: Some("structure".into()),
-                    }]),
-                }]),
-                detected_source: None,
-            }],
-            mcp_servers: vec![McpServer {
-                id: "s1".into(),
-                name: "server".into(),
-                transport: "stdio".into(),
-                network: "local".into(),
-                auth: "none".into(),
-                verified: false,
-                command: "npx server".into(),
-                tools: vec![McpTool {
-                    name: "read_file".into(),
-                    risk: "low".into(),
-                    description: "a".into(),
-                }],
-                dependent_agents: vec![],
-                network_evidence: vec![NetworkEvidence {
-                    source: "logs".into(),
-                    category: "outbound-url".into(),
-                    detail: "observed".into(),
-                    url: Some("https://example.com".into()),
-                }],
-                env_vars: vec![EnvVarRef {
-                    name: "API_KEY".into(),
-                    is_set: true,
-                    source_key: "args".into(),
-                }],
-            }],
-            agents: vec![Agent {
-                id: "a1".into(),
-                name: "test-agent".into(),
-                source_file_path: "/tmp/AGENTS.md".into(),
-                classification: "tool-use".into(),
-                execution_model: "sequential".into(),
-                trust_score: 80,
-                version: "1.0".into(),
-                author: "test".into(),
-                source_repo: "test/repo".into(),
-                capabilities: vec![AgentCapability {
-                    name: "fs".into(),
-                    enabled: true,
-                }],
-                tools: vec![AgentTool {
-                    name: "tool".into(),
-                    tool_type: "mcp".into(),
-                }],
-                trust_breakdown: vec![TrustFactor {
-                    label: "auth".into(),
-                    delta: -5,
-                }],
-            }],
-            agentic_apps: vec![AgenticApp {
-                id: "aa1".into(),
-                name: "test-app".into(),
-                source_file_path: "/tmp/docker-compose.yml".into(),
-                framework: "docker".into(),
-                agent_count: 1,
-                risk: "medium".into(),
-                review_status: "pending".into(),
-                description: "an app".into(),
-                agents: vec![AppAgent {
-                    id: "a1".into(),
-                    name: "agent".into(),
-                }],
-                tools_by_agent: vec![vec!["tool".into()]],
-                workflow: vec![WorkflowStep {
-                    step: 1,
-                    agent: "a1".into(),
-                    action: "run".into(),
-                }],
-                integrations: vec![Integration {
-                    name: "slack".into(),
-                    integration_type: "webhook".into(),
-                    risk: "low".into(),
-                }],
-                verification_checks: vec!["check".into()],
-                risk_tags: vec!["tag".into()],
-                risk_summary: "low".into(),
-            }],
-        }
     }
 }
