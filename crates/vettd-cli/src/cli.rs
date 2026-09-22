@@ -262,6 +262,16 @@ pub enum DirectorySubcommand {
         #[arg(long, default_value = "info")]
         min_severity: String,
     },
+    /// Show the published signal record for an entry
+    ///
+    /// Reads the public signals endpoint for the skill's audit (anonymous).
+    /// Renders the seven signal categories in order with their verdict form
+    /// and row count, then the signal rows. Use --json for the raw endpoint
+    /// payload, printed verbatim (neutral nulls and unknown fields preserved).
+    Signals {
+        /// Entry slug
+        slug: String,
+    },
     /// Compare two directory entries
     Compare {
         /// First entry slug
@@ -1107,6 +1117,7 @@ pub fn run() {
             DirectorySubcommand::Findings { slug, min_severity } => {
                 crate::directory::handle_findings(slug, min_severity, json)
             }
+            DirectorySubcommand::Signals { slug } => crate::directory::handle_signals(slug, json),
             DirectorySubcommand::Compare { slug_a, slug_b } => {
                 crate::directory::handle_compare(slug_a, slug_b, json)
             }
@@ -2207,6 +2218,22 @@ mod tests {
             }
             _ => panic!("Expected directory compare command"),
         }
+    }
+
+    #[test]
+    fn parse_cli_directory_signals() {
+        let cli = Cli::parse_from(["vettd", "directory", "signals", "alpha"]);
+        match cli.command {
+            Some(Commands::Directory {
+                action: DirectorySubcommand::Signals { slug },
+            }) => assert_eq!(slug, "alpha"),
+            _ => panic!("Expected directory signals command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_directory_signals_requires_slug() {
+        assert!(Cli::try_parse_from(["vettd", "directory", "signals"]).is_err());
     }
 
     #[test]
