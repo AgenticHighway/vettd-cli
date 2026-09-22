@@ -464,6 +464,34 @@ mod tests {
     }
 
     #[test]
+    fn signal_source_is_optional_and_default_omitted() {
+        // v2.8.0: the signals item schema gains a `source` property (inserted
+        // right after `sourceClass`). A populated non-default source must
+        // serialize so the contract shape accepts it; the adapter folds the
+        // default source ("vettd", `DEFAULT_SOURCE`) to `None`, which must
+        // keep serializing to no key.
+        let non_default = ScannerSignal {
+            source: Some("third-party".to_string()),
+            ..minimal_signal()
+        };
+        let v = serde_json::to_value(&non_default).unwrap();
+        assert_eq!(
+            v["source"], "third-party",
+            "a non-default source must serialize into the contract payload"
+        );
+
+        let default_sourced = ScannerSignal {
+            source: None, // what the adapter's `(s.source != DEFAULT_SOURCE)` guard produces
+            ..minimal_signal()
+        };
+        let dv = serde_json::to_value(&default_sourced).unwrap();
+        assert!(
+            dv.get("source").is_none(),
+            "a default-sourced signal must not carry a source key"
+        );
+    }
+
+    #[test]
     fn coverage_serialises_camel_case_with_optional_category() {
         let c = ScannerCoverage {
             kind: "applicable".to_string(),

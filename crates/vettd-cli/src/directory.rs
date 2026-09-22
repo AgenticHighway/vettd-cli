@@ -1568,47 +1568,60 @@ fn signals_table_label_w() -> usize {
     signals_label_w().max(13)
 }
 
+/// Replace control characters (including `\n`, `\r`, `\t`) in a rendered
+/// signal value with a single space, so a value can never span multiple
+/// lines or wrap the one-line-per-signal block (shared by `directory view`
+/// and `directory compare`).
+fn sanitize_signal_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        out.push(if char::is_control(c) { ' ' } else { c });
+    }
+    out
+}
+
 /// Pick the display value for one signal rule on one side.
 ///
 /// Precedence: `valueNum` (unit appended after a single space; no trailing
 /// `.0`) → non-empty `valueText` → `severity` → count of the rule's list rows
 /// on this side (only when there is more than one — a lone scalar row with no
-/// usable value is absent, not a list) → `—`.
+/// usable value is absent, not a list) → `—`. The final string is sanitized
+/// (`sanitize_signal_value`), so no rendered value can contain a line break.
 fn signal_value(rows: &[SignalEnvelopeRow], rule_id: &str) -> String {
     let matching: Vec<&SignalEnvelopeRow> = rows
         .iter()
         .filter(|r| r.rule_id.as_deref() == Some(rule_id))
         .collect();
     let first = matching.first();
-    if let Some(v) = first.and_then(|r| r.value_num) {
+    let raw = if let Some(v) = first.and_then(|r| r.value_num) {
         let unit = first.and_then(|r| r.unit.as_deref()).unwrap_or("");
         if !unit.is_empty() {
-            return format!("{v} {unit}");
+            format!("{v} {unit}")
+        } else {
+            format!("{v}")
         }
-        return format!("{v}");
-    }
-    // Empty or whitespace-only `valueText` carries no usable value — treat it
-    // as absent so it falls through to the severity check instead of
-    // rendering a blank cell or degrading into a bare row count.
-    if let Some(t) = first
+    } else if let Some(t) = first
         .and_then(|r| r.value_text.as_deref())
         .filter(|t| !t.trim().is_empty())
     {
-        return t.to_string();
-    }
-    if let Some(sev) = first
+        // Empty or whitespace-only `valueText` carries no usable value — it
+        // falls through to the severity check instead of rendering a blank
+        // cell or degrading into a bare row count.
+        t.to_string()
+    } else if let Some(sev) = first
         .and_then(|r| r.severity.as_deref())
         .filter(|s| !s.is_empty())
     {
-        return sev.to_string();
-    }
-    // Row-count fallback — only for genuine list rules (multiple rows on this
-    // side). A single scalar row with no usable value is NOT a list and must
-    // not be reported as a bare count.
-    if matching.len() > 1 {
-        return matching.len().to_string();
-    }
-    "—".to_string()
+        sev.to_string()
+    } else if matching.len() > 1 {
+        // Row-count fallback — only for genuine list rules (multiple rows on
+        // this side). A single scalar row with no usable value is NOT a list
+        // and must not be reported as a bare count.
+        matching.len().to_string()
+    } else {
+        "—".to_string()
+    };
+    sanitize_signal_value(&raw)
 }
 
 /// Append one signals-block row to `out`. `b` carries the second value column
@@ -3805,6 +3818,57 @@ mod tests {
             signal_value(&[env_row_text("sentiment/forks", "   ")], "sentiment/forks"),
             "—",
             "whitespace-only valueText falls through to —"
+        );
+    }
+
+    #[test]
+    fn signal_values_with_control_characters_render_on_one_line() {
+        // A `valueText` containing `\n` and a `severity` containing `\r`/`\t`
+        // must each render on exactly one line: the shared value formatter
+        // replaces control characters with a single space, so no value can
+        // create a continuation line or wrap the one-line-per-signal block.
+        let rows = vec![
+            env_row_text("characteristics/primary-language", "Markdown\nwith\nbreaks"),
+            env_row_sev("characteristics/archived", "low\r\ttone"),
+            env_row_text("sentiment/forks", "normal value"),
+        ];
+        let rendered = render_signals_block(
+            &rows,
+            Some(&empty_rows()),
+            None,
+            None,
+            signals_table_label_w(),
+        );
+        let plain = strip_ansi(&rendered);
+        let lines = plain.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2 + SIGNAL_SELECTION.len(),
+            "control characters must not add lines to the block"
+        );
+
+        let lang = lines
+            .iter()
+            .find(|l| l.contains("Primary language"))
+            .unwrap();
+        let (_, a, _) = split_signal_line(lang);
+        assert_eq!(
+            a, "Markdown with breaks",
+            "\\n in valueText must render as a single space"
+        );
+
+        let archived = lines.iter().find(|l| l.contains("Archived")).unwrap();
+        let (_, a, _) = split_signal_line(archived);
+        assert_eq!(
+            a, "low  tone",
+            "\\r and \\t in severity must render as single spaces"
+        );
+
+        let forks = lines.iter().find(|l| l.contains("Forks")).unwrap();
+        let (_, a, _) = split_signal_line(forks);
+        assert_eq!(
+            a, "normal value",
+            "values without control characters are unchanged"
         );
     }
 

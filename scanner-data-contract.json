@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "Vettd Scanner Data Contract",
 	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-	"version": "2.7.0",
+	"version": "2.8.0",
 	"type": "object",
 	"required": [
 		"scanMeta",
@@ -503,6 +503,10 @@
 									"properties": {
 										"dataCategory": { "type": "string" },
 										"sourceClass": { "type": "string" },
+										"source": {
+											"type": "string",
+											"description": "Emitting tool that produced this signal. Omitted when it is the default source."
+										},
 										"ruleId": { "type": "string" },
 										"observedAt": { "type": "string", "format": "date-time" },
 										"subjectType": { "type": "string" },
