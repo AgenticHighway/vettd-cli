@@ -246,7 +246,13 @@ fn observe(
     // — the machine has not changed and they want the data pushed again — and reports `nothing
     // new to send`, which reads as success. One flag, one meaning: ignore what I believe I have
     // already sent. Cursors are still staged and still advance only after a 2xx.
-    let probe_store = if args.resend { None } else { store.as_ref() };
+    // The store and the endpoint host travel together: a cursor records delivery TO A HOST, so
+    // consulting one without naming the host is the bug this pairing prevents at the type level.
+    let endpoint_host = auth.map(|a| crate::network::endpoint_display_host(&a.endpoint));
+    let probe_store = match (args.resend, store.as_ref(), endpoint_host) {
+        (false, Some(store), Some(host)) => Some((store, host)),
+        _ => None,
+    };
     for group in &groups {
         match read_group(&source, group, probe_store, &mut coverage, &mut staged)? {
             Some(facts) => {
@@ -411,7 +417,7 @@ fn send(
         // the cursor commit so a failed final transaction always has something safe to resend.
         if index + 1 < batches.len() {
             if let Some(state) = store.as_deref_mut() {
-                state.commit(&[], &held)?;
+                state.commit(host, &[], &held)?;
             }
         } else if let Some(state) = store.as_deref_mut() {
             let confirmed_cursors = if all_pending_persisted(pending, &outcome) {
@@ -419,7 +425,9 @@ fn send(
             } else {
                 &[]
             };
-            state.commit(confirmed_cursors, &held)?;
+            // Keyed by this host: a cursor earned here must not tell a submit to a different
+            // endpoint that the file is already delivered.
+            state.commit(host, confirmed_cursors, &held)?;
         }
     }
 
@@ -678,12 +686,12 @@ fn cursor_state(store: Option<&Store>) -> Result<String, String> {
 fn read_group(
     source: &ClaudeCodeSource,
     group: &Group,
-    store: Option<&Store>,
+    store: Option<(&Store, &str)>,
     coverage: &mut Coverage,
     staged: &mut Vec<(String, crate::observe::types::Cursor)>,
 ) -> Result<Option<SessionFacts>, String> {
-    if let Some(store) = store {
-        if let Some(probe) = probe_group(source, group, store)? {
+    if let Some((store, endpoint_host)) = store {
+        if let Some(probe) = probe_group(source, group, store, endpoint_host)? {
             match probe {
                 Probe::Unchanged { cursors } => {
                     staged.extend(cursors);
@@ -765,10 +773,11 @@ fn probe_group(
     source: &ClaudeCodeSource,
     group: &Group,
     store: &Store,
+    endpoint_host: &str,
 ) -> Result<Option<Probe>, String> {
     let mut cursors = Vec::new();
     for r in group.refs() {
-        match store.load_cursor(&r.path)? {
+        match store.load_cursor(&r.path, endpoint_host)? {
             Some(cursor) => cursors.push(cursor),
             None => return Ok(None),
         }

@@ -127,6 +127,7 @@ fn secret_rotation_clears_cursors_and_ledger() {
     );
     store
         .commit(
+            "app.vettd.ai",
             &[("claude_code".to_string(), cursor(&session, 42, Some(7)))],
             &[ledger("run-a")],
         )
@@ -164,6 +165,7 @@ fn commit_is_atomic_across_cursors_and_ledger() {
 
     store
         .commit(
+            "app.vettd.ai",
             &[("claude_code".to_string(), cursor(&session, 10, None))],
             &[ledger("run-a"), ledger("run-b")],
         )
@@ -176,6 +178,7 @@ fn commit_is_atomic_across_cursors_and_ledger() {
     let before_cursors = store.cursor_paths();
     let before_ledger = store.ledger_len();
     let result = store.commit_failing_after(
+        "app.vettd.ai",
         &[(
             "claude_code".to_string(),
             cursor(&dir.path().join("other.ndjson"), 99, None),
@@ -217,7 +220,7 @@ fn cursor_store_evicts_oldest_beyond_cap() {
             )
         })
         .collect();
-    store.commit(&staged, &[]).expect("commits");
+    store.commit("app.vettd.ai", &staged, &[]).expect("commits");
     assert_eq!(
         store.cursor_paths().len(),
         MAX_CURSOR_ROWS,
@@ -227,7 +230,11 @@ fn cursor_store_evicts_oldest_beyond_cap() {
     // A later commit's cursor survives, and the table stays at the cap.
     let fresh = dir.path().join("zz-newest.ndjson");
     store
-        .commit(&[("claude_code".to_string(), cursor(&fresh, 1, None))], &[])
+        .commit(
+            "app.vettd.ai",
+            &[("claude_code".to_string(), cursor(&fresh, 1, None))],
+            &[],
+        )
         .expect("commits");
     let paths = store.cursor_paths();
     assert_eq!(paths.len(), MAX_CURSOR_ROWS);
@@ -245,7 +252,9 @@ fn ledger_is_keyed_on_the_record_hash_not_just_the_run() {
     let dir = TempDir::new().expect("tempdir");
     let mut store = Store::open_at(&dir.path().join("observer-v1.sqlite3")).expect("opens");
     let row = ledger("run-a");
-    store.commit(&[], &[row.clone()]).expect("commits");
+    store
+        .commit("app.vettd.ai", &[], &[row.clone()])
+        .expect("commits");
 
     assert!(store
         .ledger_has(&row.run_id, &row.endpoint_host, &row.record_sha256)
@@ -275,6 +284,7 @@ fn cursors_round_trip_including_an_absent_inode() {
     let without = dir.path().join("b.ndjson");
     store
         .commit(
+            "app.vettd.ai",
             &[
                 (
                     "claude_code".to_string(),
@@ -287,16 +297,122 @@ fn cursors_round_trip_including_an_absent_inode() {
         .expect("commits");
 
     assert_eq!(
-        store.load_cursor(&with_inode).expect("read"),
+        store
+            .load_cursor(&with_inode, "app.vettd.ai")
+            .expect("read"),
         Some(cursor(&with_inode, 4096, Some(99)))
     );
     assert_eq!(
-        store.load_cursor(&without).expect("read"),
+        store.load_cursor(&without, "app.vettd.ai").expect("read"),
         Some(cursor(&without, 0, None))
     );
     assert_eq!(
         store
-            .load_cursor(&dir.path().join("never-seen.ndjson"))
+            .load_cursor(&dir.path().join("never-seen.ndjson"), "app.vettd.ai")
+            .expect("read"),
+        None
+    );
+}
+
+/// Invariant: a cursor earned against one endpoint says nothing about another.
+///
+/// A cursor records that a file's contents were DELIVERED somewhere. Keyed by path alone, a
+/// successful submit to localhost made every later production `--submit` probe the same files as
+/// unchanged and print "nothing new to send" — reading as success while the real endpoint received
+/// nothing, and recoverable only by a `--resend` the user had no reason to suspect they needed.
+///
+/// The ledger was always keyed by `(run_id, endpoint_host)`; the cursors were not, and that
+/// mismatch was the whole bug.
+#[test]
+fn a_cursor_from_one_endpoint_does_not_suppress_another() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("observer-v1.sqlite3");
+    let mut store = Store::open_at(&path).expect("opens");
+    let transcript = dir.path().join("session.ndjson");
+
+    store
+        .commit(
+            "localhost:3000",
+            &[("claude_code".to_string(), cursor(&transcript, 4096, None))],
+            &[],
+        )
+        .expect("commits a cursor for the local endpoint");
+
+    assert!(
+        store
+            .load_cursor(&transcript, "localhost:3000")
+            .expect("read")
+            .is_some(),
+        "the endpoint that earned the cursor still sees it"
+    );
+    assert_eq!(
+        store
+            .load_cursor(&transcript, "app.vettd.ai")
+            .expect("read"),
+        None,
+        "a different endpoint must see no cursor, so the file is read and sent"
+    );
+
+    // Both can hold a cursor for the same path at once, at different offsets.
+    store
+        .commit(
+            "app.vettd.ai",
+            &[("claude_code".to_string(), cursor(&transcript, 99, None))],
+            &[],
+        )
+        .expect("commits a cursor for the production endpoint");
+    assert_eq!(
+        store
+            .load_cursor(&transcript, "localhost:3000")
+            .expect("read")
+            .expect("still there")
+            .byte_offset,
+        4096,
+        "writing one endpoint's cursor must not overwrite another's"
+    );
+    assert_eq!(
+        store
+            .load_cursor(&transcript, "app.vettd.ai")
+            .expect("read")
+            .expect("present")
+            .byte_offset,
+        99
+    );
+}
+
+/// Invariant: a store written by a pre-`endpoint_host` build is usable, not fatal.
+///
+/// Cursors are change detectors and submit-only state, so dropping them costs one redundant
+/// resend that the server answers `duplicate` from the ledger — which survives. Keeping the rows
+/// would mean guessing which endpoint earned them, and a wrong guess is the silent starvation
+/// this change removes.
+#[test]
+fn an_old_path_keyed_cursor_table_is_replaced_not_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("observer-v1.sqlite3");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("create legacy store");
+        conn.execute_batch(
+            "CREATE TABLE observer_cursors (
+                 path TEXT PRIMARY KEY,
+                 harness TEXT NOT NULL,
+                 byte_offset INTEGER NOT NULL,
+                 inode INTEGER,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT INTO observer_cursors VALUES ('/old/session.ndjson', 'claude_code', 10, NULL, '2026-01-01T00:00:00Z');",
+        )
+        .expect("legacy schema");
+    }
+
+    let store = Store::open_at(&path).expect("opens a legacy store without failing");
+    assert!(
+        !store.has_any_cursor().expect("queryable"),
+        "the path-keyed rows are dropped rather than migrated under a guessed endpoint"
+    );
+    assert_eq!(
+        store
+            .load_cursor(std::path::Path::new("/old/session.ndjson"), "app.vettd.ai")
             .expect("read"),
         None
     );

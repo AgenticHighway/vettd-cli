@@ -193,7 +193,7 @@ fn seed_cursors(store: &mut Store, source: &ClaudeCodeSource, groups: &[Group]) 
             staged.push((source.harness().to_string(), cursor));
         }
     }
-    store.commit(&staged, &[]).expect("commit");
+    store.commit("app.vettd.ai", &staged, &[]).expect("commit");
 }
 
 /// Invariant: a group whose files have not grown emits NOTHING and stages a cursor for EVERY file
@@ -214,8 +214,14 @@ fn unchanged_resume_emits_silence_and_stages_cursors_every_file() {
     let mut coverage = blank_coverage();
     let mut staged = Vec::new();
     for group in &groups {
-        let emitted = read_group(&source, group, Some(&store), &mut coverage, &mut staged)
-            .expect("read group");
+        let emitted = read_group(
+            &source,
+            group,
+            Some((&store, "app.vettd.ai")),
+            &mut coverage,
+            &mut staged,
+        )
+        .expect("read group");
         assert!(emitted.is_none(), "an unchanged group must emit nothing");
     }
     assert_eq!(
@@ -259,7 +265,7 @@ fn changed_main_rebuilds_the_complete_run_and_double_counts_probe_bytes() {
     let facts = read_group(
         &source,
         &groups[0],
-        Some(&store),
+        Some((&store, "app.vettd.ai")),
         &mut coverage,
         &mut staged,
     )
@@ -305,7 +311,7 @@ fn changed_child_rebuilds_the_complete_parent_run() {
     let facts = read_group(
         &source,
         &groups[0],
-        Some(&store),
+        Some((&store, "app.vettd.ai")),
         &mut coverage,
         &mut staged,
     )
@@ -333,7 +339,7 @@ fn failed_rebuild_does_not_advance_the_probe_cursor() {
     let mut store = Store::open_at(&dir.path().join("store.sqlite3")).expect("store");
     seed_cursors(&mut store, &source, &groups);
     let before = store
-        .load_cursor(&groups[0].main.path)
+        .load_cursor(&groups[0].main.path, "app.vettd.ai")
         .expect("read")
         .expect("seeded");
 
@@ -346,14 +352,22 @@ fn failed_rebuild_does_not_advance_the_probe_cursor() {
     let mut staged = Vec::new();
     // Discovery skips a non-file, so the group may vanish entirely; either way no cursor moves.
     if let Some(group) = groups.first() {
-        let _ = read_group(&source, group, Some(&store), &mut coverage, &mut staged);
+        let _ = read_group(
+            &source,
+            group,
+            Some((&store, "app.vettd.ai")),
+            &mut coverage,
+            &mut staged,
+        );
     }
     assert!(
         !staged.iter().any(|(_, c)| c.path == before.path),
         "a failed read must not stage a cursor for the file it failed on"
     );
     assert_eq!(
-        store.load_cursor(&before.path).expect("read"),
+        store
+            .load_cursor(&before.path, "app.vettd.ai")
+            .expect("read"),
         Some(before),
         "the committed cursor is untouched until a commit says otherwise"
     );

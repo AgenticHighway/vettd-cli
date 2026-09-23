@@ -159,7 +159,36 @@ impl Store {
         Ok(store)
     }
 
+    /// Drop a pre-`endpoint_host` cursor table before creating the current one.
+    ///
+    /// Cursors are CHANGE DETECTORS, not resume points, and they are submit-only state. Losing
+    /// them costs exactly one redundant resend, which the server answers `duplicate` because the
+    /// ledger still holds the record hash — the fail-safe direction. Migrating the rows would
+    /// mean guessing which endpoint they were earned against, and guessing wrong is the silent
+    /// starvation this change exists to remove.
+    fn migrate_cursor_schema(&self) -> rusqlite::Result<()> {
+        let table_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='observer_cursors')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        if !table_exists {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare("PRAGMA table_info(observer_cursors)")?;
+        let has_host = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|name| name == "endpoint_host");
+        drop(stmt);
+        if !has_host {
+            self.conn.execute_batch("DROP TABLE observer_cursors;")?;
+        }
+        Ok(())
+    }
+
     fn ensure_schema(&self) -> rusqlite::Result<()> {
+        self.migrate_cursor_schema()?;
         self.conn.execute_batch(
             "
                 CREATE TABLE IF NOT EXISTS observer_meta (
@@ -168,11 +197,13 @@ impl Store {
                 );
 
                 CREATE TABLE IF NOT EXISTS observer_cursors (
-                    path TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    endpoint_host TEXT NOT NULL,
                     harness TEXT NOT NULL,
                     byte_offset INTEGER NOT NULL,
                     inode INTEGER,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (path, endpoint_host)
                 );
 
                 CREATE TABLE IF NOT EXISTS observer_ledger (
@@ -220,12 +251,23 @@ impl Store {
         Ok(rotated)
     }
 
-    pub(crate) fn load_cursor(&self, path: &Path) -> Result<Option<Cursor>, String> {
+    /// Load the cursor for `path` AS EARNED AGAINST `endpoint_host`.
+    ///
+    /// A cursor records that a file's contents were delivered somewhere. A submit to a different
+    /// host has not received them, so a cursor from host A must not make host B's submit decide
+    /// the file is unchanged — which reported `nothing new to send` and starved the real endpoint
+    /// for anyone who had ever submitted to a local one.
+    pub(crate) fn load_cursor(
+        &self,
+        path: &Path,
+        endpoint_host: &str,
+    ) -> Result<Option<Cursor>, String> {
         let key = path.to_string_lossy().to_string();
         self.conn
             .query_row(
-                "SELECT byte_offset, inode FROM observer_cursors WHERE path = ?1",
-                params![key],
+                "SELECT byte_offset, inode FROM observer_cursors
+                 WHERE path = ?1 AND endpoint_host = ?2",
+                params![key, endpoint_host],
                 |row| {
                     let offset: i64 = row.get(0)?;
                     let inode: Option<i64> = row.get(1)?;
@@ -280,10 +322,11 @@ impl Store {
     /// for. Either is silent, so neither is allowed to happen alone.
     pub(crate) fn commit(
         &mut self,
+        endpoint_host: &str,
         cursors: &[(String, Cursor)],
         ledger_rows: &[LedgerRow],
     ) -> Result<(), String> {
-        self.commit_inner(cursors, ledger_rows, None)
+        self.commit_inner(endpoint_host, cursors, ledger_rows, None)
     }
 
     /// [`Store::commit`] with an injected failure after `fail_after` statements.
@@ -295,15 +338,17 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn commit_failing_after(
         &mut self,
+        endpoint_host: &str,
         cursors: &[(String, Cursor)],
         ledger_rows: &[LedgerRow],
         fail_after: usize,
     ) -> Result<(), String> {
-        self.commit_inner(cursors, ledger_rows, Some(fail_after))
+        self.commit_inner(endpoint_host, cursors, ledger_rows, Some(fail_after))
     }
 
     fn commit_inner(
         &mut self,
+        endpoint_host: &str,
         cursors: &[(String, Cursor)],
         ledger_rows: &[LedgerRow],
         fail_after: Option<usize>,
@@ -316,15 +361,17 @@ impl Store {
             .map_err(|e| format!("Failed to begin an observer store transaction: {e}"))?;
         for (harness, cursor) in cursors {
             tx.execute(
-                "INSERT INTO observer_cursors (path, harness, byte_offset, inode, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(path) DO UPDATE SET
+                "INSERT INTO observer_cursors
+                     (path, endpoint_host, harness, byte_offset, inode, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(path, endpoint_host) DO UPDATE SET
                      harness = excluded.harness,
                      byte_offset = excluded.byte_offset,
                      inode = excluded.inode,
                      updated_at = excluded.updated_at",
                 params![
                     cursor.path.to_string_lossy().to_string(),
+                    endpoint_host,
                     harness,
                     cursor.byte_offset as i64,
                     cursor.inode.map(|i| i as i64),
@@ -409,10 +456,13 @@ impl Store {
 /// Runs inside the caller's transaction, and after the inserts, so a cursor staged in this same
 /// commit is among the newest and cannot be the one evicted.
 fn evict_cursors(tx: &rusqlite::Transaction<'_>) -> Result<(), String> {
+    // By rowid, NOT by path: with `(path, endpoint_host)` as the key, one path can have a row per
+    // endpoint, and `WHERE path IN (...)` would evict every host's cursor for that path — losing
+    // state the cap never meant to touch.
     tx.execute(
-        "DELETE FROM observer_cursors WHERE path IN (
-             SELECT path FROM observer_cursors
-             ORDER BY updated_at DESC, path ASC
+        "DELETE FROM observer_cursors WHERE rowid IN (
+             SELECT rowid FROM observer_cursors
+             ORDER BY updated_at DESC, path ASC, endpoint_host ASC
              LIMIT -1 OFFSET ?1
          )",
         params![MAX_CURSOR_ROWS as i64],
