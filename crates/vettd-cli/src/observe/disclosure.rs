@@ -60,10 +60,16 @@ pub(crate) fn render_observe_disclosure(destination: Option<&str>, root: &Path) 
         lines.push(format!("    • {} — {}", cat.label(), cat.description()));
     }
 
+    // Every location the run opens, not just the transcripts. `FsIndex::new` also reads the
+    // skill and agent trees and three config files to identify assets by content — including
+    // `~/.claude.json`, which is a SIBLING of the observe root rather than a child, so a user
+    // told only about `<root>/projects` has no way to know a file outside that root is opened.
+    // This is the consent text; it has to name everything the run reads.
     lines.push(format!(
-        "  Source: Claude Code session logs under {}/projects (read-only; message text, paths, \
-         names and ids never leave this machine)",
-        root.display()
+        "  Source: Claude Code session logs under {root}/projects, and the asset definitions they \
+         reference — {root}/skills, {root}/agents, {root}/settings.json, {root}/.claude.json and \
+         ~/.claude.json (read-only; message text, paths, names and ids never leave this machine)",
+        root = root.display()
     ));
 
     if let Some(host) = destination {
@@ -142,11 +148,26 @@ mod tests {
         // Header + 14 bullets + source line, then the terminator of that last line.
         assert_eq!(parts.len(), 17, "unexpected disclosure layout:\n{local}");
         assert_eq!(parts[0], "  This observation will include:");
-        assert_eq!(
-            parts[15],
-            "  Source: Claude Code session logs under /home/example/.claude/projects (read-only; \
-             message text, paths, names and ids never leave this machine)"
-        );
+        // Every location `FsIndex::new` opens must be named here. Pinning the exact sentence
+        // would only prove the string is the string; what matters is that no path the run reads
+        // is missing from the consent text. `~/.claude.json` is deliberately included: it sits
+        // OUTSIDE the observe root, so its absence was the least discoverable omission.
+        let source = parts[15];
+        assert!(source.starts_with("  Source: "), "{source}");
+        for location in [
+            "/home/example/.claude/projects",
+            "/home/example/.claude/skills",
+            "/home/example/.claude/agents",
+            "/home/example/.claude/settings.json",
+            "/home/example/.claude/.claude.json",
+            "~/.claude.json",
+        ] {
+            assert!(
+                source.contains(location),
+                "the consent text must name {location}, which the run reads:\n{source}"
+            );
+        }
+        assert!(source.contains("never leave this machine"), "{source}");
         assert_eq!(parts[16], "", "the text ends with the last line's newline");
         assert!(
             local.ends_with('\n') && !local.ends_with("\n\n"),
