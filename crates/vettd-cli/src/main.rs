@@ -20,6 +20,7 @@ mod lite_mode;
 mod models;
 mod network;
 mod network_evidence;
+mod observe;
 mod output;
 mod progress;
 mod read_client;

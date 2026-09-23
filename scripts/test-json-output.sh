@@ -317,6 +317,51 @@ else
     skip "directory --json tests — network unreachable"
 fi
 
+# ── 9. observe status --json / observe --json ─────────────────────────
+#
+# Runs against a throwaway $HOME seeded with the committed fixture harness
+# home, so nothing here reads the developer's own ~/.claude or ~/.vettd. The
+# clock and emission day are pinned so the envelope is reproducible.
+
+section "observe --json"
+
+OBSERVE_HOME="$(mktemp -d)"
+mkdir -p "$OBSERVE_HOME/.vettd"
+OBSERVE_FIXTURES="$REPO_ROOT/crates/vettd-cli/tests/fixtures/observe"
+OBSERVE_ROOT="$OBSERVE_HOME/claude_home"
+cp -R "$OBSERVE_FIXTURES/claude_home" "$OBSERVE_ROOT"
+cp "$OBSERVE_FIXTURES/golden/secret.bin" "$OBSERVE_HOME/.vettd/observer_secret"
+printf '[telemetry]\nenabled = true\n' > "$OBSERVE_HOME/.vettd/.vettd.toml"
+
+OBS_ENV="env HOME=$OBSERVE_HOME VETTD_SCANNER_UUID=00000000-0000-4000-8000-000000000000"
+
+assert_json "observe status --json emits JSON" \
+    $OBS_ENV $RUN observe status --json
+
+if [ -n "$JSON_OUT" ]; then
+    assert_type  "enabled is bool"          "$JSON_OUT" 'data["enabled"]'         'bool'
+    assert_type  "secret_present is bool"   "$JSON_OUT" 'data["secret_present"]'  'bool'
+    assert_type  "store_present is bool"    "$JSON_OUT" 'data["store_present"]'   'bool'
+    assert_field "config_path present"      "$JSON_OUT" '"config_path" in data'
+    assert_field "envelope_version present" "$JSON_OUT" 'data["envelope_version"]'
+fi
+
+assert_json "observe --json emits the envelope on stdout" \
+    $OBS_ENV $RUN --json observe --root "$OBSERVE_ROOT" \
+        --now-ms 1800000000000 --today 2027-01-15 --window-days 3650 --dry-run \
+        --out "$OBSERVE_HOME/payload.json"
+
+if [ -n "$JSON_OUT" ]; then
+    assert_field "envelope_version is 0.2.0" "$JSON_OUT" 'data["envelope_version"] == "0.2.0" or None'
+    assert_type  "records is a list"         "$JSON_OUT" 'data["records"]'  'list'
+    assert_type  "coverage is an object"     "$JSON_OUT" 'data["coverage"]' 'dict'
+    # The disclosure and the gate summary are human output; a byte of either on stdout would have
+    # already broken the JSON parse above, which is the point of asserting it here.
+    assert_field "no human output on stdout" "$JSON_OUT" '"resource" in data'
+fi
+
+rm -rf "$OBSERVE_HOME"
+
 # ── Summary ───────────────────────────────────────────────────────────
 
 echo ""

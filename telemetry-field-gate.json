@@ -1,0 +1,1096 @@
+{
+  "title": "vettd passive-observer telemetry field gate (spike #828)",
+  "description": "The complete list of fields that may leave the machine in a passive-observer telemetry payload, in the form a gate script consumes. Every leaf path of a written payload must appear in `fields` (an unknown key fails, mirroring contract/disclosure.rs::validate_payload_coverage), every field maps to exactly one disclosure category, every enum is closed, and every string leaf that is not an exact-format hash, day, allowed uuid, or decimal integer must pass every `forbiddenValuePatterns` regex and every `dynamicForbids` set. A key-path walker cannot see a path inside a string; the value-level rules are what make 'logs never leave the machine' checkable on the payload rather than on the code.",
+  "gateVersion": 1,
+  "envelopeVersion": "0.2.0",
+  "envelopeSchema": "telemetry-envelope.schema.json",
+  "pathSyntax": "dot-joined keys; array elements as []; leaf paths only; nullable objects are listed once as type object with nullable=true and their children are listed as leaves.",
+  "posture": {
+    "allowed": [
+      "counts",
+      "rates derived server-side from counts",
+      "relative durations in ms as mergeable stats",
+      "token totals by provider bucket",
+      "allowlisted model identifiers",
+      "content-derived asset hashes and HMAC pseudonyms",
+      "a coarse task category from a published tool-mix rule set",
+      "bookkeeping: versions, device id, harness id and semver, run pseudonym, loaded-set hash, attribution tier, evidence basis, coverage"
+    ],
+    "never": [
+      "message content",
+      "file paths",
+      "cwd",
+      "branches",
+      "repo or org names",
+      "tool arguments",
+      "error strings",
+      "environment variable names or values",
+      "usernames",
+      "hostnames",
+      "URLs",
+      "asset names of any kind",
+      "user-chosen identifiers (session slugs, agent ids, OpenClaw agent ids, Hermes session titles)",
+      "harness session, message, request, or tool-use ids",
+      "wall-clock timestamps finer than a UTC day",
+      "session duration",
+      "native cost fields"
+    ]
+  },
+  "disclosureCategories": [
+    {
+      "name": "TelemetryBookkeeping",
+      "label": "Telemetry bookkeeping",
+      "description": "envelope, extractor, gate, and collector versions"
+    },
+    {
+      "name": "ObservationDay",
+      "label": "Observation day",
+      "description": "UTC calendar day of emission and of each observed run start; no finer time resolution is transmitted"
+    },
+    {
+      "name": "DeviceIdentity",
+      "label": "Device identity",
+      "description": "the persisted scanner device id and a per-run pseudonym derived from a device-local secret; the harness session id itself is never transmitted"
+    },
+    {
+      "name": "HarnessIdentity",
+      "label": "Harness identity",
+      "description": "which supported harness produced the run, its semantic version, and a coarse entrypoint class"
+    },
+    {
+      "name": "ModelIdentity",
+      "label": "Model identity",
+      "description": "the allowlisted model identifier reported by the harness for the run, or 'other'"
+    },
+    {
+      "name": "RunShape",
+      "label": "Run shape",
+      "description": "closed-enum descriptors of the run: effort, permission mode, task category from a published tool-mix rule set, loaded-set basis, run outcome"
+    },
+    {
+      "name": "RunOutcomeCounts",
+      "label": "Run outcome counts",
+      "description": "integer counts per run: turns, tool calls, failures by class, denials, sub-agent runs, compactions, unpaired calls, repeated near-identical calls"
+    },
+    {
+      "name": "RunTokenTotals",
+      "label": "Run token totals",
+      "description": "token totals per run by provider bucket (nullable per provider) and the basis they were read from; never a cost figure"
+    },
+    {
+      "name": "AssetIdentityHash",
+      "label": "Asset identity hashes",
+      "description": "a content hash, canonical-descriptor hash, or HMAC name pseudonym per asset with its type and key basis; never a name or path"
+    },
+    {
+      "name": "AssetLoadedSet",
+      "label": "Loaded set",
+      "description": "the loaded-set hash per run, the membership list as asset hashes, and per-asset attribution tier and binding"
+    },
+    {
+      "name": "AssetOutcomeCounts",
+      "label": "Asset outcome counts",
+      "description": "per asset per run: invocation count, failures by class, harness-native corroboration count"
+    },
+    {
+      "name": "AssetTimingStats",
+      "label": "Asset timing stats",
+      "description": "per asset per run: mergeable stats (n, sum, min, max, sumsq) of per-invocation latency in ms from harness timestamps"
+    },
+    {
+      "name": "AssetTokenStats",
+      "label": "Asset token stats",
+      "description": "per asset per run: mergeable stats of tokens attributed to the asset where attribution is exact (sub-agent runs), and a locally estimated context-cost figure with its method"
+    },
+    {
+      "name": "CoverageMetadata",
+      "label": "Coverage metadata",
+      "description": "what the collector saw and did not see, so silence is distinguishable from nothing to report"
+    }
+  ],
+  "enums": {
+    "harness": [
+      "claude_code",
+      "codex"
+    ],
+    "collector": [
+      "vettd-cli",
+      "prototype"
+    ],
+    "device_id_source": [
+      "scanner_uuid",
+      "placeholder"
+    ],
+    "entrypoint_class": [
+      "cli",
+      "ide",
+      "remote",
+      "sdk",
+      "unknown"
+    ],
+    "effort": [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "unknown"
+    ],
+    "permission_mode": [
+      "default",
+      "plan",
+      "accept_edits",
+      "bypass",
+      "auto",
+      "dont_ask",
+      "unknown"
+    ],
+    "task_category": [
+      "code_edit",
+      "code_explore",
+      "shell_ops",
+      "mcp_heavy",
+      "mixed",
+      "unspecified"
+    ],
+    "loaded_set_basis": [
+      "harness_log",
+      "filesystem",
+      "none"
+    ],
+    "run_outcome": [
+      "completed",
+      "interrupted",
+      "compacted",
+      "truncated",
+      "unknown"
+    ],
+    "asset_type": [
+      "skill",
+      "mcp_server",
+      "agent",
+      "rules_file",
+      "prompt"
+    ],
+    "key_basis": [
+      "content_hash",
+      "descriptor_hash",
+      "name_hash"
+    ],
+    "tier": [
+      "direct",
+      "loaded",
+      "inferred"
+    ],
+    "binding": [
+      "harness_log_exact",
+      "mtime_proven",
+      "unproven",
+      "not_applicable"
+    ],
+    "tokens_basis": [
+      "harness_usage",
+      "estimated",
+      "none"
+    ],
+    "context_cost_method": [
+      "listing_bytes_div4",
+      "file_bytes_div4",
+      "tool_schema_bytes_div4",
+      "none"
+    ],
+    "cursor_state": [
+      "fresh",
+      "resumed"
+    ],
+    "run_id_basis": [
+      "device_secret",
+      "test_secret"
+    ],
+    "model": [
+      "claude-fable-5-1",
+      "claude-mythos-5-1",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-1",
+      "claude-sonnet-4-5",
+      "claude-sonnet-4",
+      "gpt-5",
+      "gpt-5-mini",
+      "gpt-5-codex",
+      "gpt-5.1",
+      "gpt-5.1-codex",
+      "gpt-5.2",
+      "gpt-4.1",
+      "o3",
+      "o4-mini",
+      "codex-mini-latest",
+      "gemini-2.5-pro",
+      "gemini-3-pro",
+      "other"
+    ]
+  },
+  "formats": {
+    "hex64": "^[0-9a-f]{64}$",
+    "day": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+    "uuid": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    "semver_or_unknown": "^(?:[0-9]+\\.[0-9]+\\.[0-9]+|unknown)$",
+    "extractor_version": "^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$",
+    "sumsq_decimal": "^(?:0|[1-9][0-9]{0,20}|1000000000000000000000)$"
+  },
+  "numericBounds": {
+    "count": [
+      0,
+      10000000
+    ],
+    "tokens": [
+      0,
+      1000000000
+    ],
+    "ms": [
+      0,
+      604800000
+    ],
+    "bytes": [
+      0,
+      1000000000000
+    ],
+    "days": [
+      0,
+      3660
+    ],
+    "version": [
+      0,
+      1000000
+    ]
+  },
+  "hashPaths": [
+    "records[].run_id",
+    "records[].bom_version",
+    "records[].assets[].asset_id",
+    "bom[].bom_version",
+    "bom[].asset_ids[]"
+  ],
+  "dayPaths": [
+    "emitted_day",
+    "records[].observed_day"
+  ],
+  "allowedUuidPaths": [
+    "resource.device_id"
+  ],
+  "decimalIntegerPaths": [
+    "records[].assets[].signals.latency_ms.sumsq",
+    "records[].assets[].signals.tokens_attributed.sumsq"
+  ],
+  "fields": {
+    "envelope_version": {
+      "category": "TelemetryBookkeeping",
+      "type": "string",
+      "format": "semver_or_unknown",
+      "required": true,
+      "reason": "Schema version of this payload; the cloud validates against the matching envelope schema.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "extractor_version": {
+      "category": "TelemetryBookkeeping",
+      "type": "string",
+      "format": "extractor_version",
+      "required": true,
+      "reason": "Deterministic extractor identity including the task-category rule-set version; a re-extraction with a different version is a different observation.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "gate_version": {
+      "category": "TelemetryBookkeeping",
+      "type": "integer",
+      "unit": "version",
+      "required": true,
+      "reason": "Which field gate the emitter enforced; lets the cloud reject payloads produced under an older allowlist.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "emitted_day": {
+      "category": "ObservationDay",
+      "type": "string",
+      "format": "day",
+      "required": true,
+      "reason": "UTC day the payload was written; coarse enough not to record when a person works.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.device_id": {
+      "category": "DeviceIdentity",
+      "type": "string",
+      "format": "uuid",
+      "required": true,
+      "reason": "The persisted scanner_uuid from identity.rs so the cloud can join telemetry to the inventory the same device submitted under the scan disclosure. The prototype emits the null-UUID placeholder.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.device_id_source": {
+      "category": "DeviceIdentity",
+      "type": "string",
+      "enum": "device_id_source",
+      "required": true,
+      "reason": "Whether device_id is the real persisted id or a placeholder, so placeholder rows are never joined.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.harness": {
+      "category": "HarnessIdentity",
+      "type": "string",
+      "enum": "harness",
+      "required": true,
+      "reason": "Harness identity is attribution (#881 deferral, #965); a closed enum, never the harness's own display name.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.harness_version": {
+      "category": "HarnessIdentity",
+      "type": "string",
+      "format": "semver_or_unknown",
+      "required": true,
+      "reason": "Log formats change with harness releases; the version stratifies parse confidence. Plain MAJOR.MINOR.PATCH only: prerelease and build metadata are dropped to 'unknown' because a build string can carry a hostname or a commit.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.collector": {
+      "category": "TelemetryBookkeeping",
+      "type": "string",
+      "enum": "collector",
+      "required": true,
+      "reason": "Which reader produced the payload.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "resource.collector_version": {
+      "category": "TelemetryBookkeeping",
+      "type": "string",
+      "format": "semver_or_unknown",
+      "required": true,
+      "reason": "Reader version for coverage accounting.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].run_id": {
+      "category": "DeviceIdentity",
+      "type": "string",
+      "format": "hex64",
+      "required": true,
+      "reason": "HMAC(device-local observer secret, harness session id): deterministic locally so re-extraction is idempotent, unlinkable remotely because the secret never egresses.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].observed_day": {
+      "category": "ObservationDay",
+      "type": "string",
+      "format": "day",
+      "required": true,
+      "reason": "UTC day of the session's first harness timestamp; the recency and staleness key at the coarsest resolution that still supports #886 observedAt.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].model": {
+      "category": "ModelIdentity",
+      "type": "string",
+      "required": true,
+      "reason": "Model id as reported by the harness, restricted to a closed list versioned with this gate; anything else (a custom provider name, a fine-tune label, a model released after this gate) becomes 'other'. A prefix pattern was rejected because a user-named model such as claude-<org>-<project> would pass it and carry a name.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "enum": "model"
+    },
+    "records[].entrypoint_class": {
+      "category": "HarnessIdentity",
+      "type": "string",
+      "enum": "entrypoint_class",
+      "required": true,
+      "reason": "Coarse class of how the harness was launched; a confounder for tool mix and denial rates, recorded so it can be stratified or visibly pooled.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].effort": {
+      "category": "RunShape",
+      "type": "string",
+      "enum": "effort",
+      "required": true,
+      "reason": "Reasoning effort setting; a confounder for token totals.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].permission_mode": {
+      "category": "RunShape",
+      "type": "string",
+      "enum": "permission_mode",
+      "required": true,
+      "reason": "Permission mode; a confounder for user-denial counts.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].task_category": {
+      "category": "RunShape",
+      "type": "string",
+      "enum": "task_category",
+      "required": true,
+      "reason": "Coarse task category from the published tool-mix rule set in prototype/taskcat.py; derived without reading content, and the underlying shares never egress.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].bom_version": {
+      "category": "AssetLoadedSet",
+      "type": "string",
+      "format": "hex64",
+      "required": true,
+      "reason": "sha256 over the sorted asset hashes of the loaded set for this run segment; session-level signals attach here, not to any single asset (ADR-001 alignment).",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].loaded_set_basis": {
+      "category": "RunShape",
+      "type": "string",
+      "enum": "loaded_set_basis",
+      "required": true,
+      "reason": "Whether the loaded set came from the harness's own log, from filesystem reconstruction, or is absent.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].run_outcome": {
+      "category": "RunShape",
+      "type": "string",
+      "enum": "run_outcome",
+      "required": true,
+      "reason": "How the run ended as far as the log shows; completion of the task is not observable and is never claimed.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.turns": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "User prompt turns in the run; not 'turns to completion'.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.tool_calls": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Total tool_use blocks including built-in tools.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.tool_failures": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Tool results flagged as errors by the harness, excluding user denials.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.user_denials": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Permission prompts the user declined; separated so they never count toward an asset's non-success rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.subagent_runs": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Child transcripts linked to this run.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.compactions": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Context compactions observed; a session-boundary marker.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.unpaired_tool_uses": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "tool_use blocks with no matching result in the log; coverage, not failure.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].counts.repeated_tool_calls": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Non-convergence indicator: tool calls whose (name, canonical-input hash) repeats three or more times in the run; the input hash is computed locally and discarded.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.input": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Uncached input tokens summed over deduplicated API responses.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.cache_creation": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "nullable": true,
+      "required": true,
+      "reason": "Provider-specific bucket; null where the provider has no such bucket.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.cache_read": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "nullable": true,
+      "required": true,
+      "reason": "Provider-specific bucket; null where absent.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.cached_input": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "nullable": true,
+      "required": true,
+      "reason": "Codex-style cached-input bucket; null for providers that split creation and read.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.output": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Output tokens summed over deduplicated API responses.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.thinking": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "nullable": true,
+      "required": true,
+      "reason": "Thinking tokens where the provider reports them; null otherwise.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.reasoning": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "nullable": true,
+      "required": true,
+      "reason": "Reasoning-output bucket (Codex); null otherwise.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens.basis": {
+      "category": "RunTokenTotals",
+      "type": "string",
+      "enum": "tokens_basis",
+      "required": true,
+      "reason": "Whether totals were read from harness usage records, estimated, or absent.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].asset_id": {
+      "category": "AssetIdentityHash",
+      "type": "string",
+      "format": "hex64",
+      "required": true,
+      "reason": "The only asset identifier that egresses: content hash, canonical-descriptor hash, or HMAC name pseudonym. Human-readable names live in the inventory the user consented to separately; the join is server-side on this key.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].asset_type": {
+      "category": "AssetIdentityHash",
+      "type": "string",
+      "enum": "asset_type",
+      "required": true,
+      "reason": "Which asset type the hash identifies; rules files and prompts can never be Direct.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].key_basis": {
+      "category": "AssetIdentityHash",
+      "type": "string",
+      "enum": "key_basis",
+      "required": true,
+      "reason": "How the hash was formed; name_hash rows have no cross-device meaning and are Inferred.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].tier": {
+      "category": "AssetLoadedSet",
+      "type": "string",
+      "enum": "tier",
+      "required": true,
+      "reason": "Attribution tier that produced this row: direct, loaded, or inferred.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].binding": {
+      "category": "AssetLoadedSet",
+      "type": "string",
+      "enum": "binding",
+      "required": true,
+      "reason": "How the asset hash is bound to what the harness actually loaded: exact from the log, mtime-proven from the filesystem, unproven, or not applicable.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].direct_evidence_available": {
+      "category": "AssetLoadedSet",
+      "type": "boolean",
+      "required": true,
+      "reason": "Whether the harness log carries an explicit invocation of this asset, i.e. whether the production collector could attribute it Direct.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.invocations.n": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Explicit invocations of the asset in this run; zero for loaded-only assets.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.failures.tool_error": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Results the harness flagged as errors; counts toward the observed non-success rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.failures.timeout": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Timeouts where the harness distinguishes them; counts toward the rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.failures.user_denied": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "User declined a permission prompt; never counts toward the rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.failures.interrupted": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Call cut short by session end or user interrupt; never counts toward the rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.failures.unknown": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Unclassifiable outcome; never counts toward the rate.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.harness_corroborations": {
+      "category": "AssetOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "nullable": true,
+      "required": true,
+      "reason": "Count of harness-native attribution markers agreeing with this attribution (Claude Code sub-agent attribution fields); null where the harness has none.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.latency_ms.n": {
+      "category": "AssetTimingStats",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Number of invocations with a paired result.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.latency_ms.sum": {
+      "category": "AssetTimingStats",
+      "type": "integer",
+      "unit": "ms",
+      "required": true,
+      "reason": "Sum of per-invocation harness-clock latencies (result timestamp minus call timestamp); with n/min/max/sumsq it merges server-side without per-call rows. Relative durations only.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.latency_ms.min": {
+      "category": "AssetTimingStats",
+      "type": "integer",
+      "unit": "ms",
+      "required": true,
+      "reason": "Mergeable minimum.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.latency_ms.max": {
+      "category": "AssetTimingStats",
+      "type": "integer",
+      "unit": "ms",
+      "required": true,
+      "reason": "Mergeable maximum.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.latency_ms.sumsq": {
+      "category": "AssetTimingStats",
+      "type": "string",
+      "format": "sumsq_decimal",
+      "required": true,
+      "reason": "Sum of squares so variance can be derived after merging; encoded as a canonical decimal string to preserve integers above 2^53.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed": {
+      "category": "AssetTokenStats",
+      "type": "object",
+      "nullable": true,
+      "required": true,
+      "reason": "Present only where token attribution is exact (a sub-agent run's own transcript); null otherwise. Never a heuristic share of the parent's tokens.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed.n": {
+      "category": "AssetTokenStats",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Number of exactly attributed runs.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed.sum": {
+      "category": "AssetTokenStats",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Mergeable sum of total tokens (input+output buckets) across those runs.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed.min": {
+      "category": "AssetTokenStats",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Mergeable minimum.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed.max": {
+      "category": "AssetTokenStats",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Mergeable maximum.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.tokens_attributed.sumsq": {
+      "category": "AssetTokenStats",
+      "type": "string",
+      "format": "sumsq_decimal",
+      "required": true,
+      "reason": "Sum of squares for merged variance; encoded as a canonical decimal string to preserve integers above 2^53.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.context_cost_est": {
+      "category": "AssetTokenStats",
+      "type": "object",
+      "nullable": true,
+      "required": true,
+      "reason": "Locally estimated context cost of having the asset loaded; null when no estimate basis exists. An estimate, tagged with its method, never presented as measured.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.context_cost_est.tokens": {
+      "category": "AssetTokenStats",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Estimated tokens.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].assets[].signals.context_cost_est.method": {
+      "category": "AssetTokenStats",
+      "type": "string",
+      "enum": "context_cost_method",
+      "required": true,
+      "reason": "How the estimate was made (skills load lazily in Claude Code, so listing bytes and body bytes are different costs).",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "bom[].bom_version": {
+      "category": "AssetLoadedSet",
+      "type": "string",
+      "format": "hex64",
+      "required": true,
+      "reason": "Loaded-set hash referenced by records.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "bom[].asset_ids[]": {
+      "category": "AssetLoadedSet",
+      "type": "string",
+      "format": "hex64",
+      "required": true,
+      "reason": "Membership of the loaded set as asset hashes, sorted; co-occurrence is derived from this server-side.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.sessions_seen": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Session files discovered in the window.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.sessions_emitted": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Sessions that produced a record.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.sessions_skipped_unparseable": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Sessions skipped because the reader could not parse them; a dead or outdated reader shows up here rather than as silence.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.lines_seen": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Log lines read.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.lines_unknown_type": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Lines of a type the reader does not understand; a harness format change shows up here.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.bytes_read": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "bytes",
+      "required": true,
+      "reason": "Bytes read, for the collector's own resource accounting.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.truncated_sessions": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Sessions still being written when read.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.window_days": {
+      "category": "CoverageMetadata",
+      "type": "integer",
+      "unit": "days",
+      "required": true,
+      "reason": "Discovery window the collector applied.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.cursor_state": {
+      "category": "CoverageMetadata",
+      "type": "string",
+      "enum": "cursor_state",
+      "required": true,
+      "reason": "Whether this emission resumed from a persisted cursor or started fresh.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "coverage.run_id_basis": {
+      "category": "CoverageMetadata",
+      "type": "string",
+      "enum": "run_id_basis",
+      "required": true,
+      "reason": "Whether run pseudonyms were keyed by the real device secret or a test secret; test-keyed payloads are never joined.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens_by_model[]": {
+      "category": "RunTokenTotals",
+      "type": "object",
+      "required": true,
+      "reason": "Token buckets per model within the run: a run whose sub-agents ran on a different model must not have every token priced at the parent's model. One entry per distinct model id; the model id is allowlisted like records[].model.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens_by_model[].model": {
+      "category": "ModelIdentity",
+      "type": "string",
+      "required": true,
+      "reason": "Model id as reported by the harness, restricted to a closed list versioned with this gate; anything else (a custom provider name, a fine-tune label, a model released after this gate) becomes 'other'. A prefix pattern was rejected because a user-named model such as claude-<org>-<project> would pass it and carry a name.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "enum": "model"
+    },
+    "records[].tokens_by_model[].input": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Uncached input tokens for this model.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens_by_model[].cache_creation": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Provider bucket; null where absent.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "nullable": true
+    },
+    "records[].tokens_by_model[].cache_read": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Provider bucket; null where absent.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "nullable": true
+    },
+    "records[].tokens_by_model[].cached_input": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Codex-style bucket; null where absent.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "nullable": true
+    },
+    "records[].tokens_by_model[].output": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Output tokens for this model.",
+      "sinceEnvelopeVersion": "0.1.0"
+    },
+    "records[].tokens_by_model[].thinking": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Thinking tokens where reported; null otherwise.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "nullable": true
+    },
+    "records[].tokens_by_model[].reasoning": {
+      "category": "RunTokenTotals",
+      "type": "integer",
+      "unit": "tokens",
+      "required": true,
+      "reason": "Reasoning-output bucket; null otherwise.",
+      "sinceEnvelopeVersion": "0.1.0",
+      "nullable": true
+    },
+    "records[].counts.loaded_set_changes": {
+      "category": "RunOutcomeCounts",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "reason": "Number of settled loaded-set changes inside the run (segments minus one). The record's bom_version is the set the harness listed at session start; every segment's set is in bom[] so co-occurrence per segment survives without a record per segment.",
+      "sinceEnvelopeVersion": "0.1.0"
+    }
+  },
+  "forbiddenValuePatterns": [
+    {
+      "id": "whitespace",
+      "regex": "\\s",
+      "catches": "any free text: every permitted string is an enum value, hash, day, version, or model id and none contains whitespace"
+    },
+    {
+      "id": "abs_posix_path",
+      "regex": "(?:^|[\\s\"'=:(])/(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]*",
+      "catches": "absolute POSIX paths such as home directories, project paths, log paths"
+    },
+    {
+      "id": "windows_path",
+      "regex": "[A-Za-z]:\\\\|\\\\\\\\[A-Za-z0-9_.$-]+\\\\",
+      "catches": "Windows drive-letter and UNC paths"
+    },
+    {
+      "id": "home_tilde",
+      "regex": "(?:^|[\\s\"'=:(])~[/\\\\]",
+      "catches": "already-scrubbed home-relative paths"
+    },
+    {
+      "id": "url_scheme",
+      "regex": "(?i)\\b[a-z][a-z0-9+.-]*://",
+      "catches": "any URL"
+    },
+    {
+      "id": "at_sign",
+      "regex": "@",
+      "catches": "email addresses, user@host, scoped package names"
+    },
+    {
+      "id": "dotted_host",
+      "regex": "(?i)\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|io|dev|ai|app|internal|local|corp|lan|co|edu|gov)\\b",
+      "catches": "hostnames and domains; semver and model ids never end in an alphabetic TLD"
+    },
+    {
+      "id": "iso_time_component",
+      "regex": "[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}",
+      "catches": "timestamps finer than a day (any hour component after a date)"
+    },
+    {
+      "id": "time_of_day",
+      "regex": "\\b[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\\b",
+      "catches": "clock times"
+    },
+    {
+      "id": "epoch_in_string",
+      "regex": "(?<![0-9])1[5-9][0-9]{8}(?:[0-9]{3})?(?![0-9])",
+      "catches": "unix seconds or milliseconds embedded in a string (hash paths are checked by exact format instead)"
+    },
+    {
+      "id": "uuid_any",
+      "regex": "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "catches": "harness session, agent, or request uuids anywhere except resource.device_id"
+    },
+    {
+      "id": "opaque_harness_id",
+      "regex": "\\b(?:toolu|msg|req|agent|sess|call|fc|rs)_[A-Za-z0-9]{8,}\\b",
+      "catches": "tool_use, message, request, agent and Codex call ids"
+    },
+    {
+      "id": "mcp_tool_name",
+      "regex": "\\bmcp__[A-Za-z0-9_-]+__",
+      "catches": "MCP tool and server names in harness form"
+    },
+    {
+      "id": "bearer_like",
+      "regex": "\\bAKIA[0-9A-Z]{16}\\b|\\b(?:sk|ghp|gho|ghu|ghs|xox[abp]|ah|ntn)[_-][A-Za-z0-9_-]{8,}",
+      "catches": "API tokens including separator-less AWS access key ids, defence in depth"
+    },
+    {
+      "id": "jwt_like",
+      "regex": "\\beyJ[A-Za-z0-9_-]{10,}\\.",
+      "catches": "JSON web tokens"
+    },
+    {
+      "id": "git_ref_like",
+      "regex": "\\b(?:refs/|origin/|HEAD[~^]|[0-9a-f]{40})\\b",
+      "catches": "branch refs and full commit shas (hash paths are checked by exact format instead)"
+    },
+    {
+      "id": "env_var_like",
+      "regex": "\\b[A-Z][A-Z0-9]{2,}_(?:KEY|TOKEN|SECRET|PASS|PASSWORD|URL|HOST|API|ID)\\b",
+      "catches": "environment variable names"
+    },
+    {
+      "id": "iso_basic_time",
+      "regex": "\\b[0-9]{8}T[0-9]{4,6}(?:Z|[+-][0-9]{2,4})?\\b",
+      "catches": "colon-less ISO 8601 basic timestamps such as 20260902T165647Z"
+    },
+    {
+      "id": "ipv4_or_localhost",
+      "regex": "(?i)\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b|\\blocalhost\\b",
+      "catches": "IPv4 addresses and localhost"
+    },
+    {
+      "id": "generic_host",
+      "regex": "(?i)\\b[a-z0-9-]{1,63}\\.[a-z][a-z0-9-]{1,62}\\b",
+      "catches": "any dotted name whose last label is alphabetic (ccTLDs, new gTLDs, internal domains); version and model strings have numeric last labels and pass"
+    }
+  ],
+  "dynamicForbids": {
+    "description": "Sets the emitter hands to the checker at run time; every string leaf is tested for substring membership against each set, case-insensitively for names.",
+    "sets": [
+      "loaded_set_names",
+      "harness_session_ids",
+      "agent_ids",
+      "tool_use_ids",
+      "message_ids",
+      "cwd_and_branches",
+      "current_username",
+      "hostname",
+      "home_dir",
+      "slugs"
+    ]
+  }
+}
