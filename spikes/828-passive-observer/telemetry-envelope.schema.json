@@ -1,0 +1,692 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vettd.agentichighway.ai/spikes/828/telemetry-envelope.schema.json",
+  "title": "Vettd passive-observer telemetry envelope",
+  "description": "Per-run observational records with per-asset mergeable statistics. Vettd-native encoding with OTLP semantics (a resource block plus typed records), chosen over literal OTLP so the key-path disclosure walker can enforce the allowlist. Every object is closed. No wall-clock finer than a UTC day, no session duration, no per-call arrays, no names, no paths, no cost. All evidence is observational and is never phrased causally.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "envelope_version",
+    "extractor_version",
+    "gate_version",
+    "emitted_day",
+    "resource",
+    "records",
+    "bom",
+    "coverage"
+  ],
+  "properties": {
+    "envelope_version": {
+      "type": "string",
+      "const": "0.1.0"
+    },
+    "extractor_version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$"
+    },
+    "gate_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "emitted_day": {
+      "$ref": "#/$defs/day"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "device_id_source",
+        "harness",
+        "harness_version",
+        "collector",
+        "collector_version"
+      ],
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "device_id_source": {
+          "enum": [
+            "scanner_uuid",
+            "placeholder"
+          ]
+        },
+        "harness": {
+          "enum": [
+            "claude_code",
+            "codex"
+          ]
+        },
+        "harness_version": {
+          "$ref": "#/$defs/semver_or_unknown"
+        },
+        "collector": {
+          "enum": [
+            "vettd-cli",
+            "prototype"
+          ]
+        },
+        "collector_version": {
+          "$ref": "#/$defs/semver_or_unknown"
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      }
+    },
+    "bom": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bom_version",
+          "asset_ids"
+        ],
+        "properties": {
+          "bom_version": {
+            "$ref": "#/$defs/hex64"
+          },
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/hex64"
+            }
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessions_seen",
+        "sessions_emitted",
+        "sessions_skipped_unparseable",
+        "lines_seen",
+        "lines_unknown_type",
+        "bytes_read",
+        "truncated_sessions",
+        "window_days",
+        "cursor_state",
+        "run_id_basis"
+      ],
+      "properties": {
+        "sessions_seen": {
+          "$ref": "#/$defs/count"
+        },
+        "sessions_emitted": {
+          "$ref": "#/$defs/count"
+        },
+        "sessions_skipped_unparseable": {
+          "$ref": "#/$defs/count"
+        },
+        "lines_seen": {
+          "$ref": "#/$defs/count"
+        },
+        "lines_unknown_type": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes_read": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000
+        },
+        "truncated_sessions": {
+          "$ref": "#/$defs/count"
+        },
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3660
+        },
+        "cursor_state": {
+          "enum": [
+            "fresh",
+            "resumed"
+          ]
+        },
+        "run_id_basis": {
+          "enum": [
+            "device_secret",
+            "test_secret"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "day": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "semver_or_unknown": {
+      "type": "string",
+      "pattern": "^(?:[0-9]+\\.[0-9]+\\.[0-9]+|unknown)$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000000
+    },
+    "tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "tokens_or_null": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 604800000
+    },
+    "sumsq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stats_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n",
+        "sum",
+        "min",
+        "max",
+        "sumsq"
+      ],
+      "properties": {
+        "n": {
+          "$ref": "#/$defs/count"
+        },
+        "sum": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min": {
+          "$ref": "#/$defs/ms"
+        },
+        "max": {
+          "$ref": "#/$defs/ms"
+        },
+        "sumsq": {
+          "$ref": "#/$defs/sumsq"
+        }
+      }
+    },
+    "stats_tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n",
+        "sum",
+        "min",
+        "max",
+        "sumsq"
+      ],
+      "properties": {
+        "n": {
+          "$ref": "#/$defs/count"
+        },
+        "sum": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min": {
+          "$ref": "#/$defs/tokens"
+        },
+        "max": {
+          "$ref": "#/$defs/tokens"
+        },
+        "sumsq": {
+          "$ref": "#/$defs/sumsq"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "observed_day",
+        "model",
+        "entrypoint_class",
+        "effort",
+        "permission_mode",
+        "task_category",
+        "bom_version",
+        "loaded_set_basis",
+        "run_outcome",
+        "counts",
+        "tokens",
+        "tokens_by_model",
+        "assets"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/hex64"
+        },
+        "observed_day": {
+          "$ref": "#/$defs/day"
+        },
+        "model": {
+          "enum": [
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-1",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-codex",
+            "gpt-5.1",
+            "gpt-5.1-codex",
+            "gpt-5.2",
+            "gpt-4.1",
+            "o3",
+            "o4-mini",
+            "codex-mini-latest",
+            "gemini-2.5-pro",
+            "gemini-3-pro",
+            "other"
+          ]
+        },
+        "entrypoint_class": {
+          "enum": [
+            "cli",
+            "ide",
+            "remote",
+            "sdk",
+            "unknown"
+          ]
+        },
+        "effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "unknown"
+          ]
+        },
+        "permission_mode": {
+          "enum": [
+            "default",
+            "plan",
+            "accept_edits",
+            "bypass",
+            "auto",
+            "dont_ask",
+            "unknown"
+          ]
+        },
+        "task_category": {
+          "enum": [
+            "code_edit",
+            "code_explore",
+            "shell_ops",
+            "mcp_heavy",
+            "mixed",
+            "unspecified"
+          ]
+        },
+        "bom_version": {
+          "$ref": "#/$defs/hex64"
+        },
+        "loaded_set_basis": {
+          "enum": [
+            "harness_log",
+            "filesystem",
+            "none"
+          ]
+        },
+        "run_outcome": {
+          "enum": [
+            "completed",
+            "interrupted",
+            "compacted",
+            "truncated",
+            "unknown"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turns",
+            "tool_calls",
+            "tool_failures",
+            "user_denials",
+            "subagent_runs",
+            "compactions",
+            "unpaired_tool_uses",
+            "repeated_tool_calls",
+            "loaded_set_changes"
+          ],
+          "properties": {
+            "turns": {
+              "$ref": "#/$defs/count"
+            },
+            "tool_calls": {
+              "$ref": "#/$defs/count"
+            },
+            "tool_failures": {
+              "$ref": "#/$defs/count"
+            },
+            "user_denials": {
+              "$ref": "#/$defs/count"
+            },
+            "subagent_runs": {
+              "$ref": "#/$defs/count"
+            },
+            "compactions": {
+              "$ref": "#/$defs/count"
+            },
+            "unpaired_tool_uses": {
+              "$ref": "#/$defs/count"
+            },
+            "repeated_tool_calls": {
+              "$ref": "#/$defs/count"
+            },
+            "loaded_set_changes": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "cache_creation",
+            "cache_read",
+            "cached_input",
+            "output",
+            "thinking",
+            "reasoning",
+            "basis"
+          ],
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/tokens"
+            },
+            "cache_creation": {
+              "$ref": "#/$defs/tokens_or_null"
+            },
+            "cache_read": {
+              "$ref": "#/$defs/tokens_or_null"
+            },
+            "cached_input": {
+              "$ref": "#/$defs/tokens_or_null"
+            },
+            "output": {
+              "$ref": "#/$defs/tokens"
+            },
+            "thinking": {
+              "$ref": "#/$defs/tokens_or_null"
+            },
+            "reasoning": {
+              "$ref": "#/$defs/tokens_or_null"
+            },
+            "basis": {
+              "enum": [
+                "harness_usage",
+                "estimated",
+                "none"
+              ]
+            }
+          }
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          }
+        },
+        "tokens_by_model": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "input",
+              "cache_creation",
+              "cache_read",
+              "cached_input",
+              "output",
+              "thinking",
+              "reasoning"
+            ],
+            "properties": {
+              "model": {
+                "enum": [
+                  "claude-fable-5-1",
+                  "claude-mythos-5-1",
+                  "claude-opus-5",
+                  "claude-sonnet-5",
+                  "claude-haiku-4-5-20251001",
+                  "claude-opus-4-8",
+                  "claude-opus-4-7",
+                  "claude-opus-4-1",
+                  "claude-sonnet-4-5",
+                  "claude-sonnet-4",
+                  "gpt-5",
+                  "gpt-5-mini",
+                  "gpt-5-codex",
+                  "gpt-5.1",
+                  "gpt-5.1-codex",
+                  "gpt-5.2",
+                  "gpt-4.1",
+                  "o3",
+                  "o4-mini",
+                  "codex-mini-latest",
+                  "gemini-2.5-pro",
+                  "gemini-3-pro",
+                  "other"
+                ]
+              },
+              "input": {
+                "$ref": "#/$defs/tokens"
+              },
+              "cache_creation": {
+                "$ref": "#/$defs/tokens_or_null"
+              },
+              "cache_read": {
+                "$ref": "#/$defs/tokens_or_null"
+              },
+              "cached_input": {
+                "$ref": "#/$defs/tokens_or_null"
+              },
+              "output": {
+                "$ref": "#/$defs/tokens"
+              },
+              "thinking": {
+                "$ref": "#/$defs/tokens_or_null"
+              },
+              "reasoning": {
+                "$ref": "#/$defs/tokens_or_null"
+              }
+            }
+          }
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "asset_type",
+        "key_basis",
+        "tier",
+        "binding",
+        "direct_evidence_available",
+        "signals"
+      ],
+      "properties": {
+        "asset_id": {
+          "$ref": "#/$defs/hex64"
+        },
+        "asset_type": {
+          "enum": [
+            "skill",
+            "mcp_server",
+            "agent",
+            "rules_file",
+            "prompt"
+          ]
+        },
+        "key_basis": {
+          "enum": [
+            "content_hash",
+            "descriptor_hash",
+            "name_hash"
+          ]
+        },
+        "tier": {
+          "enum": [
+            "direct",
+            "loaded",
+            "inferred"
+          ]
+        },
+        "binding": {
+          "enum": [
+            "harness_log_exact",
+            "mtime_proven",
+            "unproven",
+            "not_applicable"
+          ]
+        },
+        "direct_evidence_available": {
+          "type": "boolean"
+        },
+        "signals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocations",
+            "failures",
+            "harness_corroborations",
+            "latency_ms",
+            "tokens_attributed",
+            "context_cost_est"
+          ],
+          "properties": {
+            "invocations": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "n"
+              ],
+              "properties": {
+                "n": {
+                  "$ref": "#/$defs/count"
+                }
+              }
+            },
+            "failures": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tool_error",
+                "timeout",
+                "user_denied",
+                "interrupted",
+                "unknown"
+              ],
+              "properties": {
+                "tool_error": {
+                  "$ref": "#/$defs/count"
+                },
+                "timeout": {
+                  "$ref": "#/$defs/count"
+                },
+                "user_denied": {
+                  "$ref": "#/$defs/count"
+                },
+                "interrupted": {
+                  "$ref": "#/$defs/count"
+                },
+                "unknown": {
+                  "$ref": "#/$defs/count"
+                }
+              }
+            },
+            "harness_corroborations": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 10000000
+            },
+            "latency_ms": {
+              "$ref": "#/$defs/stats_ms"
+            },
+            "tokens_attributed": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/stats_tokens"
+                }
+              ]
+            },
+            "context_cost_est": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "tokens",
+                    "method"
+                  ],
+                  "properties": {
+                    "tokens": {
+                      "$ref": "#/$defs/tokens"
+                    },
+                    "method": {
+                      "enum": [
+                        "listing_bytes_div4",
+                        "file_bytes_div4",
+                        "tool_schema_bytes_div4",
+                        "none"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
