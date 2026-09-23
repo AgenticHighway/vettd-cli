@@ -102,6 +102,26 @@ pub struct Skill {
     pub overall_grade: String,
     pub execution_environment: String,
     pub description: String,
+    // v2.6.0 addition — skill-level metadata surfaced from the skill scanner
+    // and SKILL.md frontmatter (see scanner-field-gate.json). Optional and
+    // omitted when absent; never fabricated as `false`/`0` for assets that
+    // were not scanned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_skill_md: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_scripts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_references: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_evals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_assets: Option<bool>,
     pub permissions: Vec<SkillPermission>,
     pub dependencies: SkillDependencies,
     pub consumers: Vec<SkillConsumer>,
@@ -147,6 +167,13 @@ pub struct ExternalScannerResult {
     pub raw_report: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub findings: Option<Vec<ExternalScannerFinding>>,
+    /// Non-finding signals emitted by the scanner (display-only). Never mapped
+    /// into `ExternalScannerFinding` or the local grade — see `skill_scan.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signals: Option<Vec<ScannerSignal>>,
+    /// Scan coverage / attestation entries (display-only). See `skill_scan.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Vec<ScannerCoverage>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +185,73 @@ pub struct ExternalScannerFinding {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Relative path from the skill root to the file that produced this
+    /// finding. Absent for package-level findings (v2.7.0). Forwarded from the
+    /// pinned scanner's `Finding.filepath`; never synthesized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filepath: Option<String>,
+}
+
+// v2.5.0 addition — scanner signal/coverage output surfaced additively.
+// Shapes mirror the vettd-skill-scanner `Signal`/`CoverageEntry` wire format
+// (camelCase, open strings, optional fields omitted when absent).
+
+/// A single non-finding signal produced by the skill scanner for one asset.
+/// Display-only: never feeds grade or verdict computation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerSignal {
+    pub data_category: String,
+    pub source_class: String,
+    pub rule_id: String,
+    pub observed_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_num: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_size: Option<i64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synthetic: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// One scan coverage / attestation entry, kept separate from findings and
+/// signals. Display-only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerCoverage {
+    pub kind: String,
+    pub rule_id: String,
+    pub label: String,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

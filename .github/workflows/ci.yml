@@ -8,14 +8,16 @@
 #
 # JOBS (run in parallel where possible):
 #   changes       — detects which files changed (dorny/paths-filter)
-#   check         — fmt → clippy → test (skipped for docs-only changes)
+#   check         — fmt → scanner field gate → clippy → test (skipped for docs-only changes)
 #   supply-chain  — cargo-deny + cargo-audit (dep changes OR schedule)
 #   secrets       — gitleaks (always runs — any file can contain secrets)
 #   unsafe-audit  — cargo-geiger (dep changes OR schedule)
 #
 # OPTIMIZATIONS:
 #   • Path filtering: dorny/paths-filter skips expensive Rust jobs when
-#     only docs/scripts/config changed (saves ~35s+ per docs-only PR).
+#     only docs/config changed (saves ~35s+ per docs-only PR). Script and
+#     scanner-field-gate.json changes DO trigger the check job — the field
+#     gate must run whenever the manifest or the gate script itself changes.
 #   • Concurrency: cancel-in-progress prevents wasted runs when you
 #     push again quickly or when push+PR events both fire.
 #   • Fail-fast: steps in `check` ordered cheapest-first (fmt → clippy
@@ -86,11 +88,9 @@ jobs:
                         - 'crates/**'
                         - 'scanner-data-contract.json'
                         - 'scanner-field-gate.json'
-                        - 'scripts/check-scanner-field-gate.sh'
+                        - 'scripts/**'
                         - 'telemetry-field-gate.json'
                         - 'telemetry-envelope.schema.json'
-                        - 'scripts/check-telemetry-field-gate.sh'
-                        - 'crates/vettd-cli/resources/**'
                         - 'Cargo.toml'
                         - 'Cargo.lock'
                         - 'rust-toolchain.toml'
@@ -133,14 +133,14 @@ jobs:
             - name: Formatting
               run: cargo fmt --check
 
-            # ~2s — scanner field gate (vettd-cli#243 / epic #879). Runs
-            # before clippy/test so a tag bump carrying unclassified crate
-            # output fields fails fast. Inspects the pinned crate's real
-            # SkillScanResult via `cargo metadata` (fetches the git
-            # dependency on first run) and enforces the surface-or-gate
-            # decisions recorded in scanner-field-gate.json.
+            # ~2s — validates the pinned scanner pin ↔ contract surface
+            # mapping (vettd-cli#243 / epic #879): every SkillScanResult
+            # field must be classified surface|gate, surface fields must
+            # reach the contract at the boundary their contractPath names,
+            # and gated fields must not. Runs before clippy so a
+            # manifest/script drift fails fast without a full compile.
             - name: Scanner field gate
-              run: scripts/check-scanner-field-gate.sh
+              run: bash scripts/check-scanner-field-gate.sh
 
             # ~30s — compiles all targets AND lints in a single pass.
             # No separate `cargo build` step needed — clippy does both.

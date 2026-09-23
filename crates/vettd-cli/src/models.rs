@@ -41,6 +41,12 @@ pub struct ArtifactReport {
     /// report generation does not re-walk disk for every skill.
     #[serde(skip)]
     pub cached_scan_result: Option<crate::contract::types::ExternalScannerResult>,
+    /// Full cached skill scanner output (contract result + structural facts).
+    /// Populated during the scan phase alongside `cached_scan_result` so the
+    /// skill builder surfaces `skills[].hasSkillMd`/`fileCount`/... without
+    /// re-walking disk.
+    #[serde(skip)]
+    pub cached_skill_scan: Option<crate::contract::SkillScanOutput>,
 }
 
 impl ArtifactReport {
@@ -58,6 +64,7 @@ impl ArtifactReport {
             registry_eligible: true,
             artifact_scope: "project".to_string(),
             cached_scan_result: None,
+            cached_skill_scan: None,
         }
     }
 
