@@ -172,15 +172,35 @@ fn apply_assistant(
     // reaches `ToolCall.message_id` below, because `_open_call` (`:418`) copies it unconditionally.
     if let Some(id) = message_id.as_deref().filter(|id| !id.is_empty()) {
         facts.note_forbid("message_ids", Some(id));
-        // One API response is split over several lines; the first line for an id is the one kept.
-        if state.seen_message_ids.insert(id.to_string()) {
-            let model = message.model.unwrap_or_else(|| UNKNOWN.to_string());
+        // One API response is split over several lines whose usage GROWS as output streams, so the
+        // line with the largest `output_tokens` is the one kept — decision §5, "fullest now". The
+        // prototype kept the first and therefore smallest line, which undercounts output, per-model
+        // and sub-agent totals on every streamed response.
+        //
+        // The model is still counted once per id: the lines are one API response, not several.
+        // That split is why this cannot simply gate the whole block on first sight.
+        let first_sight = state.seen_message_ids.insert(id.to_string());
+        let model = message.model.unwrap_or_else(|| UNKNOWN.to_string());
+        if first_sight {
             *facts.models.entry(model.clone()).or_insert(0) += 1;
-            if let Some(usage) = message.usage {
-                facts.usages.insert(
-                    id.to_string(),
-                    to_usage(id.to_string(), model, ts_ms, &usage),
-                );
+        }
+        if let Some(usage) = message.usage {
+            // The lines of one response share a model, so the model recorded for an id stays the
+            // first-seen one and only the token figures grow. Taking a later line's model wholesale
+            // would let the per-model token tally name a model `facts.models` never counted.
+            let model_for_id = facts
+                .usages
+                .get(id)
+                .map_or(model, |current| current.model.clone());
+            let candidate = to_usage(id.to_string(), model_for_id, ts_ms, &usage);
+            // Strict `>` keeps the first on a tie, matching `dedupe_usages`' tree-wide rule so the
+            // per-file and cross-file rules cannot disagree.
+            let better = facts
+                .usages
+                .get(id)
+                .is_none_or(|current| candidate.output_tokens > current.output_tokens);
+            if better {
+                facts.usages.insert(id.to_string(), candidate);
             }
         }
     }

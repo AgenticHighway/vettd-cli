@@ -658,10 +658,14 @@ fn observe_check_exit_codes() {
     );
 
     // 2 — a duplicate key, which parses fine but is not checkable.
+    //
+    // The duplicated key is deliberately NOT a gate path. Duplicating `envelope_version` (as this
+    // did originally) cannot distinguish "the diagnostic echoed the key" from "the diagnostic
+    // named an allowlisted field", which is why the echo went unnoticed until review.
     let text = std::fs::read_to_string(&golden).unwrap();
     let duplicated = text.replacen(
         "\"envelope_version\":",
-        "\"envelope_version\":\"leaked\",\"envelope_version\":",
+        "\"MY_SECRET_PROJECT_NAME\":1,\"MY_SECRET_PROJECT_NAME\":2,\"envelope_version\":",
         1,
     );
     let dup_path = home.path().join("duplicate-key.json");
@@ -680,8 +684,13 @@ fn observe_check_exit_codes() {
         dup.stderr
     );
     assert!(
-        dup.stderr.contains("duplicate key"),
+        dup.stderr.contains("is duplicated in its object"),
         "the reason must be stated: {}",
+        dup.stderr
+    );
+    assert!(
+        !dup.stderr.contains("MY_SECRET_PROJECT_NAME"),
+        "the duplicated key must be named by length and offset, never echoed: {}",
         dup.stderr
     );
 

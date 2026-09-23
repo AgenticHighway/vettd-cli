@@ -655,7 +655,11 @@ impl Checker<'_> {
             // `validate_references` guarantees the entry exists.
             if let Some(&(lo, hi)) = gate.bounds.get(unit) {
                 if !(lo..=hi).contains(&as_float) {
-                    let detail = format!("{value} is outside {unit} bounds [{lo}, {hi}]");
+                    // The bounds are gate configuration and safe to name; the value is the
+                    // user's data and is not, for the same reason an unknown key is reported by
+                    // length. A count or token total is exactly the kind of figure the envelope
+                    // exists to bound, and this message reaches stderr, CI logs and bug reports.
+                    let detail = format!("a value outside {unit} bounds [{lo}, {hi}]");
                     self.fail(path, "out_of_bounds", &detail);
                 }
             }

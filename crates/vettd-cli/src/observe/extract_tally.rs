@@ -54,8 +54,8 @@ pub(super) fn is_user_denial(call: &ToolCall) -> bool {
 ///
 /// A streamed response is written as several lines whose usage grows as output streams, so the
 /// entry with the largest `output_tokens` wins; on a tie the first occurrence (parent first, by
-/// [`walk`] order) is kept. This is the tree-wide rule and is deliberately *not* the per-file rule:
-/// within one file the reader already kept the first line for a message id.
+/// [`walk`] order) is kept. The reader applies the same rule within a single file, so the per-file
+/// and tree-wide rules agree and a streamed response is counted at its fullest either way.
 pub(crate) fn dedupe_usages<'a>(tree: &[&'a SessionFacts]) -> BTreeMap<&'a str, &'a Usage> {
     let mut seen: BTreeMap<&str, &Usage> = BTreeMap::new();
     for facts in tree {

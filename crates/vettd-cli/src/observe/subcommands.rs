@@ -154,12 +154,14 @@ pub(crate) fn check(payload: &Path, dynamic: Option<&Path>) -> i32 {
             return EXIT_UNREADABLE;
         }
     };
-    if let Some(duplicate) = first_duplicate_key(&text) {
+    if let Some((offset, len)) = first_duplicate_key(&text) {
         // serde_json keeps the LAST value for a duplicated key, so a payload could carry a leak in
         // the first copy and a clean value in the second and still validate. That is precisely what
         // this check exists to catch, so it is a hard read failure rather than a violation.
+        //
+        // Named by length and offset, never by content — see `first_duplicate_key`.
         eprintln!(
-            "Cannot check {}: duplicate key in JSON object ({duplicate})",
+            "Cannot check {}: a key of length {len} at byte {offset} is duplicated in its object",
             payload.display()
         );
         return EXIT_UNREADABLE;
@@ -215,12 +217,19 @@ fn load_dynamic(path: &Path) -> Result<Dynamic, String> {
 /// A small streaming scan rather than a full parser: `serde_json` cannot report this because it
 /// resolves duplicates silently, and pulling in a second JSON parser to find out would be a large
 /// dependency for one rule. Tracks the key set per object depth and reports the first repeat.
-fn first_duplicate_key(text: &str) -> Option<String> {
+/// Locate the first duplicated key, reported as (byte offset, length in chars).
+///
+/// Deliberately never returns the key itself. The gate reports an unknown key by length because
+/// an unknown key could itself be the content the gate exists to withhold; a duplicated key is no
+/// less capable of being that content, and this diagnostic reaches the same places — stderr, CI
+/// logs, pasted bug reports. Offset and length are enough to find it in a file the user already
+/// has.
+fn first_duplicate_key(text: &str) -> Option<(usize, usize)> {
     let mut stack: Vec<BTreeMap<String, ()>> = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut pending_key: Option<String> = None;
 
-    while let Some((_, c)) = chars.next() {
+    while let Some((offset, c)) = chars.next() {
         match c {
             '{' => stack.push(BTreeMap::new()),
             '}' => {
@@ -238,7 +247,7 @@ fn first_duplicate_key(text: &str) -> Option<String> {
                 if is_key {
                     if let Some(top) = stack.last_mut() {
                         if top.insert(literal.clone(), ()).is_some() {
-                            return Some(literal);
+                            return Some((offset, literal.chars().count()));
                         }
                     }
                     pending_key = Some(literal);

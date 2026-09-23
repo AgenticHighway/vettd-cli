@@ -147,26 +147,56 @@ fn an_unparsable_timestamp_falls_back_to_the_last_one_seen() {
     assert_eq!(facts.tool_calls[0].latency_ms(), Some(0));
 }
 
-/// One API response split over several lines is counted once, and the first line for its id is the
-/// one kept. `claude_code.py:395-403` looks like it keeps the largest `output_tokens` instead, but
-/// that branch sits inside `mid not in seen_message_ids` and can never run; the per-file rule is
-/// first-wins, and choosing the fullest usage is `extract`'s tree-wide job.
+/// One API response split over several lines is counted once, and the FULLEST line for its id is
+/// the one kept — decision §5, "fullest now".
+///
+/// The prototype kept the first line. `claude_code.py:395-403` looks like it keeps the largest
+/// `output_tokens`, but that branch sits inside `mid not in seen_message_ids` and can never run,
+/// so the prototype undercounted every streamed response. This test previously asserted the
+/// prototype's behaviour and so locked the undercount in.
+///
+/// Usage grows as output streams, so first-wins loses real tokens: output, per-model and
+/// sub-agent totals are all derived from this map.
 #[test]
-fn the_first_line_for_a_message_id_wins_within_one_file() {
+fn the_fullest_line_for_a_message_id_wins_within_one_file() {
     let (facts, _) = read(&[
         json!({"type": "assistant", "timestamp": T[0], "message": {
             "id": "m1", "model": "first", "usage": {"input_tokens": 1, "output_tokens": 4}, "content": []}}),
         json!({"type": "assistant", "timestamp": T[1], "message": {
             "id": "m1", "model": "second", "usage": {"input_tokens": 10, "output_tokens": 99}, "content": []}}),
     ]);
-    assert_eq!(facts.usages.len(), 1);
+    assert_eq!(facts.usages.len(), 1, "one response, one usage entry");
     let usage = &facts.usages["m1"];
-    assert_eq!((usage.input_tokens, usage.output_tokens), (1, 4));
+    assert_eq!(
+        (usage.input_tokens, usage.output_tokens),
+        (10, 99),
+        "the growing line's figures win"
+    );
+    // The model stays the first-seen one: the lines are one response, and `facts.models` counted
+    // it once at first sight. If this took "second", the per-model token tally would name a model
+    // the model counter never saw.
     assert_eq!(usage.model, "first");
     assert_eq!(
         facts.models,
-        [("first".to_string(), 1)].into_iter().collect()
+        [("first".to_string(), 1)].into_iter().collect(),
+        "the model is counted once, not once per streamed line"
     );
+}
+
+/// Invariant: a SHRINKING later line does not replace a fuller earlier one, and ties keep the
+/// first. Without this, "largest wins" could be satisfied by a rule that simply keeps the last.
+#[test]
+fn a_smaller_or_equal_later_line_does_not_replace_the_fullest() {
+    let (facts, _) = read(&[
+        json!({"type": "assistant", "timestamp": T[0], "message": {
+            "id": "m1", "model": "m", "usage": {"input_tokens": 7, "output_tokens": 50}, "content": []}}),
+        json!({"type": "assistant", "timestamp": T[1], "message": {
+            "id": "m1", "model": "m", "usage": {"input_tokens": 1, "output_tokens": 9}, "content": []}}),
+        json!({"type": "assistant", "timestamp": T[1], "message": {
+            "id": "m1", "model": "m", "usage": {"input_tokens": 2, "output_tokens": 50}, "content": []}}),
+    ]);
+    let usage = &facts.usages["m1"];
+    assert_eq!((usage.input_tokens, usage.output_tokens), (7, 50));
 }
 
 /// A tool_use pairs with the tool_result that names it, and a result naming no open call is dropped

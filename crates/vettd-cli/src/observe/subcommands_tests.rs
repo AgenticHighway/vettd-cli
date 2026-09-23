@@ -11,17 +11,19 @@ use super::*;
 /// and its job is to refuse rather than to interpret.
 #[test]
 fn a_duplicated_key_is_detected_anywhere_in_the_document() {
+    // Reported as (byte offset, key length) — never the key itself.
     assert_eq!(
-        first_duplicate_key(r#"{"a": 1, "a": 2}"#).as_deref(),
-        Some("a")
+        first_duplicate_key(r#"{"a": 1, "a": 2}"#).map(|(_, len)| len),
+        Some(1)
     );
     assert_eq!(
-        first_duplicate_key(r#"{"outer": {"leak": "secret", "leak": "clean"}}"#).as_deref(),
-        Some("leak")
+        first_duplicate_key(r#"{"outer": {"leak": "secret", "leak": "clean"}}"#)
+            .map(|(_, len)| len),
+        Some(4)
     );
     assert_eq!(
-        first_duplicate_key(r#"{"records": [{"run_id": "a", "run_id": "b"}]}"#).as_deref(),
-        Some("run_id")
+        first_duplicate_key(r#"{"records": [{"run_id": "a", "run_id": "b"}]}"#).map(|(_, len)| len),
+        Some(6)
     );
 }
 
@@ -80,12 +82,13 @@ fn escapes_do_not_desynchronise_the_scan() {
 #[test]
 fn equivalent_json_key_escapes_are_duplicates() {
     assert_eq!(
-        first_duplicate_key(r#"{"records": {"leak": true}, "\u0072ecords": []}"#).as_deref(),
-        Some("records")
+        first_duplicate_key(r#"{"records": {"leak": true}, "\u0072ecords": []}"#)
+            .map(|(_, len)| len),
+        Some("records".len())
     );
     assert_eq!(
-        first_duplicate_key(r#"{"a\"b": 1, "a\u0022b": 2}"#).as_deref(),
-        Some("a\"b")
+        first_duplicate_key(r#"{"a\"b": 1, "a\u0022b": 2}"#).map(|(_, len)| len),
+        Some(3)
     );
 }
 
@@ -125,5 +128,35 @@ fn a_clean_document_reports_nothing() {
         first_duplicate_key(&golden),
         None,
         "the committed golden must scan clean"
+    );
+}
+
+/// Invariant: the duplicate-key diagnostic names length and position, never the key itself.
+///
+/// The gate reports an unknown key by length because an unknown key could itself be the content
+/// the gate exists to withhold. A duplicated key is no less capable of being that content, and
+/// this message reaches the same places — stderr, CI logs, pasted bug reports.
+///
+/// The key here is deliberately NOT a gate path. A test that duplicates an allowlisted key cannot
+/// distinguish "the diagnostic echoed the key" from "the diagnostic named an allowed field", which
+/// is exactly why the existing integration coverage missed this.
+#[test]
+fn the_duplicate_key_diagnostic_never_echoes_the_key() {
+    let secret = "MY_SECRET_PROJECT_NAME";
+    let text = format!(r#"{{"{secret}": 1, "{secret}": 2}}"#);
+
+    let (offset, len) = first_duplicate_key(&text).expect("duplicate is detected");
+    assert_eq!(len, secret.chars().count(), "length is reported");
+    assert_eq!(
+        &text[offset..offset + 1],
+        "\"",
+        "offset points at the opening quote of the duplicated key"
+    );
+
+    // The scan returns only numbers, so there is nothing for a caller to echo by accident.
+    let rendered = format!("a key of length {len} at byte {offset} is duplicated in its object");
+    assert!(
+        !rendered.contains(secret),
+        "the rendered diagnostic must not contain the key"
     );
 }
