@@ -80,7 +80,7 @@ jobs:
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-            - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+            - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
               id: filter
               with:
                   filters: |
@@ -122,7 +122,7 @@ jobs:
             # Blacksmith intercepts cache calls on its runners — this
             # uses the colocated cache automatically, no extra config.
             - name: Cache Cargo
-              uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+              uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
             # ── Fail-fast: cheapest checks first ────────────────────
 
@@ -252,7 +252,7 @@ jobs:
             # Blacksmith caches the compiled cargo-geiger binary after
             # the first run — subsequent runs skip the 60s+ compile.
             - name: Cache Cargo
-              uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+              uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
             - name: Install cargo-geiger
               run: cargo install cargo-geiger --locked
