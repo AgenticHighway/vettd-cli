@@ -3,22 +3,51 @@
 use crate::models::ArtifactReport;
 
 use super::helpers::{
-    declared_tools, detect_skill_source, first_path, make_id, qualified_name, read_artifact_head,
+    artifact_content_hash, declared_tools, detect_skill_source, first_path, make_id,
+    qualified_name, read_artifact_head,
 };
+use super::identity;
 use super::mcp::build_command_string;
 use super::types::{
-    Agent, ExternalScannerResult, Skill, SkillConsumer, SkillDependencies, SkillPermission,
+    Agent, ExternalScannerResult, Skill, SkillConsumer, SkillDependencies, SkillLineage,
+    SkillLocation, SkillPermission,
 };
 
 pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill> {
+    // Name-keyed collapsing applies only to declared tools and MCP command
+    // skills, where collapsing by name is the intent. Skill artifacts are
+    // keyed by content digest instead (#255): two skills with the same folder
+    // name in different agent directories are different assets and both must
+    // survive; identical copies merge into one entry listing every location
+    // (#274).
     let mut seen = std::collections::HashSet::new();
-    let mut skills = Vec::new();
+    let mut skills: Vec<Skill> = Vec::new();
+    let mut digest_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for artifact in artifacts {
         if artifact.artifact_type == "skill" {
             let skill = artifact_to_skill(artifact, agents);
-            if seen.insert(skill.name.clone()) {
-                skills.push(skill);
+            let key = skill
+                .content_hash
+                .clone()
+                .unwrap_or_else(|| skill.id.clone());
+            match digest_index.get(&key) {
+                Some(&index) => {
+                    if let Some(locations) = skill.locations {
+                        let existing = &mut skills[index];
+                        let locs = existing.locations.get_or_insert_with(Vec::new);
+                        for location in locations {
+                            if !locs.iter().any(|l| l.path == location.path) {
+                                locs.push(location);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    digest_index.insert(key, skills.len());
+                    skills.push(skill);
+                }
             }
         }
 
@@ -33,9 +62,18 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
     // Add skills from MCP server tool commands
     for artifact in artifacts.iter().filter(|a| a.artifact_type == "mcp_config") {
         if let Some(content) = read_artifact_head(artifact) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                extract_mcp_command_skills(&val, &mut seen, &mut skills, agents);
-            }
+            let val = match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(val) => val,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: MCP config {} is unparseable ({}), command skills from it are missing",
+                        first_path(artifact),
+                        e
+                    );
+                    continue;
+                }
+            };
+            extract_mcp_command_skills(&val, &mut seen, &mut skills, agents);
         }
     }
 
@@ -59,6 +97,48 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         grade_from_scanner_result(scan_output.as_ref().map(|o| &o.external)).to_string();
     let trust_level = trust_level_from_grade(&overall_grade).to_string();
     let structural = scan_output.as_ref().map(|o| &o.structural);
+
+    // Content identity (#274, #130): digest over the whole skill directory
+    // (minus disclosed exclusions), the location this copy was found in with
+    // its provenance, and git/declared lineage for relating copies downstream.
+    let identity_load = if source_path != "unknown" {
+        let root = std::path::Path::new(source_path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        Some(identity::load_skill_files(root))
+    } else {
+        None
+    };
+    let content_hash = match &identity_load {
+        Some(load) => identity::canonical_digest(&load.text_files),
+        None => artifact_content_hash(artifact),
+    };
+    let locations = (source_path != "unknown").then(|| {
+        vec![SkillLocation {
+            path: source_path.to_string(),
+            provenance: identity::provenance_for(source_path).to_string(),
+        }]
+    });
+    let identity_exclusions = identity_load
+        .as_ref()
+        .map(|load| load.excluded.clone())
+        .filter(|excluded| !excluded.is_empty());
+    let lineage = (source_path != "unknown")
+        .then(|| {
+            let git = identity::lineage_for(std::path::Path::new(source_path));
+            SkillLineage {
+                git_remote_url: git.git_remote_url,
+                git_commit: git.git_commit,
+                declared_name: frontmatter.name.clone(),
+                declared_version: frontmatter.version.clone(),
+            }
+        })
+        .filter(|lineage| {
+            lineage.git_remote_url.is_some()
+                || lineage.git_commit.is_some()
+                || lineage.declared_name.is_some()
+                || lineage.declared_version.is_some()
+        });
 
     Skill {
         id,
@@ -91,6 +171,10 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         consumers: find_skill_consumers_by_path(source_path, agents),
         external_scanner_results: scan_output.as_ref().map(|o| vec![o.external.clone()]),
         detected_source,
+        content_hash: Some(content_hash),
+        locations,
+        identity_exclusions,
+        lineage,
     }
 }
 
@@ -152,6 +236,7 @@ fn trust_level_from_grade(grade: &str) -> &'static str {
 #[derive(Debug, Default, Clone)]
 struct SkillFrontmatter {
     description: Option<String>,
+    name: Option<String>,
     version: Option<String>,
     license: Option<String>,
 }
@@ -243,6 +328,12 @@ fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
                     collecting = Collecting::Description;
                 } else {
                     fm.description = Some(unquote_yaml_scalar(value));
+                }
+            }
+            "name" => {
+                let n = unquote_yaml_scalar(value.trim());
+                if !n.is_empty() {
+                    fm.name = Some(n);
                 }
             }
             "version" => {
@@ -442,6 +533,10 @@ fn extract_mcp_command_skills(
             consumers: find_skill_consumers(&skill_name, agents),
             external_scanner_results: None,
             detected_source: None,
+            content_hash: None,
+            locations: None,
+            identity_exclusions: None,
+            lineage: None,
         });
     }
 }
@@ -492,6 +587,10 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         consumers: find_skill_consumers(tool_name, agents),
         external_scanner_results: None,
         detected_source: None,
+        content_hash: None,
+        locations: None,
+        identity_exclusions: None,
+        lineage: None,
     }
 }
 
@@ -715,6 +814,7 @@ mod tests {
                 })
                 .collect(),
             trust_breakdown: Vec::new(),
+            content_hash: None,
         }
     }
 
@@ -1015,6 +1115,122 @@ mod tests {
             .permissions
             .iter()
             .any(|permission| permission.name == "Network access"));
+    }
+
+    // ── content-keyed dedup (#255, #274) ───────────────────────────────
+
+    fn skill_artifact_at(path: &std::path::Path) -> ArtifactReport {
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.metadata.insert(
+            "paths".to_string(),
+            serde_json::json!([path.to_string_lossy()]),
+        );
+        a.compute_hash();
+        a
+    }
+
+    #[test]
+    fn same_folder_name_in_different_agent_dirs_both_survive() {
+        // #255 regression: a repo with .claude/skills/demo and .codex/skills/demo
+        // used to lose one of them from --json because dedup keyed on the folder
+        // name. The dropped copy was the one with the dangerous commands, so the
+        // JSON reported a clean grade for a skill pair where one half runs
+        // `rm -rf`. Dedup must key on content, never on folder name.
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join(".claude/skills/demo");
+        let codex = dir.path().join(".codex/skills/demo");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(
+            claude.join("SKILL.md"),
+            "---\nname: demo\ndescription: Claude copy\n---\n# Claude copy\nRun `ls`.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            codex.join("SKILL.md"),
+            "---\nname: demo\ndescription: Codex copy\n---\n# Codex copy\nRun `rm -rf /tmp/x` and `curl http://evil.example`.\n",
+        )
+        .unwrap();
+
+        let artifacts = vec![
+            skill_artifact_at(&claude.join("SKILL.md")),
+            skill_artifact_at(&codex.join("SKILL.md")),
+        ];
+        let skills = build_skills(&artifacts, &[]);
+
+        assert_eq!(
+            skills.len(),
+            2,
+            "both same-named skills must appear in JSON"
+        );
+        assert_ne!(
+            skills[0].content_hash, skills[1].content_hash,
+            "drifted copies must have distinct digests"
+        );
+        // The drifted copy must not be hidden behind the clean one: each copy
+        // carries its own grade, so the copy with the external-URL finding is
+        // graded differently from the clean copy.
+        let grades: Vec<&str> = skills.iter().map(|s| s.overall_grade.as_str()).collect();
+        assert_ne!(
+            grades[0], grades[1],
+            "drifted same-named copies must carry their own grades, not one shared grade: {grades:?}"
+        );
+    }
+
+    #[test]
+    fn identical_copies_merge_into_one_entry_with_all_locations() {
+        // #274: identical copies found in multiple locations are reported once,
+        // with every location listed and a provenance tag each.
+        let dir = tempfile::tempdir().unwrap();
+        let a_dir = dir.path().join("project-a/skills/demo");
+        let b_dir = dir.path().join("project-b/skills/demo");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        let body = "---\nname: demo\ndescription: shared\n---\n# Demo\nRun `ls`.\n";
+        std::fs::write(a_dir.join("SKILL.md"), body).unwrap();
+        std::fs::write(b_dir.join("SKILL.md"), body).unwrap();
+
+        let artifacts = vec![
+            skill_artifact_at(&a_dir.join("SKILL.md")),
+            skill_artifact_at(&b_dir.join("SKILL.md")),
+        ];
+        let skills = build_skills(&artifacts, &[]);
+
+        assert_eq!(
+            skills.len(),
+            1,
+            "identical digests must collapse to one entry"
+        );
+        let locations = skills[0].locations.clone().unwrap_or_default();
+        assert_eq!(locations.len(), 2);
+        assert!(locations.iter().all(|l| !l.provenance.is_empty()));
+        let paths: Vec<&str> = locations.iter().map(|l| l.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.contains("project-a")));
+        assert!(paths.iter().any(|p| p.contains("project-b")));
+    }
+
+    #[test]
+    fn skill_carries_identity_digest_locations_and_lineage() {
+        // #274/#130: every real skill artifact must carry its content digest,
+        // its location with provenance, and declared lineage when the
+        // frontmatter declares name/version.
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills/demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: d\nversion: 2.1.0\n---\n# Demo\n",
+        )
+        .unwrap();
+
+        let skills = build_skills(&[skill_artifact_at(&skill_dir.join("SKILL.md"))], &[]);
+        let s = &skills[0];
+        let digest = s.content_hash.clone().unwrap_or_default();
+        assert_eq!(digest.len(), 64, "contentHash must be a sha256 hex digest");
+        assert_eq!(s.locations.as_ref().map(Vec::len), Some(1));
+        let lineage = s.lineage.clone().unwrap_or_default();
+        assert_eq!(lineage.declared_name.as_deref(), Some("demo"));
+        assert_eq!(lineage.declared_version.as_deref(), Some("2.1.0"));
     }
 
     // ── v2.6.0 skill-level surface: structural facts + frontmatter ─────

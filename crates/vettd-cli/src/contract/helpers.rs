@@ -269,7 +269,11 @@ pub fn humanize_capability(cap: &str) -> String {
     }
 }
 
-const MAX_READ_BYTES: usize = 8192;
+/// Config files are parsed whole (#204): an 8KB head cut mid-UTF-8 made large
+/// MCP configs fail to parse and vanish from the payload silently. 1 MB covers
+/// realistic configs with many servers plus env blocks; anything past it is
+/// reported, not dropped.
+const MAX_READ_BYTES: usize = 1_048_576;
 
 pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
     let path_str = first_path(a);
@@ -280,9 +284,38 @@ pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
     if !crate::models::is_content_read_allowed(path) {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    let len = bytes.len().min(MAX_READ_BYTES);
-    String::from_utf8(bytes[..len].to_vec()).ok()
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Warning: could not read {path_str}: {e}");
+            return None;
+        }
+    };
+    if bytes.len() > MAX_READ_BYTES {
+        eprintln!(
+            "Warning: {path_str} is larger than {} bytes — skipped as too large to analyze",
+            MAX_READ_BYTES
+        );
+        return None;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(_) => {
+            eprintln!("Warning: {path_str} is not valid UTF-8 — skipped as unparseable");
+            None
+        }
+    }
+}
+
+/// Stable content hash for a file-backed artifact: the discovery-time content
+/// hash when present, otherwise a full-file SHA-256 (#130).
+pub fn artifact_content_hash(a: &ArtifactReport) -> String {
+    if let Some(hash) = a.metadata.get("content_hash").and_then(|v| v.as_str()) {
+        if !hash.is_empty() {
+            return hash.to_string();
+        }
+    }
+    compute_file_hash(first_path(a))
 }
 
 #[cfg(test)]

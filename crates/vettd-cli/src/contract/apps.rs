@@ -3,7 +3,7 @@
 use crate::capabilities::derive_capabilities;
 use crate::models::ArtifactReport;
 
-use super::helpers::{first_path, make_id, qualified_name};
+use super::helpers::{artifact_content_hash, first_path, make_id, qualified_name};
 use super::types::{Agent, AgenticApp, AppAgent, Integration, WorkflowStep};
 
 pub fn build_agentic_apps(
@@ -57,6 +57,7 @@ fn container_to_app(a: &ArtifactReport, local_agents: &[&Agent]) -> AgenticApp {
         verification_checks,
         risk_tags,
         risk_summary,
+        content_hash: Some(artifact_content_hash(a)),
     }
 }
 
@@ -335,6 +336,7 @@ mod tests {
                 label: "test".to_string(),
                 delta: 10,
             }],
+            content_hash: None,
         }
     }
 

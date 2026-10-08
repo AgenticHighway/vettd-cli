@@ -17,7 +17,14 @@ pub fn build_mcp_servers(artifacts: &[&ArtifactReport]) -> Vec<McpServer> {
         };
         let val: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "Warning: MCP config {} is unparseable ({}), servers from it are missing",
+                    first_path(artifact),
+                    e
+                );
+                continue;
+            }
         };
 
         let server_map = match mcp_server_map(&val) {
@@ -58,6 +65,16 @@ fn mcp_entry_to_server(
 
     let source_path = first_path(artifact);
     let id = format!("{}-{}", name, short_hash(source_path));
+    // #130: stable per-server content hash. serde_json::Value objects serialize
+    // with sorted keys (BTreeMap), so the same config entry hashes identically
+    // across runs.
+    let content_hash = {
+        use sha2::{Digest, Sha256};
+        let serialized = serde_json::to_string(val).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(serialized.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
 
     McpServer {
         id,
@@ -71,6 +88,7 @@ fn mcp_entry_to_server(
         dependent_agents: Vec::new(),
         network_evidence: network_ev,
         env_vars,
+        content_hash: Some(content_hash),
     }
 }
 

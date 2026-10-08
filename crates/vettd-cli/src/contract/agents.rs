@@ -4,8 +4,8 @@ use crate::capabilities::derive_capabilities;
 use crate::models::ArtifactReport;
 
 use super::helpers::{
-    declared_tools, detect_source_repo, first_path, is_same_tool_scope, make_id, qualified_name,
-    read_artifact_head,
+    artifact_content_hash, declared_tools, detect_source_repo, first_path, is_same_tool_scope,
+    make_id, qualified_name, read_artifact_head,
 };
 use super::types::{Agent, AgentCapability, AgentTool, TrustFactor};
 
@@ -35,6 +35,7 @@ fn artifact_to_agent(a: &ArtifactReport, mcp_artifacts: &[&ArtifactReport]) -> A
 
     let trust_breakdown = build_trust_breakdown(a);
     let source_repo = detect_source_repo(&source_path);
+    let content_hash = artifact_content_hash(a);
 
     Agent {
         id,
@@ -49,6 +50,7 @@ fn artifact_to_agent(a: &ArtifactReport, mcp_artifacts: &[&ArtifactReport]) -> A
         capabilities,
         tools,
         trust_breakdown,
+        content_hash: Some(content_hash),
     }
 }
 
@@ -111,19 +113,27 @@ fn link_mcp_tools(
         }
 
         if let Some(content) = read_artifact_head(mcp) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let servers = val
-                    .get("mcpServers")
-                    .or_else(|| val.get("servers"))
-                    .and_then(|v| v.as_object());
-                if let Some(servers) = servers {
-                    for (server_name, _) in servers {
-                        if seen_mcp_names.insert(server_name.clone()) {
-                            tools.push(AgentTool {
-                                name: server_name.clone(),
-                                tool_type: "mcp".to_string(),
-                            });
-                        }
+            let val = match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(val) => val,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: MCP config {} is unparseable ({}), agent tool links from it are missing",
+                        mcp_path, e
+                    );
+                    continue;
+                }
+            };
+            let servers = val
+                .get("mcpServers")
+                .or_else(|| val.get("servers"))
+                .and_then(|v| v.as_object());
+            if let Some(servers) = servers {
+                for (server_name, _) in servers {
+                    if seen_mcp_names.insert(server_name.clone()) {
+                        tools.push(AgentTool {
+                            name: server_name.clone(),
+                            tool_type: "mcp".to_string(),
+                        });
                     }
                 }
             }

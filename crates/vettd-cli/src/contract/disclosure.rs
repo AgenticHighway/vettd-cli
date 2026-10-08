@@ -206,6 +206,7 @@ fn mcp_category(path: &str) -> Option<DisclosureCategory> {
         || rest == "auth"
         || rest == "verified"
         || rest == "command"
+        || rest == "contentHash"
     {
         return Some(DisclosureCategory::McpServerCommand);
     }
@@ -338,6 +339,16 @@ const SKILL_FIELDS: &[&str] = &[
     "branch",
     "path",
     "remoteUrl",
+    // Content identity + provenance + lineage (issues #274, #255, #130)
+    "contentHash",
+    "locations",
+    "provenance",
+    "identityExclusions",
+    "lineage",
+    "gitRemoteUrl",
+    "gitCommit",
+    "declaredName",
+    "declaredVersion",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -354,6 +365,8 @@ const AGENT_FIELDS: &[&str] = &[
     "capabilities",
     "tools",
     "trustBreakdown",
+    // Content identity (issue #130)
+    "contentHash",
     // AgentCapability
     "enabled",
     // AgentTool
@@ -380,6 +393,8 @@ const APP_FIELDS: &[&str] = &[
     "verificationChecks",
     "riskTags",
     "riskSummary",
+    // Content identity (issue #130)
+    "contentHash",
     // WorkflowStep
     "step",
     "agent",
@@ -725,6 +740,18 @@ pub(crate) fn max_payload() -> ContractPayload {
                 }]),
             }]),
             detected_source: None,
+            content_hash: Some("abc123".into()),
+            locations: Some(vec![SkillLocation {
+                path: "/tmp/skills/test-skill".into(),
+                provenance: "bundled".into(),
+            }]),
+            identity_exclusions: Some(vec![".git/".into()]),
+            lineage: Some(SkillLineage {
+                git_remote_url: Some("https://github.com/test/repo".into()),
+                git_commit: Some("0123456789abcdef".into()),
+                declared_name: Some("test-skill".into()),
+                declared_version: Some("1.0".into()),
+            }),
         }],
         mcp_servers: vec![McpServer {
             id: "s1".into(),
@@ -734,6 +761,7 @@ pub(crate) fn max_payload() -> ContractPayload {
             auth: "none".into(),
             verified: false,
             command: "npx server".into(),
+            content_hash: Some("def456".into()),
             tools: vec![McpTool {
                 name: "read_file".into(),
                 risk: "low".into(),
@@ -774,6 +802,7 @@ pub(crate) fn max_payload() -> ContractPayload {
                 label: "auth".into(),
                 delta: -5,
             }],
+            content_hash: Some("ghi789".into()),
         }],
         agentic_apps: vec![AgenticApp {
             id: "aa1".into(),
@@ -802,6 +831,7 @@ pub(crate) fn max_payload() -> ContractPayload {
             verification_checks: vec!["check".into()],
             risk_tags: vec!["tag".into()],
             risk_summary: "low".into(),
+            content_hash: Some("jkl012".into()),
         }],
     }
 }
@@ -961,6 +991,7 @@ mod tests {
                 auth: "none".into(),
                 verified: false,
                 command: "npx server".into(),
+                content_hash: None,
                 tools: vec![],
                 dependent_agents: vec![],
                 network_evidence: vec![],

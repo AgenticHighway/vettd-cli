@@ -8,6 +8,7 @@ mod agents;
 mod apps;
 mod disclosure;
 mod helpers;
+mod identity;
 mod mcp;
 #[cfg(test)]
 mod parity;
