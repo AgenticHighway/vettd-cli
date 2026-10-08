@@ -127,11 +127,13 @@ vettd rules validate <f>        # Validate a rule file without installing
 - `repo`: explicit target repository plus deeper local adjacency
 - `full`: explicit forensic sweep from filesystem root
 
-Current critical roots are OS-aware:
+`quick` examines the user-scoped locations of each supported AI harness, walked completely at any depth (installed plugins and skills commonly sit 7 or more levels down). The list lives in `crates/vettd-cli/src/harness.rs`, one row per harness:
 
-- macOS: `~/Library/Application Support/Code/User`, `~/Library/Application Support/Code - Insiders/User`, `~/Library/Application Support/Cursor/User`, plus `~/.claude`, `~/.cursor`, `~/.aider`, `~/.continue`, `~/.ollama`, and editor config roots when present
-- Linux: `~/.config/Code/User`, `~/.config/Code - Insiders/User`, `~/.config/Cursor/User`, plus `~/.claude`, `~/.cursor`, `~/.aider`, `~/.continue`, and `~/.ollama`
-- Windows: `%APPDATA%\\Code\\User`, `%APPDATA%\\Code - Insiders\\User`, `%APPDATA%\\Cursor\\User`, plus `%USERPROFILE%\\.claude`, `%USERPROFILE%\\.cursor`, `%USERPROFILE%\\.aider`, `%USERPROFILE%\\.continue`, and `%USERPROFILE%\\.ollama`
+- Home-relative on every OS (`%USERPROFILE%` on Windows): `.claude`, `.cursor`, `.aider`, `.continue`, `.ollama`, `.vscode`, `.vscode-insiders`, `.codex`, `.hermes`, `.openclaw`, `.openhands`, `.config/opencode`, `.agents`, `.gemini`, `.copilot`, `.kiro`, `.windsurf`, `.codeium/windsurf`, `.cline`, `.qwen`
+- Editor user directories under the platform config directory (`~/.config`, `~/Library/Application Support`, `%APPDATA%`): `Code/User`, `Code - Insiders/User`, `Cursor/User`, `opencode`
+- Relocated homes are followed when set: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`, `OPENCLAW_STATE_DIR`
+
+Only locations that exist are scanned. Symlinked skill directories are followed.
 
 ## Output formats
 

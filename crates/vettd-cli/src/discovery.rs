@@ -27,6 +27,9 @@ pub const MAX_ROOT_SCAN_FILES: usize = 500_000;
 // Excluded directory sets
 // ---------------------------------------------------------------------------
 
+/// The only directories pruned inside a harness root: version-control metadata.
+const HARNESS_ROOT_EXCLUDED_DIRS: &[&str] = &[".git", ".hg", ".svn"];
+
 const NON_FORENSIC_EXCLUDED_DIRS: &[&str] = &[
     ".git",
     ".hg",
@@ -82,21 +85,7 @@ const FILESYSTEM_EXTRA_EXCLUDED: &[&str] = &[
     "Library",
 ];
 
-const AI_CLI_CONFIG_DIRS: &[&str] = &[
-    ".claude",
-    ".cursor",
-    ".aider",
-    ".ollama",
-    ".continue",
-    ".vscode",
-    ".vscode-insiders",
-];
-
 const FILESYSTEM_EXTRA_ROOTS: &[&str] = &["/Applications", "/opt/homebrew", "/usr/local"];
-
-const MACOS_EDITOR_USER_DIRS: &[&str] = &["Code/User", "Code - Insiders/User", "Cursor/User"];
-const LINUX_EDITOR_USER_DIRS: &[&str] = &["Code/User", "Code - Insiders/User", "Cursor/User"];
-const WINDOWS_EDITOR_USER_DIRS: &[&str] = &["Code/User", "Code - Insiders/User", "Cursor/User"];
 
 const MACOS_USER_SPACE_DIRS: &[&str] = &[
     "Desktop",
@@ -279,42 +268,9 @@ fn default_user_space_dir_names() -> &'static [&'static str] {
     }
 }
 
-fn join_existing_relative_roots(base: &Path, relatives: &[&str]) -> Vec<PathBuf> {
-    existing_unique_paths(relatives.iter().map(|relative| base.join(relative)))
-}
-
+/// User-scoped harness locations `scan quick` examines. See [`crate::harness`].
 pub fn host_roots() -> Vec<PathBuf> {
-    let Some(home) = home_dir() else {
-        return Vec::new();
-    };
-    let mut roots = ai_cli_config_roots();
-
-    match std::env::consts::OS {
-        "macos" => {
-            let app_support = home.join("Library").join("Application Support");
-            roots.extend(join_existing_relative_roots(
-                &app_support,
-                MACOS_EDITOR_USER_DIRS,
-            ));
-        }
-        "windows" => {
-            if let Some(config_dir) = dirs::config_dir() {
-                roots.extend(join_existing_relative_roots(
-                    &config_dir,
-                    WINDOWS_EDITOR_USER_DIRS,
-                ));
-            }
-        }
-        _ => {
-            let config_dir = home.join(".config");
-            roots.extend(join_existing_relative_roots(
-                &config_dir,
-                LINUX_EDITOR_USER_DIRS,
-            ));
-        }
-    }
-
-    existing_unique_paths(roots)
+    crate::harness::user_scoped_roots()
 }
 
 pub fn browser_profile_roots() -> Vec<PathBuf> {
@@ -342,17 +298,6 @@ pub fn browser_profile_roots() -> Vec<PathBuf> {
         _ => Vec::new(),
     };
     roots.into_iter().filter(|r| r.exists()).collect()
-}
-
-pub fn ai_cli_config_roots() -> Vec<PathBuf> {
-    let Some(home) = home_dir() else {
-        return Vec::new();
-    };
-    AI_CLI_CONFIG_DIRS
-        .iter()
-        .map(|d| home.join(d))
-        .filter(|p| p.exists())
-        .collect()
 }
 
 pub fn default_user_space_roots() -> Vec<PathBuf> {
@@ -404,6 +349,46 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
         eprintln!(
             "warning: scan depth capped at {MAX_DEPTH}; some files may have been skipped (use --deep for a full scan)"
         );
+    }
+    candidates
+}
+
+/// Walk one harness root (see [`crate::harness`]) completely.
+///
+/// These roots are the targets of `scan quick`, so the walk must not hide
+/// assets inside them: no depth limit, and only VCS metadata is pruned.
+/// `cache/` and `node_modules/` are where plugin managers and npm physically
+/// install skills (e.g. `~/.claude/plugins/cache/...` sits 7 to 9 levels deep),
+/// and skills are commonly symlinked into place, so links are followed. The
+/// walker detects link loops.
+pub fn walk_harness_root(
+    root: &Path,
+    origin: &str,
+    on_tick: Option<&dyn Fn(&str)>,
+) -> Vec<Candidate> {
+    let excluded: HashSet<&str> = HARNESS_ROOT_EXCLUDED_DIRS.iter().copied().collect();
+    let mut candidates = Vec::new();
+    let mut count: usize = 0;
+
+    let walker = WalkDir::new(root).follow_links(true);
+    let filtered = walker
+        .into_iter()
+        .filter_entry(|e| should_descend(e, &excluded, root));
+
+    for entry in filtered.filter_map(|e| e.ok()) {
+        if !is_included_file(&entry, root) {
+            continue;
+        }
+        candidates.push(Candidate {
+            path: entry.into_path(),
+            origin: origin.to_string(),
+        });
+        count += 1;
+        if let Some(tick) = on_tick {
+            if count % 5000 == 0 {
+                tick(&format!("{count} files"));
+            }
+        }
     }
     candidates
 }
@@ -487,7 +472,7 @@ fn extend_unique_candidates(
 pub fn discover_host_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     for root in host_roots() {
-        candidates.extend(walk_bounded(&root, "host", on_tick));
+        candidates.extend(walk_harness_root(&root, "host", on_tick));
     }
     candidates
 }
@@ -510,7 +495,7 @@ pub fn discover_scan_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> 
         extend_unique_candidates(
             &mut candidates,
             &mut seen,
-            walk_bounded(&root, "host", on_tick),
+            walk_harness_root(&root, "host", on_tick),
         );
     }
 
@@ -1045,16 +1030,70 @@ mod tests {
     }
 
     #[test]
-    fn host_roots_returns_existing_paths() {
-        let roots = host_roots();
-        for root in &roots {
-            assert!(root.exists(), "{:?} should exist", root);
-        }
+    fn walk_harness_root_has_no_depth_limit() {
+        // #278: Claude plugin skills sit 7 to 9 levels below ~/.claude.
+        let tmp = TempDir::new().unwrap();
+        let deep = tmp
+            .path()
+            .join("plugins/cache/mkt/plug/1.0.0/skills/ns/skill");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("SKILL.md"), "# s\n").unwrap();
+
+        assert!(walk_bounded(tmp.path(), "host", None).is_empty());
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].path.ends_with("skill/SKILL.md"));
     }
 
     #[test]
-    fn ai_cli_config_roots_returns_existing_paths() {
-        let roots = ai_cli_config_roots();
+    fn walk_harness_root_walks_install_destinations_but_not_vcs_metadata() {
+        let tmp = TempDir::new().unwrap();
+        for dir in [
+            "node_modules/pkg/skills/a",
+            "cache/x/skills/b",
+            ".git/hooks",
+        ] {
+            fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        fs::write(tmp.path().join("node_modules/pkg/skills/a/SKILL.md"), "#\n").unwrap();
+        fs::write(tmp.path().join("cache/x/skills/b/SKILL.md"), "#\n").unwrap();
+        fs::write(tmp.path().join(".git/hooks/SKILL.md"), "#\n").unwrap();
+
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert_eq!(found.len(), 2, "found: {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_follows_symlinked_skill_directories() {
+        // Skills are often symlinked into ~/.claude/skills from elsewhere.
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("elsewhere/my-skill");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("SKILL.md"), "# s\n").unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(root.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&target, root.join("skills/my-skill")).unwrap();
+
+        let found = walk_harness_root(&root, "host", None);
+        assert_eq!(found.len(), 1, "found: {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_survives_symlink_loops() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("a")).unwrap();
+        fs::write(tmp.path().join("a/SKILL.md"), "#\n").unwrap();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("a/loop")).unwrap();
+
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert!(!found.is_empty());
+    }
+
+    #[test]
+    fn host_roots_returns_existing_paths() {
+        let roots = host_roots();
         for root in &roots {
             assert!(root.exists(), "{:?} should exist", root);
         }

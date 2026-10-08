@@ -11,7 +11,7 @@ use crate::detectors::get_all_detectors;
 use crate::discovery::{
     default_user_space_roots, discover_direct_home_files, discover_file_surface,
     discover_filesystem_surfaces, discover_home_surfaces, discover_root_surfaces,
-    discover_workdir_surfaces, host_roots, walk_bounded, Candidate,
+    discover_workdir_surfaces, host_roots, walk_bounded, walk_harness_root, Candidate,
 };
 use crate::models::{ArtifactReport, ScanReport};
 use crate::risk_engine::score_artifact;
@@ -470,7 +470,13 @@ fn discover_refreshable_roots(
             }
         }
 
-        let root_candidates = walk_bounded(&plan.root.path, &plan.root.origin, Some(tick));
+        // Harness roots (origin "host") are walked completely; user-space
+        // roots stay depth-bounded.
+        let root_candidates = if plan.root.origin == "host" {
+            walk_harness_root(&plan.root.path, &plan.root.origin, Some(tick))
+        } else {
+            walk_bounded(&plan.root.path, &plan.root.origin, Some(tick))
+        };
         let keep_paths = root_candidates
             .iter()
             .map(|candidate| candidate.path.to_string_lossy().to_string())
