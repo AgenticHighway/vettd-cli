@@ -128,17 +128,29 @@ pub(crate) fn canonical_digest(text_files: &HashMap<String, String>) -> String {
 
 /// Classify where a found copy lives. One ordered rules table (#274).
 ///
-/// `/tmp` is classified as trash: it is ephemeral scratch space, the closest
-/// fit in the fixed `installed | cache | vendored | bundled | trash` enum.
+/// Only the real recycle/trash locations map to `trash`; a path that merely
+/// contains a `tmp` component (e.g. `/home/u/proj/tmp/x`) is not trash.
+/// Installed copies are detected before caches so agent plugin installs that
+/// live under a `cache/` directory (e.g. `~/.claude/plugins/cache/...`)
+/// classify as `installed` rather than `cache`.
 pub(crate) fn provenance_for(path: &str) -> &'static str {
     let normalized = path.replace('\\', "/");
     let lower = normalized.to_lowercase();
     if lower.contains("/.trash/")
         || lower.ends_with("/.trash")
         || lower.contains("/.local/share/trash/")
-        || lower.contains("/tmp/")
+        || lower.contains("/$recycle.bin/")
     {
         return "trash";
+    }
+    if let Some(home) = home_dir_normalized() {
+        let home_lower = home.to_lowercase();
+        let under_home = lower == home_lower
+            || (lower.starts_with(&home_lower)
+                && lower.as_bytes().get(home_lower.len()) == Some(&b'/'));
+        if under_home && INSTALLED_MARKERS.iter().any(|m| lower.contains(m)) {
+            return "installed";
+        }
     }
     if lower.contains("/.cache/") || lower.contains("/cache/") || lower.contains("/caches/") {
         return "cache";
@@ -151,15 +163,16 @@ pub(crate) fn provenance_for(path: &str) -> &'static str {
     {
         return "vendored";
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty()
-            && normalized.starts_with(home.as_str())
-            && INSTALLED_MARKERS.iter().any(|m| lower.contains(m))
-        {
-            return "installed";
-        }
-    }
     "bundled"
+}
+
+/// Cross-platform home directory normalized to forward slashes, so the
+/// `installed` rule also fires on Windows (where `$HOME` is unset).
+fn home_dir_normalized() -> Option<String> {
+    dirs::home_dir()
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .map(|home| home.to_string_lossy().replace('\\', "/"))
+        .filter(|home| !home.is_empty())
 }
 
 /// Lineage metadata for relating copies of the same asset across versions.
@@ -626,7 +639,20 @@ mod tests {
             provenance_for("/home/u/.Trash/skills/demo/SKILL.md"),
             "trash"
         );
-        assert_eq!(provenance_for("/tmp/x/skills/demo/SKILL.md"), "trash");
+        assert_eq!(
+            provenance_for("/home/u/.local/share/Trash/skills/demo/SKILL.md"),
+            "trash"
+        );
+        assert_eq!(
+            provenance_for("/mnt/c/$RECYCLE.BIN/skills/demo/SKILL.md"),
+            "trash"
+        );
+        // A path that merely contains a `tmp` component is not trash.
+        assert_eq!(provenance_for("/tmp/x/skills/demo/SKILL.md"), "bundled");
+        assert_eq!(
+            provenance_for("/home/u/proj/tmp/x/skills/demo/SKILL.md"),
+            "bundled"
+        );
         assert_eq!(
             provenance_for("/home/u/.cache/vettd/skills/demo/SKILL.md"),
             "cache"
@@ -639,9 +665,17 @@ mod tests {
             provenance_for("/repo/vendor/skills/demo/SKILL.md"),
             "vendored"
         );
-        let home = std::env::var("HOME").unwrap();
+        let home = home_dir_normalized().unwrap();
         assert_eq!(
             provenance_for(&format!("{home}/.claude/skills/demo/SKILL.md")),
+            "installed"
+        );
+        // Plugin installs under `~/.claude/plugins/cache/` are installed, not
+        // cache — the most important installed case.
+        assert_eq!(
+            provenance_for(&format!(
+                "{home}/.claude/plugins/cache/foo/skills/demo/SKILL.md"
+            )),
             "installed"
         );
         assert_eq!(
