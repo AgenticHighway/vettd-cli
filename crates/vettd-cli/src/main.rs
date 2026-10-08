@@ -13,6 +13,7 @@ mod directory_download;
 mod discovery;
 mod formatters;
 mod freshness;
+mod harness;
 mod identity;
 mod inventory;
 mod inventory_client;

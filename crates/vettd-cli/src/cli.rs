@@ -10,7 +10,7 @@ use crate::contract::{
 use crate::lite_mode::{limit_lite_mode_report, print_locked_summary, LITE_MODE_VISIBLE_RESULTS};
 use crate::models::{ArtifactReport, ScanReport};
 use crate::output::{do_submit, emit, resolve_submit_auth};
-use crate::scan::run_scan_with_cache;
+use crate::scan::run_scan_with_options;
 use crate::submit::{save_auth_config, AuthConfig, SaveOutcome, DEFAULT_PRODUCTION_ENDPOINT};
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,10 @@ pub enum ScanSubcommand {
     },
     /// Quick scan — critical OS-aware agent config areas only
     Quick {
+        /// Also examine other local users' agent config directories
+        /// (those this account can read)
+        #[arg(long)]
+        all_users: bool,
         #[command(flatten)]
         output: OutputArgs,
     },
@@ -511,6 +515,7 @@ struct ScanParams<'a> {
     workdir: Option<&'a Path>,
     file: Option<&'a Path>,
     deep: bool,
+    all_users: bool,
 }
 
 fn resolve_scan_params(sub: &ScanSubcommand) -> ScanParams<'_> {
@@ -520,36 +525,42 @@ fn resolve_scan_params(sub: &ScanSubcommand) -> ScanParams<'_> {
             workdir: None,
             file: None,
             deep: false,
+            all_users: false,
         },
-        ScanSubcommand::Quick { .. } => ScanParams {
+        ScanSubcommand::Quick { all_users, .. } => ScanParams {
             mode: "host",
             workdir: None,
             file: None,
             deep: false,
+            all_users: *all_users,
         },
         ScanSubcommand::Full { .. } => ScanParams {
             mode: "root",
             workdir: None,
             file: None,
             deep: false,
+            all_users: false,
         },
         ScanSubcommand::File { path, .. } => ScanParams {
             mode: "file",
             workdir: None,
             file: Some(path.as_path()),
             deep: false,
+            all_users: false,
         },
         ScanSubcommand::Folder { path, deep, .. } => ScanParams {
             mode: "workdir",
             workdir: Some(path.as_path()),
             file: None,
             deep: *deep,
+            all_users: false,
         },
         ScanSubcommand::Repo { path, .. } => ScanParams {
             mode: "workdir",
             workdir: Some(path.as_path()),
             file: None,
             deep: true,
+            all_users: false,
         },
         ScanSubcommand::Submit { .. } => {
             unreachable!("handled before scan dispatch")
@@ -1222,12 +1233,13 @@ pub fn run() {
     if let Some(ref mut p) = *progress_cell.borrow_mut() {
         p.phase("Scanning");
     }
-    let mut report = run_scan_with_cache(
+    let mut report = run_scan_with_options(
         params.mode,
         params.workdir,
         params.file,
         params.deep,
         out.no_cache,
+        params.all_users,
         if interactive { Some(&tick_fn) } else { None },
     );
     let scan_duration_ms = scan_start.elapsed().as_millis() as u64;
@@ -1723,6 +1735,7 @@ mod tests {
     fn require_scan_subcommand_passes_explicit_through() {
         // An explicit subcommand is honored regardless of TTY state.
         let sub = ScanSubcommand::Quick {
+            all_users: false,
             output: OutputArgs::default(),
         };
         let resolved = require_scan_subcommand(Some(sub), false);
@@ -2424,6 +2437,7 @@ mod tests {
     #[test]
     fn resolve_scan_params_quick() {
         let sub = ScanSubcommand::Quick {
+            all_users: false,
             output: OutputArgs::default(),
         };
         let params = resolve_scan_params(&sub);

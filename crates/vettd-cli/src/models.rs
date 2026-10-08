@@ -158,6 +158,10 @@ pub struct ScanReport {
     pub run_id: String,
     pub timestamp: String,
     pub artifacts: Vec<ArtifactReport>,
+    /// Directories the discovery step walked for modes that target a fixed set
+    /// of locations (`scan quick`). Display only: never serialized or submitted.
+    #[serde(skip)]
+    pub examined_roots: Vec<String>,
 }
 
 impl ScanReport {
@@ -175,6 +179,7 @@ impl ScanReport {
             run_id: id,
             timestamp: ts,
             artifacts: Vec::new(),
+            examined_roots: Vec::new(),
         }
     }
 

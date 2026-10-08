@@ -11,7 +11,7 @@ use crate::detectors::get_all_detectors;
 use crate::discovery::{
     default_user_space_roots, discover_direct_home_files, discover_file_surface,
     discover_filesystem_surfaces, discover_home_surfaces, discover_root_surfaces,
-    discover_workdir_surfaces, host_roots, walk_bounded, Candidate,
+    discover_workdir_surfaces, host_roots_for, walk_bounded, walk_harness_root, Candidate,
 };
 use crate::models::{ArtifactReport, ScanReport};
 use crate::risk_engine::score_artifact;
@@ -108,6 +108,20 @@ pub fn run_scan_with_cache(
     skip_cache: bool,
     on_tick: Option<&dyn Fn(&str)>,
 ) -> ScanReport {
+    run_scan_with_options(mode, workdir, file, deep, skip_cache, false, on_tick)
+}
+
+/// Like [`run_scan_with_cache`], and with `all_users` set `host` mode (`scan
+/// quick`) also examines other local users' harness roots.
+pub fn run_scan_with_options(
+    mode: &str,
+    workdir: Option<&Path>,
+    file: Option<&Path>,
+    deep: bool,
+    skip_cache: bool,
+    all_users: bool,
+    on_tick: Option<&dyn Fn(&str)>,
+) -> ScanReport {
     let noop = |_: &str| {};
     let tick: &dyn Fn(&str) = on_tick.unwrap_or(&noop);
     let timings = ScanTimings::from_env();
@@ -140,11 +154,20 @@ pub fn run_scan_with_cache(
 
     // 1. Discover candidates
     let discovery_started_at = Instant::now();
-    let prepared = discover_candidates(
-        mode,
+    let host_roots = if mode == "host" {
+        host_roots_for(all_users)
+    } else {
+        Vec::new()
+    };
+    let target = DiscoveryTarget {
         workdir,
         file,
         deep,
+        host_roots,
+    };
+    let prepared = discover_candidates(
+        mode,
+        &target,
         tick,
         scan_cache.as_ref(),
         cache_profile.as_ref(),
@@ -299,6 +322,11 @@ pub fn run_scan_with_cache(
 
     let mut report = ScanReport::new(&scanned_path);
     report.artifacts = artifacts;
+    report.examined_roots = target
+        .host_roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
     report
 }
 
@@ -331,15 +359,29 @@ fn resolve_scanned_path(mode: &str, workdir: Option<&Path>, file: Option<&Path>)
     }
 }
 
+/// What a scan targets, resolved once before discovery.
+struct DiscoveryTarget<'a> {
+    workdir: Option<&'a Path>,
+    file: Option<&'a Path>,
+    deep: bool,
+    /// Harness roots for `host` mode (`scan quick`); empty for other modes.
+    host_roots: Vec<PathBuf>,
+}
+
 fn discover_candidates(
     mode: &str,
-    workdir: Option<&Path>,
-    file: Option<&Path>,
-    deep: bool,
+    target: &DiscoveryTarget,
     tick: &dyn Fn(&str),
     scan_cache: Option<&ScanCache>,
     cache_profile: Option<&ScanCacheProfile>,
 ) -> PreparedDiscovery {
+    let DiscoveryTarget {
+        workdir,
+        file,
+        deep,
+        host_roots,
+    } = target;
+    let (workdir, file, deep) = (*workdir, *file, *deep);
     match mode {
         "file" => PreparedDiscovery {
             live_candidates: discover_file_surface(
@@ -378,17 +420,19 @@ fn discover_candidates(
             refreshed_roots: Vec::new(),
             cursor_updates: Vec::new(),
         },
-        _ => discover_host_candidates(tick, scan_cache, cache_profile),
+        _ => discover_host_candidates(host_roots, tick, scan_cache, cache_profile),
     }
 }
 
 fn discover_host_candidates(
+    host_roots: &[PathBuf],
     tick: &dyn Fn(&str),
     scan_cache: Option<&ScanCache>,
     cache_profile: Option<&ScanCacheProfile>,
 ) -> PreparedDiscovery {
-    let roots = host_roots()
-        .into_iter()
+    let roots = host_roots
+        .iter()
+        .cloned()
         .map(|path| DiscoveryRoot {
             path,
             origin: "host".to_string(),
@@ -408,7 +452,7 @@ fn discover_scan_candidates(
         refreshed_roots: Vec::new(),
         cursor_updates: Vec::new(),
     };
-    let mut roots = host_roots()
+    let mut roots = host_roots_for(false)
         .into_iter()
         .map(|path| DiscoveryRoot {
             path,
@@ -470,7 +514,13 @@ fn discover_refreshable_roots(
             }
         }
 
-        let root_candidates = walk_bounded(&plan.root.path, &plan.root.origin, Some(tick));
+        // Harness roots (origin "host") are walked completely; user-space
+        // roots stay depth-bounded.
+        let root_candidates = if plan.root.origin == "host" {
+            walk_harness_root(&plan.root.path, &plan.root.origin, Some(tick))
+        } else {
+            walk_bounded(&plan.root.path, &plan.root.origin, Some(tick))
+        };
         let keep_paths = root_candidates
             .iter()
             .map(|candidate| candidate.path.to_string_lossy().to_string())
