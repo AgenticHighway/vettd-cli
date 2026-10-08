@@ -4,12 +4,17 @@ This document captures the design for issue `#59`.
 
 Status:
 
-- phase 1 stat-cache implementation now exists for `quick`, `scan`, `folder`,
-  `repo`, and `file`
-- macOS root-refresh now uses persisted FSEvents cursors for repeated `quick`
-  and `scan` runs, falling back to bounded rewalks whenever replay is missing
-  or untrusted
-- watcher-backed refresh for other platforms remains future work
+- phase 1 stat-cache implementation exists for `quick`, `scan`, `folder`,
+  `repo`, and `file`: per-file detector results are reused when a file's
+  state key (path, id, size, mtime and, for asset files, a content digest) is
+  unchanged
+- there is no root-level reuse on any platform. A macOS FSEvents-cursor
+  fast path existed but almost never hit (the cursor was the system-wide event
+  counter) and was removed in #211; every run re-walks its roots
+- profiles unused for 30 days are garbage-collected together with their
+  artifact and file-state rows, so the database does not keep a copy of every
+  past version's results
+- OS change cursors and watcher-backed refresh remain future work
 - this document still defines the broader roadmap beyond the shipped first
   slice
 
@@ -67,8 +72,7 @@ Primary incremental target.
 
 - cache reads: yes
 - cache writes: yes
-- OS change integration: macOS FSEvents replay now shipped for repeated runs;
-  other platforms remain future work
+- OS change integration: none today; future work
 
 ### `scan`
 
@@ -78,8 +82,6 @@ Primary incremental target.
 - cache writes: yes
 - shares Tier 1 reuse with `quick`
 - tracks additional bounded user-space roots separately from `quick`
-- repeated macOS runs now reuse cached root membership when FSEvents replay
-  reports no changes for a bounded root
 
 ### `folder`
 
@@ -397,7 +399,8 @@ process model.
 
 ### Phase 2: macOS replay-backed refresh
 
-Add FSEvents-backed root cursors for `quick` and `scan` on macOS.
+Not shipped. (An earlier cursor-equality shortcut was removed in #211 because
+it almost never hit.) Add FSEvents-backed root cursors for `quick` and `scan` on macOS.
 
 - replay changes since the last successful scan
 - restat only touched subtrees instead of rewalking every configured root

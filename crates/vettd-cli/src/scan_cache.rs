@@ -52,12 +52,6 @@ pub struct CachedDetectorBundle {
     pub artifacts: Vec<ArtifactReport>,
 }
 
-#[derive(Debug, Clone)]
-pub struct RootCursor {
-    pub backend_type: String,
-    pub cursor_token: String,
-}
-
 pub struct ScanCache {
     conn: Connection,
 }
@@ -113,12 +107,6 @@ impl ScanCache {
                     artifact_hash TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (profile_key, detector_name, canonical_path)
-                );
-
-                CREATE TABLE IF NOT EXISTS root_cursors (
-                    root_path TEXT PRIMARY KEY,
-                    backend_type TEXT NOT NULL,
-                    cursor_token TEXT NOT NULL
                 );
                 ",
             )
@@ -321,140 +309,46 @@ impl ScanCache {
             .map_err(|e| format!("Failed to commit detector-result transaction: {e}"))
     }
 
-    pub fn load_root_cursor(
-        &self,
-        root_path: &str,
-        backend_type: &str,
-    ) -> Result<Option<RootCursor>, String> {
-        let mut stmt = self
+    /// Drop profiles not completed within `max_age_days`, then every artifact
+    /// and file-state row that no surviving profile owns. Returns the number
+    /// of profiles dropped.
+    ///
+    /// `profile_key` mixes in the binary version and the rules fingerprint, so
+    /// each upgrade or rule edit starts a new profile and abandons the old one.
+    /// Without this the database keeps a full copy of the serialized artifacts
+    /// for every past version. A dropped profile only costs a cache miss.
+    pub fn gc_stale_profiles(&mut self, max_age_days: i64) -> Result<usize, String> {
+        let cutoff = (Utc::now() - chrono::Duration::days(max_age_days)).to_rfc3339();
+        let transaction = self
             .conn
-            .prepare(
-                "
-                SELECT backend_type, cursor_token
-                FROM root_cursors
-                WHERE root_path = ?1 AND backend_type = ?2
-                ",
-            )
-            .map_err(|e| format!("Failed to prepare root-cursor read: {e}"))?;
-
-        let mut rows = stmt
-            .query(params![root_path, backend_type])
-            .map_err(|e| format!("Failed to query root cursor: {e}"))?;
-
-        let Some(row) = rows
-            .next()
-            .map_err(|e| format!("Failed to read root cursor row: {e}"))?
-        else {
-            return Ok(None);
-        };
-
-        let backend_type: String = row
-            .get(0)
-            .map_err(|e| format!("Failed to decode root-cursor backend: {e}"))?;
-        let cursor_token: String = row
-            .get(1)
-            .map_err(|e| format!("Failed to decode root-cursor token: {e}"))?;
-
-        Ok(Some(RootCursor {
-            backend_type,
-            cursor_token,
-        }))
-    }
-
-    pub fn upsert_root_cursor(
-        &self,
-        root_path: &str,
-        backend_type: &str,
-        cursor_token: &str,
-    ) -> Result<(), String> {
-        self.conn
+            .transaction()
+            .map_err(|e| format!("Failed to start scan-cache gc transaction: {e}"))?;
+        let dropped = transaction
             .execute(
-                "
-                INSERT INTO root_cursors (root_path, backend_type, cursor_token)
-                VALUES (?1, ?2, ?3)
-                ON CONFLICT(root_path) DO UPDATE SET
-                    backend_type = excluded.backend_type,
-                    cursor_token = excluded.cursor_token
-                ",
-                params![root_path, backend_type, cursor_token],
+                "DELETE FROM scan_profiles WHERE completed_at < ?1",
+                params![cutoff],
             )
-            .map_err(|e| format!("Failed to store root cursor: {e}"))?;
-        Ok(())
-    }
-
-    pub fn load_profile_candidates_for_root(
-        &self,
-        profile_key: &str,
-        root_path: &Path,
-    ) -> Result<Vec<CachedCandidate>, String> {
-        let root = root_path.to_string_lossy().to_string();
-        let root_prefix = format!("{root}/%");
-        let mut stmt = self
-            .conn
-            .prepare(
-                "
-                SELECT DISTINCT
-                    f.canonical_path,
-                    f.origin_tier,
-                    f.stable_file_id,
-                    f.size_bytes,
-                    f.modified_ns,
-                    f.content_hash
-                FROM artifacts a
-                INNER JOIN file_states f ON f.canonical_path = a.canonical_path
-                WHERE a.profile_key = ?1
-                  AND (a.canonical_path = ?2 OR a.canonical_path LIKE ?3)
-                ORDER BY f.canonical_path ASC
-                ",
-            )
-            .map_err(|e| format!("Failed to prepare cached-candidate read: {e}"))?;
-
-        let mut rows = stmt
-            .query(params![profile_key, root, root_prefix])
-            .map_err(|e| format!("Failed to query cached candidates: {e}"))?;
-
-        let mut candidates = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .map_err(|e| format!("Failed to read cached candidate row: {e}"))?
-        {
-            let canonical_path: String = row
-                .get(0)
-                .map_err(|e| format!("Failed to decode cached candidate path: {e}"))?;
-            let origin: String = row
-                .get(1)
-                .map_err(|e| format!("Failed to decode cached candidate origin: {e}"))?;
-            let stable_file_id: Option<String> = row
-                .get(2)
-                .map_err(|e| format!("Failed to decode cached candidate stable id: {e}"))?;
-            let size_bytes: i64 = row
-                .get(3)
-                .map_err(|e| format!("Failed to decode cached candidate size: {e}"))?;
-            let modified_ns: Option<i64> = row
-                .get(4)
-                .map_err(|e| format!("Failed to decode cached candidate mtime: {e}"))?;
-            let content_hash: Option<String> = row
-                .get(5)
-                .map_err(|e| format!("Failed to decode cached candidate content hash: {e}"))?;
-            let file_state = file_state_from_row(
-                &canonical_path,
-                &origin,
-                stable_file_id,
-                size_bytes.max(0) as u64,
-                modified_ns,
-                content_hash,
-            );
-            let candidate = Candidate {
-                path: PathBuf::from(&canonical_path),
-                origin,
-            };
-            candidates.push(CachedCandidate {
-                candidate,
-                file_state: Some(file_state),
-            });
+            .map_err(|e| format!("Failed to drop stale scan profiles: {e}"))?;
+        if dropped > 0 {
+            transaction
+                .execute(
+                    "DELETE FROM artifacts
+                     WHERE profile_key NOT IN (SELECT profile_key FROM scan_profiles)",
+                    [],
+                )
+                .map_err(|e| format!("Failed to drop orphaned artifact rows: {e}"))?;
+            transaction
+                .execute(
+                    "DELETE FROM file_states
+                     WHERE last_seen_profile NOT IN (SELECT profile_key FROM scan_profiles)",
+                    [],
+                )
+                .map_err(|e| format!("Failed to drop orphaned file-state rows: {e}"))?;
         }
-
-        Ok(candidates)
+        transaction
+            .commit()
+            .map_err(|e| format!("Failed to commit scan-cache gc: {e}"))?;
+        Ok(dropped)
     }
 
     pub fn prune_profile_root_artifacts(
@@ -488,6 +382,15 @@ impl ScanCache {
                     params![profile_key, path],
                 )
                 .map_err(|e| format!("Failed to prune stale root artifact rows: {e}"))?;
+            transaction
+                .execute(
+                    "
+                    DELETE FROM file_states
+                    WHERE last_seen_profile = ?1 AND canonical_path = ?2
+                    ",
+                    params![profile_key, path],
+                )
+                .map_err(|e| format!("Failed to prune stale file-state rows: {e}"))?;
         }
         transaction
             .commit()
@@ -528,6 +431,9 @@ impl ScanCache {
         Ok(paths)
     }
 }
+
+/// Profiles unused for this long are dropped by [`ScanCache::gc_stale_profiles`].
+pub const PROFILE_MAX_AGE_DAYS: i64 = 30;
 
 pub fn cache_enabled_for_mode(mode: &str) -> bool {
     matches!(mode, "host" | "scan" | "workdir" | "file")
@@ -750,6 +656,29 @@ fn state_key_for(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Read one file-state row back out of the cache, as the scan would.
+    fn load_file_state(cache: &ScanCache, path: &Path) -> Option<FileStateSnapshot> {
+        let canonical_path = path.to_string_lossy().to_string();
+        cache
+            .conn
+            .query_row(
+                "SELECT origin_tier, stable_file_id, size_bytes, modified_ns, content_hash
+                 FROM file_states WHERE canonical_path = ?1",
+                params![canonical_path],
+                |row| {
+                    Ok(file_state_from_row(
+                        &canonical_path,
+                        &row.get::<_, String>(0)?,
+                        row.get(1)?,
+                        row.get::<_, i64>(2)?.max(0) as u64,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .ok()
+    }
 
     fn candidate(path: &Path, origin: &str) -> Candidate {
         Candidate {
@@ -997,11 +926,7 @@ mod tests {
             )
             .unwrap();
 
-        let loaded = cache
-            .load_profile_candidates_for_root(&profile.profile_key, dir.path())
-            .unwrap();
-        assert_eq!(loaded.len(), 1);
-        let loaded_state = loaded[0].file_state.as_ref().unwrap();
+        let loaded_state = load_file_state(&cache, &file).unwrap();
         assert_eq!(
             loaded_state.content_hash, snapshot_hash,
             "content_hash must survive the upsert/load round trip"
@@ -1101,82 +1026,6 @@ mod tests {
     }
 
     #[test]
-    fn root_cursor_round_trips() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("scan-v1.sqlite3");
-        let cache = ScanCache::open_at(&db_path).unwrap();
-
-        cache
-            .upsert_root_cursor("/tmp/root", "macos_fsevents_v1", r#"{"last_event_id":12}"#)
-            .unwrap();
-
-        let cursor = cache
-            .load_root_cursor("/tmp/root", "macos_fsevents_v1")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(cursor.backend_type, "macos_fsevents_v1");
-        assert_eq!(cursor.cursor_token, r#"{"last_event_id":12}"#);
-    }
-
-    #[test]
-    fn load_profile_candidates_for_root_uses_profile_membership() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("scan-v1.sqlite3");
-        let root = dir.path().join("project");
-        fs::create_dir_all(&root).unwrap();
-        let file = root.join("mcp.json");
-        fs::write(&file, br#"{"mcpServers":{"fs":{"command":"npx"}}}"#).unwrap();
-
-        let mut cache = ScanCache::open_at(&db_path).unwrap();
-        let host_profile = build_profile("host", false, "~", &["mcp_configs".to_string()], "rules");
-        let other_profile = build_profile(
-            "workdir",
-            true,
-            root.to_string_lossy().as_ref(),
-            &["mcp_configs".to_string()],
-            "rules",
-        );
-        cache.upsert_profile(&host_profile).unwrap();
-        cache.upsert_profile(&other_profile).unwrap();
-
-        let candidates = snapshot_candidates(&[candidate(&file, "host")]);
-        cache
-            .upsert_file_states(&host_profile.profile_key, &candidates)
-            .unwrap();
-
-        let mut artifact = ArtifactReport::new("mcp_config", 0.9);
-        artifact.metadata.insert(
-            "paths".into(),
-            serde_json::json!([file.to_string_lossy().to_string()]),
-        );
-        artifact.compute_hash();
-        let mut by_path = HashMap::new();
-        by_path.insert(file.to_string_lossy().to_string(), vec![artifact]);
-
-        cache
-            .persist_detector_results(
-                &other_profile.profile_key,
-                "mcp_configs",
-                &detector_fingerprint("mcp_configs"),
-                &candidates,
-                &by_path,
-            )
-            .unwrap();
-
-        let loaded = cache
-            .load_profile_candidates_for_root(&host_profile.profile_key, &root)
-            .unwrap();
-        assert!(loaded.is_empty());
-
-        let loaded = cache
-            .load_profile_candidates_for_root(&other_profile.profile_key, &root)
-            .unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].candidate.path, file);
-    }
-
-    #[test]
     fn prune_profile_root_artifacts_removes_deleted_paths() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("scan-v1.sqlite3");
@@ -1223,10 +1072,103 @@ mod tests {
             .prune_profile_root_artifacts(&profile.profile_key, &root, &keep_paths)
             .unwrap();
 
-        let loaded = cache
-            .load_profile_candidates_for_root(&profile.profile_key, &root)
+        let remaining = cache
+            .profile_root_paths(
+                &profile.profile_key,
+                &root.to_string_lossy(),
+                &format!("{}/%", root.to_string_lossy()),
+            )
             .unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].candidate.path, first);
+        assert_eq!(remaining, vec![first.to_string_lossy().to_string()]);
+        assert!(
+            load_file_state(&cache, &first).is_some(),
+            "kept path keeps its file state"
+        );
+        assert!(
+            load_file_state(&cache, &second).is_none(),
+            "a deleted path must not leave a file-state row behind"
+        );
+    }
+
+    fn persist_one_artifact(cache: &mut ScanCache, profile: &ScanCacheProfile, file: &Path) {
+        let candidates = snapshot_candidates(&[candidate(file, "host")]);
+        cache
+            .upsert_file_states(&profile.profile_key, &candidates)
+            .unwrap();
+        let mut artifact = ArtifactReport::new("mcp_config", 0.8);
+        artifact.metadata.insert(
+            "paths".into(),
+            serde_json::json!([file.to_string_lossy().to_string()]),
+        );
+        artifact.compute_hash();
+        let mut by_path = HashMap::new();
+        by_path.insert(file.to_string_lossy().to_string(), vec![artifact]);
+        cache
+            .persist_detector_results(
+                &profile.profile_key,
+                "mcp_configs",
+                &detector_fingerprint("mcp_configs"),
+                &candidates,
+                &by_path,
+            )
+            .unwrap();
+    }
+
+    fn artifact_rows(cache: &ScanCache) -> i64 {
+        cache
+            .conn
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn gc_drops_profiles_unused_past_the_cutoff_with_their_rows() {
+        // A new binary version or rules edit mints a new profile and abandons
+        // the old one; its serialized artifacts must not accrete forever.
+        let dir = tempdir().unwrap();
+        let old_file = dir.path().join("old.json");
+        let new_file = dir.path().join("new.json");
+        fs::write(&old_file, "{}").unwrap();
+        fs::write(&new_file, "{}").unwrap();
+        let mut cache = ScanCache::open_at(&dir.path().join("scan.sqlite3")).unwrap();
+        let old = build_profile("host", false, "~", &["mcp_configs".to_string()], "rules-v1");
+        let current = build_profile("host", false, "~", &["mcp_configs".to_string()], "rules-v2");
+        cache.upsert_profile(&old).unwrap();
+        cache.upsert_profile(&current).unwrap();
+        persist_one_artifact(&mut cache, &old, &old_file);
+        persist_one_artifact(&mut cache, &current, &new_file);
+        cache
+            .conn
+            .execute(
+                "UPDATE scan_profiles SET completed_at = ?1 WHERE profile_key = ?2",
+                params!["2000-01-01T00:00:00+00:00", old.profile_key],
+            )
+            .unwrap();
+        assert_eq!(artifact_rows(&cache), 2);
+
+        let dropped = cache.gc_stale_profiles(PROFILE_MAX_AGE_DAYS).unwrap();
+
+        assert_eq!(dropped, 1);
+        assert_eq!(
+            artifact_rows(&cache),
+            1,
+            "only the live profile's rows stay"
+        );
+        assert!(load_file_state(&cache, &old_file).is_none());
+        assert!(load_file_state(&cache, &new_file).is_some());
+    }
+
+    #[test]
+    fn gc_keeps_recently_used_profiles() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("a.json");
+        fs::write(&file, "{}").unwrap();
+        let mut cache = ScanCache::open_at(&dir.path().join("scan.sqlite3")).unwrap();
+        let profile = build_profile("host", false, "~", &["mcp_configs".to_string()], "rules");
+        cache.upsert_profile(&profile).unwrap();
+        persist_one_artifact(&mut cache, &profile, &file);
+
+        assert_eq!(cache.gc_stale_profiles(PROFILE_MAX_AGE_DAYS).unwrap(), 0);
+        assert_eq!(artifact_rows(&cache), 1);
     }
 }

@@ -39,11 +39,6 @@ p256 = { version = "0.13.2", features = ["ecdsa", "pkcs8"] }
 base64 = "0.22"
 rusqlite = { version = "0.39", features = ["bundled"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
-dispatch2 = "0.3"
-fsevent-sys = "5.2"
-
 [dev-dependencies]
 httpmock = "=0.8.2"
 tempfile = "3"
