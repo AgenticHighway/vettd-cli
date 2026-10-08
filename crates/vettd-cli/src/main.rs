@@ -25,6 +25,7 @@ mod output;
 mod progress;
 mod read_client;
 mod risk_engine;
+mod root_walk;
 mod rule_engine;
 mod rules;
 mod scan;
