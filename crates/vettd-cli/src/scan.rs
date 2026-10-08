@@ -10,8 +10,8 @@ use std::time::Instant;
 use crate::detectors::get_all_detectors;
 use crate::discovery::{
     default_user_space_roots, discover_direct_home_files, discover_file_surface,
-    discover_filesystem_surfaces, discover_home_surfaces, discover_root_surfaces,
-    discover_workdir_surfaces, host_roots_for, walk_bounded, walk_harness_root, Candidate,
+    discover_filesystem_surfaces, discover_home_surfaces, discover_workdir_surfaces,
+    host_roots_for, walk_bounded, walk_harness_root, Candidate,
 };
 use crate::models::{ArtifactReport, ScanReport};
 use crate::risk_engine::score_artifact;
@@ -415,7 +415,7 @@ fn discover_candidates(
             cursor_updates: Vec::new(),
         },
         "root" => PreparedDiscovery {
-            live_candidates: discover_root_surfaces(Some(tick)),
+            live_candidates: crate::root_walk::discover_root_surfaces(Some(tick)),
             reused_cached_candidates: Vec::new(),
             refreshed_roots: Vec::new(),
             cursor_updates: Vec::new(),

@@ -125,7 +125,7 @@ vettd rules validate <f>        # Validate a rule file without installing
 - `scan`: Tier 1 plus bounded user-space/project roots such as `Desktop`, `Documents`, `Downloads`, and common repo folders like `Code`, `Projects`, `Workspace`, `src`, and `GitHub`
 - `folder`: explicit target directory plus bounded local adjacency
 - `repo`: explicit target repository plus deeper local adjacency
-- `full`: explicit forensic sweep from filesystem root
+- `full`: complete sweep of every readable location for project-scoped assets: known harness locations first, then the whole filesystem (every mounted volume and other users' homes), skipping only virtual filesystems (`/proc`, `/sys`, `/dev`, ...), network mounts (Linux, each named on stderr) and VCS metadata. Prints time per root and any paths it could not read
 
 `quick` examines the user-scoped locations of each supported AI harness, walked completely at any depth (installed plugins and skills commonly sit 7 or more levels down). The list lives in `crates/vettd-cli/src/harness.rs`, one row per harness:
 
@@ -314,8 +314,8 @@ Without a TTY and without the equivalent flag, `vettd scan`, `vettd auth`, and
 ## Privacy
 
 - **Path-first scanning** — content is only read from specific allowlisted file types
-- **Bounded walking** — max depth of 5 for shallow scans; full scan enumerates the entire filesystem with no caps
-- **Scoped exclusions** — `.git/`, `node_modules/`, `.venv/`, `target/` and similar are excluded from default, workdir, and filesystem scans (full scan has no exclusions)
+- **Bounded walking** — max depth of 5 for shallow scans; full scan walks every readable location with no depth or file-count cap
+- **Scoped exclusions** — `.git/`, `node_modules/`, `.venv/`, `target/` and similar are excluded from default, workdir, and filesystem scans (full scan walks them too, and skips only virtual filesystems, network mounts and VCS metadata)
 - **Secret detection without storage** — token patterns trigger a signal tag, but values are never stored or transmitted
 - **Browser presence only** — extension directories are noted, but no extension content or preferences are read
 - **Declarative rules** — custom rules are TOML config files; they use the same content-read allowlist as built-in detectors

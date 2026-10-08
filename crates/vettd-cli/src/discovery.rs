@@ -16,13 +16,6 @@ use walkdir::WalkDir;
 
 pub const MAX_DEPTH: usize = 5;
 
-/// Hard cap on candidates collected by `discover_root_surfaces` (the
-/// `vettd scan full` walk from `/`). `scan full` has no directory-depth
-/// bound like the other walkers, so this exists purely to keep the
-/// in-memory candidate `Vec` and downstream detector pass bounded on a
-/// very large or unusual filesystem.
-pub const MAX_ROOT_SCAN_FILES: usize = 500_000;
-
 // ---------------------------------------------------------------------------
 // Excluded directory sets
 // ---------------------------------------------------------------------------
@@ -190,7 +183,11 @@ fn is_inside_organic_vscode_dir(entry: &walkdir::DirEntry, walk_root: &Path) -> 
         .is_some_and(|parent| parent.file_name().and_then(|n| n.to_str()) == Some(".vscode"))
 }
 
-fn should_descend(entry: &walkdir::DirEntry, excluded: &HashSet<&str>, walk_root: &Path) -> bool {
+pub(crate) fn should_descend(
+    entry: &walkdir::DirEntry,
+    excluded: &HashSet<&str>,
+    walk_root: &Path,
+) -> bool {
     // filter_entry runs on every entry (files included) — a `false` here
     // means "don't yield this entry at all", not just "don't descend into
     // it". The .vscode-subdirectory rule below must only ever prune
@@ -239,7 +236,7 @@ fn is_vscode_noise_file(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
         && entry.path().file_name().and_then(|n| n.to_str()) != Some("mcp.json")
 }
 
-fn is_included_file(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
+pub(crate) fn is_included_file(entry: &walkdir::DirEntry, walk_root: &Path) -> bool {
     is_regular_file(entry) && !is_vscode_noise_file(entry, walk_root)
 }
 
@@ -586,74 +583,6 @@ pub fn discover_home_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> 
     walk_deep_workdir(&home, "home", on_tick)
 }
 
-// Full scan: prune pseudo-filesystems (/proc, /sys, /dev, ...) and the same
-// low-value dependency/cache/VCS directories every other walker excludes
-// (node_modules, .git, .cargo, vendor, target, ...). Without this, `scan
-// full` enumerates the entire tree — including virtual filesystems that can
-// hang or grow unbounded — into one in-memory Vec, and floods results with
-// vendored copies of files like AGENTS.md/.cursorrules weighted the same as
-// first-party ones. On top of that, `cap` bounds total candidates so a huge
-// disk can't grow the in-memory Vec without limit.
-fn walk_root_with_cap(
-    root: &Path,
-    origin: &str,
-    excluded: &HashSet<&str>,
-    cap: usize,
-    on_tick: Option<&dyn Fn(&str)>,
-) -> Vec<Candidate> {
-    let mut candidates = Vec::new();
-    let mut count: usize = 0;
-
-    if cap == 0 {
-        return candidates;
-    }
-
-    let walker = WalkDir::new(root).follow_links(false);
-    let filtered = walker
-        .into_iter()
-        .filter_entry(|e| should_descend(e, excluded, root));
-
-    let mut cap_hit = false;
-    for entry in filtered.filter_map(|e| e.ok()) {
-        if !is_included_file(&entry, root) {
-            continue;
-        }
-        candidates.push(Candidate {
-            path: entry.into_path(),
-            origin: origin.to_string(),
-        });
-        count += 1;
-        if let Some(tick) = on_tick {
-            if count % 10_000 == 0 {
-                tick(&format!("{count} files"));
-            }
-        }
-        if count >= cap {
-            cap_hit = true;
-            break;
-        }
-    }
-
-    if cap_hit {
-        eprintln!(
-            "warning: full scan capped at {cap} files; results may be incomplete (use \
-             `vettd scan repo`/`vettd scan folder` for a bounded, thorough scan of a specific \
-             directory)"
-        );
-    }
-    candidates
-}
-
-pub fn discover_root_surfaces(on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
-    let excluded = filesystem_excluded_set();
-    let root = if cfg!(windows) {
-        PathBuf::from("C:\\")
-    } else {
-        PathBuf::from("/")
-    };
-    walk_root_with_cap(&root, "root", &excluded, MAX_ROOT_SCAN_FILES, on_tick)
-}
-
 pub fn discover_file_surface(path: &Path) -> Vec<Candidate> {
     let resolved = match path.canonicalize() {
         Ok(p) => p,
@@ -953,38 +882,6 @@ mod tests {
         let candidates = walk_deep_workdir(tmp.path(), "test", None);
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].path.ends_with("AGENTS.md"));
-    }
-
-    #[test]
-    fn walk_root_with_cap_excludes_low_value_dirs_and_finds_vscode_mcp_json() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
-        fs::write(tmp.path().join("node_modules").join("agents.md"), "noise").unwrap();
-        fs::create_dir(tmp.path().join(".vscode")).unwrap();
-        fs::write(tmp.path().join(".vscode").join("mcp.json"), "{}").unwrap();
-        fs::write(tmp.path().join(".vscode").join("settings.json"), "{}").unwrap();
-        fs::write(tmp.path().join("real.txt"), "real file").unwrap();
-
-        let excluded = filesystem_excluded_set();
-        let candidates = walk_root_with_cap(tmp.path(), "root", &excluded, usize::MAX, None);
-
-        let paths: Vec<_> = candidates.iter().map(|c| c.path.clone()).collect();
-        assert_eq!(candidates.len(), 2, "found: {paths:?}");
-        assert!(paths.iter().any(|p| p.ends_with("real.txt")));
-        assert!(paths.iter().any(|p| p.ends_with(".vscode/mcp.json")));
-    }
-
-    #[test]
-    fn walk_root_with_cap_stops_at_the_cap() {
-        let tmp = TempDir::new().unwrap();
-        for i in 0..5 {
-            fs::write(tmp.path().join(format!("file{i}.txt")), "content").unwrap();
-        }
-
-        let excluded = filesystem_excluded_set();
-        let candidates = walk_root_with_cap(tmp.path(), "root", &excluded, 2, None);
-
-        assert_eq!(candidates.len(), 2);
     }
 
     #[test]
