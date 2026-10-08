@@ -112,6 +112,23 @@ fn status_rank(s: &str) -> u8 {
     }
 }
 
+/// Print the directories a fixed-target scan (`scan quick`) examined, with the
+/// home directory shortened to `~`.
+fn print_examined_roots(report: &ScanReport) {
+    if report.examined_roots.is_empty() {
+        return;
+    }
+    let home = dirs::home_dir().map(|h| h.display().to_string());
+    println!("  Examined ({}):", report.examined_roots.len());
+    for root in &report.examined_roots {
+        let shown = match &home {
+            Some(h) if root.starts_with(h.as_str()) => format!("~{}", &root[h.len()..]),
+            _ => root.clone(),
+        };
+        println!("    {DIM}{shown}{RESET}");
+    }
+}
+
 // ── print_overview ──────────────────────────────────────────────────────
 
 pub fn print_overview(report: &ScanReport, cmd_name: &str) {
@@ -122,6 +139,7 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     println!("{line}");
     println!("  {BOLD}vettd{RESET} · AI Execution Inventory");
     println!("  Scanned: {CYAN}{}{RESET}", report.scanned_path);
+    print_examined_roots(report);
     println!("{line}");
 
     if report.artifacts.is_empty() {
@@ -299,6 +317,7 @@ pub fn print_human(report: &ScanReport, _cmd_name: &str) {
     println!("  {BOLD}vettd{RESET} · AI Execution Inventory  {DIM}(full detail){RESET}");
     println!("  Run ID:  {DIM}{}{RESET}", report.run_id);
     println!("  Scanned: {CYAN}{}{RESET}", report.scanned_path);
+    print_examined_roots(report);
     println!("  Time:    {DIM}{}{RESET}", report.timestamp);
     println!("{line}");
 

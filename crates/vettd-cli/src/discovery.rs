@@ -273,6 +273,15 @@ pub fn host_roots() -> Vec<PathBuf> {
     crate::harness::user_scoped_roots()
 }
 
+/// [`host_roots`], plus other local users' harness roots when `all_users`.
+pub fn host_roots_for(all_users: bool) -> Vec<PathBuf> {
+    let mut roots = host_roots();
+    if all_users {
+        roots.extend(crate::harness::other_users_roots());
+    }
+    roots
+}
+
 pub fn browser_profile_roots() -> Vec<PathBuf> {
     let Some(home) = home_dir() else {
         return Vec::new();

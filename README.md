@@ -135,6 +135,8 @@ vettd rules validate <f>        # Validate a rule file without installing
 
 Only locations that exist are scanned. Symlinked skill directories are followed.
 
+`vettd scan quick` prints the locations it examined. `vettd scan quick --all-users` also examines the same locations in other local users' homes (`/home/*`, `/Users/*`, `C:\Users\*`, and `/root` on Linux) that the current account can read; homes it cannot read are named on stderr and skipped.
+
 ## Output formats
 
 ```bash

@@ -105,6 +105,74 @@ pub fn user_scoped_roots() -> Vec<PathBuf> {
     })
 }
 
+/// Names under the users directory that are not real user homes.
+const NON_USER_HOME_DIRS: &[&str] = &[
+    "Shared",
+    "Guest",
+    "Public",
+    "Default",
+    "Default User",
+    "All Users",
+    "Defaultuser0",
+];
+
+fn config_dir_in(home: &Path) -> PathBuf {
+    match std::env::consts::OS {
+        "macos" => home.join("Library").join("Application Support"),
+        "windows" => home.join("AppData").join("Roaming"),
+        _ => home.join(".config"),
+    }
+}
+
+/// Other local users' homes: the siblings of `current_home` (`/home/*`,
+/// `/Users/*`, `C:\\Users\\*`) and, on Linux, `/root`. Returns
+/// `(readable, unreadable)`; a home this process may not list is reported
+/// rather than silently treated as empty.
+pub fn other_user_homes(current_home: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(entries) = current_home
+        .parent()
+        .and_then(|users_dir| std::fs::read_dir(users_dir).ok())
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let skip = name
+                .to_str()
+                .is_none_or(|n| n.starts_with('.') || NON_USER_HOME_DIRS.contains(&n));
+            if !skip && entry.path() != current_home && entry.path().is_dir() {
+                candidates.push(entry.path());
+            }
+        }
+    }
+    if std::env::consts::OS == "linux" {
+        let root_home = PathBuf::from("/root");
+        if root_home != current_home && !candidates.contains(&root_home) && root_home.exists() {
+            candidates.push(root_home);
+        }
+    }
+    candidates.sort();
+    candidates
+        .into_iter()
+        .partition(|home| std::fs::read_dir(home).is_ok())
+}
+
+/// Harness roots for every other local user, for `scan quick --all-users`.
+/// Environment overrides belong to the current user, so they are not applied.
+/// Homes that cannot be read are named on stderr.
+pub fn other_users_roots() -> Vec<PathBuf> {
+    let Some(current) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let (readable, unreadable) = other_user_homes(&current);
+    for home in &unreadable {
+        eprintln!("warning: skipped {}: not readable", home.display());
+    }
+    readable
+        .iter()
+        .flat_map(|home| resolve_roots(home, Some(&config_dir_in(home)), &|_| None))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +251,42 @@ mod tests {
 
         let roots = resolve_roots(home.path(), None, &env);
         assert_eq!(roots.len(), 1);
+    }
+
+    #[test]
+    fn other_user_homes_lists_siblings_and_skips_current_and_system_dirs() {
+        let users = TempDir::new().unwrap();
+        for name in ["me", "agent", "Shared", ".hidden"] {
+            fs::create_dir(users.path().join(name)).unwrap();
+        }
+        fs::write(users.path().join("notes.txt"), "x").unwrap();
+
+        let (readable, unreadable) = other_user_homes(&users.path().join("me"));
+        let names: Vec<_> = readable
+            .iter()
+            .filter(|p| p.starts_with(users.path()))
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        assert_eq!(names, vec!["agent"]);
+        assert!(unreadable.iter().all(|p| !p.starts_with(users.path())));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_homes_are_reported_not_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let users = TempDir::new().unwrap();
+        fs::create_dir(users.path().join("me")).unwrap();
+        let locked = users.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (_, unreadable) = other_user_homes(&users.path().join("me"));
+        let still_locked = fs::read_dir(&locked).is_err();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        // Running as root can read anything; only assert when the lock holds.
+        if still_locked {
+            assert!(unreadable.contains(&locked));
+        }
     }
 }
