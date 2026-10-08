@@ -14,6 +14,22 @@
 	],
 	"additionalProperties": false,
 	"properties": {
+		"coverage": {
+			"type": "array",
+			"description": "Config files (MCP/agent) that could not be fully read or parsed; surfaced so the signal is machine-readable. Omitted when empty.",
+			"items": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["kind", "ruleId", "label", "detail"],
+				"properties": {
+					"kind": { "type": "string" },
+					"ruleId": { "type": "string" },
+					"label": { "type": "string" },
+					"detail": { "type": "string" },
+					"category": { "type": "string" }
+				}
+			}
+		},
 		"scanMeta": {
 			"description": "Metadata about the scan itself. Sent once per payload.",
 			"type": "object",
@@ -573,6 +589,42 @@
 								}
 							}
 						]
+					},
+					"contentHash": {
+						"type": "string",
+						"description": "Canonical content digest of the skill's whole directory: SHA-256 hex of [relativePath, text] pairs sorted bytewise by path, excluding VCS dirs, OS junk, and paths ignored by the asset's own .gitignore. Matches the hub's computeCanonicalSkillHash so the same skill hashes identically in CLI and hub (issues #274, #130)."
+					},
+					"locations": {
+						"type": "array",
+						"description": "Every path where this exact content was found. Identical copies collapse into one record listing all locations; a differing digest is a separate record (issues #274, #255).",
+						"items": {
+							"type": "object",
+							"required": ["path", "provenance"],
+							"additionalProperties": false,
+							"properties": {
+								"path": {"type": "string"},
+								"provenance": {
+									"type": "string",
+									"description": "How this copy got here, inferred from path shape: installed | cache | vendored | bundled | trash."
+								}
+							}
+						}
+					},
+					"identityExclusions": {
+						"type": "array",
+						"description": "Paths excluded from the content digest (VCS dirs, OS junk, .gitignore-ignored paths) so the digest's scope is auditable (issue #274).",
+						"items": {"type": "string"}
+					},
+					"lineage": {
+						"type": "object",
+						"description": "Provenance metadata where available: git remote URL and HEAD commit read from .git files, plus declared name/version from frontmatter. Stored only, never used for grouping (issue #274).",
+						"additionalProperties": false,
+						"properties": {
+							"gitRemoteUrl": {"type": "string"},
+							"gitCommit": {"type": "string"},
+							"declaredName": {"type": "string"},
+							"declaredVersion": {"type": "string"}
+						}
 					}
 			}
 			}
@@ -627,6 +679,10 @@
 					"command": {
 						"type": "string",
 						"description": "The shell command used to launch this MCP server (e.g. 'npx -y @anthropic/mcp-server-github'). Useful for audit trail and identifying supply chain risk."
+					},
+					"contentHash": {
+						"type": "string",
+						"description": "SHA-256 hex digest of the server's config entry as serialized by the scanner. Content identity for drift detection (issue #130)."
 					},
 					"tools": {
 						"type": "array",
@@ -856,6 +912,10 @@
 								}
 							}
 						}
+					},
+					"contentHash": {
+						"type": "string",
+						"description": "SHA-256 hex digest of the agent definition file content. Content identity for drift detection (issue #130)."
 					}
 				}
 			}
@@ -1014,6 +1074,10 @@
 					"riskSummary": {
 						"type": "string",
 						"description": "Paragraph-length risk narrative for this app. Do NOT embed absolute file paths \u2014 reference the app by name."
+					},
+					"contentHash": {
+						"type": "string",
+						"description": "SHA-256 hex digest of the app definition file content. Content identity for drift detection (issue #130)."
 					}
 				}
 			}
