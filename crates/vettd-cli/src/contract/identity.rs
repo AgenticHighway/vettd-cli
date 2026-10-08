@@ -51,19 +51,30 @@ pub(crate) struct SkillFileLoad {
 pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
     let mut files: Vec<String> = Vec::new();
     let mut excluded: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     let mut rules: Vec<IgnoreRule> = Vec::new();
-    collect_files(root, "", &mut files, &mut excluded, &mut rules);
+    let mut partial = false;
+    collect_files(
+        root,
+        "",
+        &mut files,
+        &mut excluded,
+        &mut skipped,
+        &mut rules,
+        &mut partial,
+    );
     files.sort();
     excluded.sort();
+    skipped.sort();
 
-    let mut partial = false;
+    // Belt-and-braces: a single flat directory can overshoot the limit in one
+    // pass; nested trees are cut off during the walk itself (see collect_files).
     if files.len() > WALK_SAFETY_LIMIT {
         partial = true;
         files.truncate(WALK_SAFETY_LIMIT);
     }
 
     let mut text_files: HashMap<String, String> = HashMap::new();
-    let mut skipped: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     for rel in &files {
         if !is_likely_text(Path::new(rel)) {
@@ -72,6 +83,14 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         if text_files.len() >= MAX_SKILL_FILES {
             partial = true;
             continue;
+        }
+        // Check the size before reading so a pathological file cannot blow up
+        // memory before the cap is noticed.
+        if let Ok(meta) = fs::metadata(root.join(rel)) {
+            if total_bytes + meta.len() > MAX_SKILL_TOTAL_BYTES {
+                partial = true;
+                continue;
+            }
         }
         match fs::read_to_string(root.join(rel)) {
             Ok(content) => {
@@ -108,10 +127,17 @@ pub(crate) fn canonical_digest(text_files: &HashMap<String, String>) -> String {
 }
 
 /// Classify where a found copy lives. One ordered rules table (#274).
+///
+/// `/tmp` is classified as trash: it is ephemeral scratch space, the closest
+/// fit in the fixed `installed | cache | vendored | bundled | trash` enum.
 pub(crate) fn provenance_for(path: &str) -> &'static str {
     let normalized = path.replace('\\', "/");
     let lower = normalized.to_lowercase();
-    if lower.contains("/.trash/") || lower.ends_with("/.trash") || lower.contains("/tmp/") {
+    if lower.contains("/.trash/")
+        || lower.ends_with("/.trash")
+        || lower.contains("/.local/share/trash/")
+        || lower.contains("/tmp/")
+    {
         return "trash";
     }
     if lower.contains("/.cache/") || lower.contains("/cache/") || lower.contains("/caches/") {
@@ -165,13 +191,50 @@ fn find_git_dir(path: &Path) -> Option<PathBuf> {
         if candidate.is_dir() {
             return Some(candidate);
         }
+        if candidate.is_file() {
+            // Worktrees and submodules use a `.git` file pointing at the real
+            // git directory via `gitdir: <path>`.
+            if let Some(dir) = resolve_gitdir_file(&candidate) {
+                return Some(dir);
+            }
+        }
         if !current.pop() {
             return None;
         }
     }
 }
 
+fn resolve_gitdir_file(git_file: &Path) -> Option<PathBuf> {
+    let content = fs::read_to_string(git_file).ok()?;
+    let rest = content.trim().strip_prefix("gitdir: ")?;
+    let dir = Path::new(rest.trim());
+    let dir = if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        git_file.parent()?.join(dir)
+    };
+    dir.is_dir().then_some(dir)
+}
+
+/// For worktrees, shared config and packed-refs live in the common git dir
+/// referenced by the worktree's `commondir` file.
+fn commdir(git_dir: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let dir = Path::new(raw.trim());
+    let dir = if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        git_dir.join(dir)
+    };
+    dir.is_dir().then_some(dir)
+}
+
 fn read_git_remote(git_dir: &Path) -> Option<String> {
+    read_remote_from_config(git_dir)
+        .or_else(|| commdir(git_dir).and_then(|c| read_remote_from_config(&c)))
+}
+
+fn read_remote_from_config(git_dir: &Path) -> Option<String> {
     let config = fs::read_to_string(git_dir.join("config")).ok()?;
     for line in config.lines() {
         if let Some((_, url)) = line.split_once("url = ") {
@@ -195,7 +258,8 @@ fn read_git_head_commit(git_dir: &Path) -> Option<String> {
                 return Some(sha);
             }
         }
-        return read_packed_ref(git_dir, refname);
+        return read_packed_ref(git_dir, refname)
+            .or_else(|| commdir(git_dir).and_then(|c| read_packed_ref(&c, refname)));
     }
     if is_sha(head) {
         return Some(head.to_string());
@@ -267,11 +331,18 @@ pub(crate) fn is_likely_text(path: &Path) -> bool {
 }
 
 // --- own .gitignore matching (minimal subset) ---------------------------------
+//
+// Supported: bare names (match any path component), `/`-anchored patterns,
+// `*` wildcards within a component, `#` comments, and `!` negations with
+// git's last-matching-rule-wins semantics. NOT supported: `**`, `?`,
+// character classes, escapes. Negating a path inside an already-ignored
+// directory does not re-include it, matching git's own behavior.
 
 struct IgnoreRule {
     base: String,
     pattern: String,
     anchored: bool,
+    negated: bool,
 }
 
 fn parse_gitignore(content: &str, base: &str) -> Vec<IgnoreRule> {
@@ -279,9 +350,11 @@ fn parse_gitignore(content: &str, base: &str) -> Vec<IgnoreRule> {
         .lines()
         .filter_map(|line| {
             let line = line.trim_end();
-            if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+            if line.is_empty() || line.starts_with('#') {
                 return None;
             }
+            let negated = line.starts_with('!');
+            let line = if negated { &line[1..] } else { line };
             let anchored = line.starts_with('/');
             let pattern = line.trim_matches('/').trim().to_string();
             if pattern.is_empty() {
@@ -291,13 +364,21 @@ fn parse_gitignore(content: &str, base: &str) -> Vec<IgnoreRule> {
                 base: base.to_string(),
                 pattern,
                 anchored,
+                negated,
             })
         })
         .collect()
 }
 
 fn matches_ignore(rel: &str, rules: &[IgnoreRule]) -> bool {
-    rules.iter().any(|rule| matches_rule(rule, rel))
+    // Git semantics: the last matching rule decides.
+    let mut ignored = false;
+    for rule in rules {
+        if matches_rule(rule, rel) {
+            ignored = !rule.negated;
+        }
+    }
+    ignored
 }
 
 fn matches_rule(rule: &IgnoreRule, rel: &str) -> bool {
@@ -355,9 +436,25 @@ fn collect_files(
     rel_prefix: &str,
     files: &mut Vec<String>,
     excluded: &mut Vec<String>,
+    skipped: &mut Vec<String>,
     rules: &mut Vec<IgnoreRule>,
+    partial: &mut bool,
 ) {
+    // Stop descending once the safety limit is reached so a pathological tree
+    // is not fully walked before the cap is noticed (#204).
+    if files.len() > WALK_SAFETY_LIMIT {
+        *partial = true;
+        return;
+    }
     let Ok(read_dir) = fs::read_dir(dir) else {
+        // An unreadable directory truncates the scan — report it, never silent.
+        let dir_rel = if rel_prefix.is_empty() {
+            "."
+        } else {
+            rel_prefix
+        };
+        skipped.push(format!("{dir_rel}/ (unreadable directory)"));
+        *partial = true;
         return;
     };
     let mut entries: Vec<fs::DirEntry> = read_dir.flatten().collect();
@@ -370,6 +467,8 @@ fn collect_files(
             format!("{rel_prefix}/{name}")
         };
         let Ok(file_type) = entry.file_type() else {
+            skipped.push(format!("{rel} (unreadable entry)"));
+            *partial = true;
             continue;
         };
         if file_type.is_dir() {
@@ -377,7 +476,15 @@ fn collect_files(
                 excluded.push(format!("{rel}/"));
                 continue;
             }
-            collect_files(&entry.path(), &rel, files, excluded, rules);
+            collect_files(
+                &entry.path(),
+                &rel,
+                files,
+                excluded,
+                skipped,
+                rules,
+                partial,
+            );
         } else if file_type.is_file() {
             if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(&name)) {
                 excluded.push(rel);
@@ -591,6 +698,66 @@ mod tests {
             Some("0123456789abcdef0123456789abcdef01234567")
         );
         assert_eq!(lineage.git_remote_url, None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn load_honours_gitignore_negation_last_match_wins() {
+        // Why this matters: the digest scope must match what git tracks. A
+        // valid `!keep.log` negation re-includes a file the earlier `*.log`
+        // rule would otherwise drop from identity.
+        let root = fixture_root("negation");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join(".gitignore"), "gen-*.md\n!gen-keep.md\n").unwrap();
+        fs::write(root.join("gen-drop.md"), "ignored").unwrap();
+        fs::write(root.join("gen-keep.md"), "kept").unwrap();
+
+        let load = load_skill_files(&root);
+        assert!(load.excluded.contains(&"gen-drop.md".to_string()));
+        assert!(!load.excluded.contains(&"gen-keep.md".to_string()));
+        assert!(load.text_files.contains_key("gen-keep.md"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn lineage_resolves_worktree_gitdir_file() {
+        // Why this matters: git worktrees and submodules carry a `.git` FILE
+        // (`gitdir: ...`), not a directory. A skill scanned inside a worktree
+        // must still get remote + commit lineage.
+        let root = fixture_root("worktree");
+        let common = root.join("real-git");
+        fs::create_dir_all(common.join("refs/heads")).unwrap();
+        fs::write(
+            common.join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+        )
+        .unwrap();
+        let worktree_git = common.join("worktrees/feat");
+        fs::create_dir_all(worktree_git.join("refs/heads")).unwrap();
+        fs::write(worktree_git.join("HEAD"), "ref: refs/heads/feat\n").unwrap();
+        fs::write(
+            worktree_git.join("refs/heads/feat"),
+            "abcdef0123456789abcdef0123456789abcdef01\n",
+        )
+        .unwrap();
+        fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+        fs::create_dir_all(root.join("repo")).unwrap();
+        fs::write(
+            root.join("repo/.git"),
+            "gitdir: ../real-git/worktrees/feat\n",
+        )
+        .unwrap();
+        fs::write(root.join("repo/SKILL.md"), "# skill\n").unwrap();
+
+        let lineage = lineage_for(&root.join("repo/SKILL.md"));
+        assert_eq!(
+            lineage.git_commit.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
+        assert_eq!(
+            lineage.git_remote_url.as_deref(),
+            Some("https://github.com/acme/skills.git")
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 

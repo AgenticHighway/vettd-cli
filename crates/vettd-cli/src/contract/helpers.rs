@@ -310,9 +310,19 @@ pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
 /// Stable content hash for a file-backed artifact: the discovery-time content
 /// hash when present, otherwise a full-file SHA-256 (#130).
 pub fn artifact_content_hash(a: &ArtifactReport) -> String {
-    if let Some(hash) = a.metadata.get("content_hash").and_then(|v| v.as_str()) {
-        if !hash.is_empty() {
-            return hash.to_string();
+    // Discovery stores a bounded 1 MB prefix hash for files over 8 MB
+    // (`content_hash_mode = "prefix_sha256"`). #130 requires a whole-file
+    // SHA-256, so only reuse the cached hash when it covers the full file.
+    let full_mode = a
+        .metadata
+        .get("content_hash_mode")
+        .and_then(|v| v.as_str())
+        .is_some_and(|mode| mode == "full_sha256");
+    if full_mode {
+        if let Some(hash) = a.metadata.get("content_hash").and_then(|v| v.as_str()) {
+            if !hash.is_empty() {
+                return hash.to_string();
+            }
         }
     }
     compute_file_hash(first_path(a))
@@ -333,6 +343,33 @@ mod tests {
     fn first_path_returns_first_element() {
         let a = make_artifact_with_path("/tmp/foo.md");
         assert_eq!(first_path(&a), "/tmp/foo.md");
+    }
+
+    #[test]
+    fn artifact_content_hash_rejects_prefix_mode_hashes() {
+        // #130: contentHash must be a whole-file SHA-256. Discovery stores a
+        // 1 MB prefix hash for files over 8 MB; reusing it would give two
+        // large files that differ only past the prefix the same contentHash.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.md");
+        std::fs::write(&file, "full file content").unwrap();
+
+        let mut a = make_artifact_with_path(&file.to_string_lossy());
+        a.metadata
+            .insert("content_hash".to_string(), serde_json::json!("deadbeef"));
+        a.metadata.insert(
+            "content_hash_mode".to_string(),
+            serde_json::json!("prefix_sha256"),
+        );
+        let hash = artifact_content_hash(&a);
+        assert_ne!(hash, "deadbeef", "prefix hashes must not be reused");
+        assert_eq!(hash, compute_file_hash(&file.to_string_lossy()));
+
+        a.metadata.insert(
+            "content_hash_mode".to_string(),
+            serde_json::json!("full_sha256"),
+        );
+        assert_eq!(artifact_content_hash(&a), "deadbeef");
     }
 
     #[test]

@@ -27,20 +27,38 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
 
     for artifact in artifacts {
         if artifact.artifact_type == "skill" {
-            let skill = artifact_to_skill(artifact, agents);
-            let key = skill
-                .content_hash
-                .clone()
-                .unwrap_or_else(|| skill.id.clone());
+            let (skill, dedupable) = artifact_to_skill(artifact, agents);
+            // A digest only proves identity when it covers the whole skill.
+            // Partial or lossy loads must never merge with another copy whose
+            // digest happens to match on the subset that was read (#204/#274).
+            let key = if dedupable {
+                skill
+                    .content_hash
+                    .clone()
+                    .unwrap_or_else(|| skill.id.clone())
+            } else {
+                format!(
+                    "lossy#{}#{}",
+                    skill.content_hash.clone().unwrap_or_default(),
+                    skill.id
+                )
+            };
             match digest_index.get(&key) {
                 Some(&index) => {
+                    let existing = &mut skills[index];
                     if let Some(locations) = skill.locations {
-                        let existing = &mut skills[index];
                         let locs = existing.locations.get_or_insert_with(Vec::new);
                         for location in locations {
                             if !locs.iter().any(|l| l.path == location.path) {
                                 locs.push(location);
                             }
+                        }
+                    }
+                    // Identical copies consumed by different agents must record
+                    // every consumer, not just the first copy's.
+                    for consumer in skill.consumers {
+                        if !existing.consumers.iter().any(|c| c.id == consumer.id) {
+                            existing.consumers.push(consumer);
                         }
                     }
                 }
@@ -80,7 +98,7 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
     skills
 }
 
-fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
+fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, bool) {
     let source_path = first_path(artifact);
     let name = qualified_name(source_path);
     let id = make_id(source_path, &artifact.artifact_hash);
@@ -140,7 +158,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
                 || lineage.declared_version.is_some()
         });
 
-    Skill {
+    let skill = Skill {
         id,
         name,
         skill_type: "Local Function".to_string(),
@@ -175,7 +193,12 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> Skill {
         locations,
         identity_exclusions,
         lineage,
-    }
+    };
+    // The digest is only a dedup key when it covers the whole skill directory.
+    let dedupable = identity_load
+        .as_ref()
+        .is_some_and(|load| !load.partial && load.skipped.is_empty());
+    (skill, dedupable)
 }
 
 /// Compute the overall grade from skill scanner findings.
@@ -1207,6 +1230,71 @@ mod tests {
         let paths: Vec<&str> = locations.iter().map(|l| l.path.as_str()).collect();
         assert!(paths.iter().any(|p| p.contains("project-a")));
         assert!(paths.iter().any(|p| p.contains("project-b")));
+    }
+
+    #[test]
+    fn merged_copies_union_their_consumers() {
+        // Identical copies consumed by different agents must record every
+        // consumer on the merged entry — dropping the second agent's consumer
+        // would understate the blast radius of the shared skill.
+        let dir = tempfile::tempdir().unwrap();
+        let a_dir = dir.path().join("project-a/skills/demo");
+        let b_dir = dir.path().join("project-b/skills/demo");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        let body = "---\nname: demo\ndescription: shared\n---\n# Demo\nRun `ls`.\n";
+        std::fs::write(a_dir.join("SKILL.md"), body).unwrap();
+        std::fs::write(b_dir.join("SKILL.md"), body).unwrap();
+
+        let mut agent_a = make_agent("agent-a", vec!["demo"]);
+        agent_a.source_file_path = a_dir.join("SKILL.md").to_string_lossy().to_string();
+        let mut agent_b = make_agent("agent-b", vec!["demo"]);
+        agent_b.source_file_path = b_dir.join("SKILL.md").to_string_lossy().to_string();
+
+        let artifacts = vec![
+            skill_artifact_at(&a_dir.join("SKILL.md")),
+            skill_artifact_at(&b_dir.join("SKILL.md")),
+        ];
+        let skills = build_skills(&artifacts, &[agent_a, agent_b]);
+
+        assert_eq!(skills.len(), 1);
+        let consumer_ids: Vec<&str> = skills[0].consumers.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            consumer_ids.contains(&"agent-agent-a") && consumer_ids.contains(&"agent-agent-b"),
+            "merged entry must list consumers from both copies: {consumer_ids:?}"
+        );
+    }
+
+    #[test]
+    fn lossy_loads_never_merge_even_with_matching_digest() {
+        // #204/#274 interaction: a digest computed over a partial or lossy
+        // load only covers a subset of the skill. Two copies whose readable
+        // subsets happen to match must NOT collapse into one entry, or a
+        // payload hidden in the unreadable part of one copy disappears from
+        // the report.
+        let dir = tempfile::tempdir().unwrap();
+        let a_dir = dir.path().join("project-a/skills/demo");
+        let b_dir = dir.path().join("project-b/skills/demo");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        let body = "---\nname: demo\ndescription: shared\n---\n# Demo\nRun `ls`.\n";
+        for d in [&a_dir, &b_dir] {
+            std::fs::write(d.join("SKILL.md"), body).unwrap();
+            // Undecodable file: both loads skip it, both digests match.
+            std::fs::write(d.join("payload.sh"), [0xff_u8, 0xfe, 0x00, 0x80]).unwrap();
+        }
+
+        let artifacts = vec![
+            skill_artifact_at(&a_dir.join("SKILL.md")),
+            skill_artifact_at(&b_dir.join("SKILL.md")),
+        ];
+        let skills = build_skills(&artifacts, &[]);
+
+        assert_eq!(
+            skills.len(),
+            2,
+            "lossy loads must not deduplicate on a subset digest"
+        );
     }
 
     #[test]
