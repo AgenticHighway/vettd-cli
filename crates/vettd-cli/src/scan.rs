@@ -149,7 +149,13 @@ pub fn run_scan_with_cache(
         scan_cache.as_ref(),
         cache_profile.as_ref(),
     );
-    let mut cached_candidates = snapshot_candidates(&prepared.live_candidates);
+    // File-state snapshots only feed the scan cache; skip the per-file stat and
+    // hashing entirely when the cache is off for this mode (e.g. `scan full`).
+    let mut cached_candidates = if scan_cache.is_some() {
+        snapshot_candidates(&prepared.live_candidates)
+    } else {
+        Vec::new()
+    };
     let mut candidates = prepared.live_candidates;
     candidates.extend(
         prepared
