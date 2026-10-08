@@ -30,7 +30,6 @@ mod rule_engine;
 mod rules;
 mod scan;
 mod scan_cache;
-mod scan_refresh;
 mod scoring;
 mod semver;
 mod source_analysis;
