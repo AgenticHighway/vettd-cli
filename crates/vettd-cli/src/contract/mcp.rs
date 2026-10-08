@@ -3,15 +3,18 @@
 use crate::models::ArtifactReport;
 use crate::network_evidence;
 
-use super::helpers::{first_path, read_artifact_head, short_hash};
-use super::types::{McpServer, McpTool};
+use super::helpers::{first_path, read_config_with_coverage, short_hash};
+use super::types::{McpServer, McpTool, ScannerCoverage};
 
-pub fn build_mcp_servers(artifacts: &[&ArtifactReport]) -> Vec<McpServer> {
+pub fn build_mcp_servers(
+    artifacts: &[&ArtifactReport],
+    coverage: &mut Vec<ScannerCoverage>,
+) -> Vec<McpServer> {
     let mut servers = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
 
     for artifact in artifacts {
-        let content = match read_artifact_head(artifact) {
+        let content = match read_config_with_coverage(artifact, coverage) {
             Some(c) => c,
             None => continue,
         };
@@ -23,6 +26,13 @@ pub fn build_mcp_servers(artifacts: &[&ArtifactReport]) -> Vec<McpServer> {
                     first_path(artifact),
                     e
                 );
+                coverage.push(ScannerCoverage {
+                    kind: "skipped".to_string(),
+                    rule_id: "scan/config-parse".to_string(),
+                    label: "Config file unparseable".to_string(),
+                    detail: format!("{} ({e})", first_path(artifact)),
+                    category: Some("configuration".to_string()),
+                });
                 continue;
             }
         };
@@ -629,5 +639,33 @@ mod tests {
     fn mcp_server_map_none_when_missing() {
         let val = json!({"other": "data"});
         assert!(mcp_server_map(&val).is_none());
+    }
+
+    /// A config that cannot be parsed must not vanish silently: it produces no
+    /// server, but it leaves a coverage note in the payload so a caller can see
+    /// that something was skipped (previously only an stderr warning).
+    #[test]
+    fn unparseable_config_is_reported_in_coverage() {
+        let dir = std::env::temp_dir().join(format!("vettd-cov-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, "{ this is not valid json").unwrap();
+
+        let mut artifact = ArtifactReport::new("mcp_config", 0.5);
+        artifact.metadata.insert(
+            "paths".to_string(),
+            json!([path.to_string_lossy().to_string()]),
+        );
+
+        let mut coverage = Vec::new();
+        let servers = build_mcp_servers(&[&artifact], &mut coverage);
+
+        assert!(servers.is_empty(), "a broken config yields no servers");
+        assert_eq!(coverage.len(), 1, "one coverage note for the broken config");
+        assert_eq!(coverage[0].rule_id, "scan/config-parse");
+        assert_eq!(coverage[0].kind, "skipped");
+        assert!(coverage[0].detail.contains("mcp.json"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

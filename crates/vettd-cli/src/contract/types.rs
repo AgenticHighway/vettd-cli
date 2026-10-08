@@ -17,6 +17,11 @@ pub struct ContractPayload {
     pub mcp_servers: Vec<McpServer>,
     pub agents: Vec<Agent>,
     pub agentic_apps: Vec<AgenticApp>,
+    /// Config files (MCP/agent) that could not be fully read or parsed.
+    /// Surfaced here so the signal is machine-readable, not stderr-only.
+    /// Additive: omitted from serialized output when empty (issue #204).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<ScannerCoverage>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

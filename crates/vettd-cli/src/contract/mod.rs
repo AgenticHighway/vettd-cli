@@ -76,11 +76,17 @@ fn build_contract_payload_impl(
         partition_artifacts(report);
 
     let prompts_out = prompts::build_prompts(&prompt_artifacts);
-    let agents_out = agents::build_agents(&agent_artifacts, &mcp_artifacts);
+    let mut coverage: Vec<ScannerCoverage> = Vec::new();
+    let agents_out = agents::build_agents(&agent_artifacts, &mcp_artifacts, &mut coverage);
     let skills_out = skills::build_skills(&report.artifacts, &agents_out);
     let agentic_apps = apps::build_agentic_apps(&container_artifacts, &agents_out);
 
-    let mcp_servers = build_mcp_with_links(&mcp_artifacts, &agents_out, scan_logs);
+    let mcp_servers = build_mcp_with_links(&mcp_artifacts, &agents_out, scan_logs, &mut coverage);
+
+    // MCP configs are read on both the server path and the agent-link path;
+    // collapse identical warnings and sort so the output is deterministic.
+    coverage.sort_by(|a, b| (&a.rule_id, &a.detail).cmp(&(&b.rule_id, &b.detail)));
+    coverage.dedup_by(|a, b| a.rule_id == b.rule_id && a.detail == b.detail);
 
     ContractPayload {
         scan_meta,
@@ -89,6 +95,7 @@ fn build_contract_payload_impl(
         mcp_servers,
         agents: agents_out,
         agentic_apps,
+        coverage,
     }
 }
 
@@ -125,6 +132,7 @@ fn build_mcp_with_links(
     mcp_artifacts: &[&crate::models::ArtifactReport],
     agents_out: &[Agent],
     scan_logs: bool,
+    coverage: &mut Vec<ScannerCoverage>,
 ) -> Vec<McpServer> {
     // Map: MCP server name → agent IDs that reference it
     let mut agent_ids_by_mcp: std::collections::HashMap<String, Vec<String>> =
@@ -140,7 +148,7 @@ fn build_mcp_with_links(
         }
     }
 
-    let mut servers = mcp::build_mcp_servers(mcp_artifacts);
+    let mut servers = mcp::build_mcp_servers(mcp_artifacts, coverage);
     for server in &mut servers {
         if let Some(ids) = agent_ids_by_mcp.get(&server.name) {
             let mut seen = std::collections::HashSet::new();

@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
-use super::types::DetectedSkillSource;
+use super::types::{DetectedSkillSource, ScannerCoverage};
 use crate::models::ArtifactReport;
 pub fn first_path(a: &ArtifactReport) -> &str {
     a.metadata
@@ -275,33 +275,71 @@ pub fn humanize_capability(cap: &str) -> String {
 /// reported, not dropped.
 const MAX_READ_BYTES: usize = 1_048_576;
 
-pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
+/// Outcome of trying to load an artifact's file content as text.
+enum ArtifactText {
+    Loaded(String),
+    /// No readable file to load (missing source path, or content reads
+    /// disallowed) — not a scan failure, so nothing is surfaced.
+    Unavailable,
+    /// The file exists but could not be consumed; carries the reason.
+    Failed(String),
+}
+
+fn load_artifact_text(a: &ArtifactReport) -> ArtifactText {
     let path_str = first_path(a);
     if path_str == "unknown" {
-        return None;
+        return ArtifactText::Unavailable;
     }
     let path = std::path::Path::new(path_str);
     if !crate::models::is_content_read_allowed(path) {
-        return None;
+        return ArtifactText::Unavailable;
     }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Warning: could not read {path_str}: {e}");
-            return None;
-        }
+        Err(e) => return ArtifactText::Failed(format!("could not read: {e}")),
     };
     if bytes.len() > MAX_READ_BYTES {
-        eprintln!(
-            "Warning: {path_str} is larger than {} bytes — skipped as too large to analyze",
-            MAX_READ_BYTES
-        );
-        return None;
+        return ArtifactText::Failed(format!(
+            "larger than {MAX_READ_BYTES} bytes — skipped as too large to analyze"
+        ));
     }
     match String::from_utf8(bytes) {
-        Ok(text) => Some(text),
-        Err(_) => {
-            eprintln!("Warning: {path_str} is not valid UTF-8 — skipped as unparseable");
+        Ok(text) => ArtifactText::Loaded(text),
+        Err(_) => ArtifactText::Failed("not valid UTF-8 — skipped as unparseable".to_string()),
+    }
+}
+
+pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
+    match load_artifact_text(a) {
+        ArtifactText::Loaded(text) => Some(text),
+        ArtifactText::Unavailable => None,
+        ArtifactText::Failed(reason) => {
+            eprintln!("Warning: {} {reason}", first_path(a));
+            None
+        }
+    }
+}
+
+/// Read an artifact's config content, recording a top-level coverage entry
+/// when the file exists but cannot be loaded (oversize, non-UTF-8, read
+/// error). Unlike [`read_artifact_head`], the failure is surfaced in the
+/// machine-readable contract output, not only on stderr (issue #204).
+pub fn read_config_with_coverage(
+    a: &ArtifactReport,
+    coverage: &mut Vec<ScannerCoverage>,
+) -> Option<String> {
+    match load_artifact_text(a) {
+        ArtifactText::Loaded(text) => Some(text),
+        ArtifactText::Unavailable => None,
+        ArtifactText::Failed(reason) => {
+            eprintln!("Warning: {} {reason}", first_path(a));
+            coverage.push(ScannerCoverage {
+                kind: "skipped".to_string(),
+                rule_id: "scan/config-load".to_string(),
+                label: "Config file skipped".to_string(),
+                detail: format!("{} ({reason})", first_path(a)),
+                category: Some("configuration".to_string()),
+            });
             None
         }
     }

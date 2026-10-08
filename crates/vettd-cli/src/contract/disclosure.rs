@@ -72,6 +72,8 @@ pub enum DisclosureCategory {
     AgentRecords,
     /// `agentic_apps[*]` — agentic application records.
     AgenticAppRecords,
+    /// `coverage[*]` — config files (MCP/agent) that could not be read or parsed.
+    ScanCoverage,
 }
 
 impl DisclosureCategory {
@@ -98,6 +100,7 @@ impl DisclosureCategory {
             DisclosureCategory::SkillRecords => "Scanned skill records",
             DisclosureCategory::AgentRecords => "AI agent configuration records",
             DisclosureCategory::AgenticAppRecords => "Agentic application records",
+            DisclosureCategory::ScanCoverage => "Config scan coverage notes",
         }
     }
 
@@ -142,6 +145,9 @@ impl DisclosureCategory {
             DisclosureCategory::AgenticAppRecords => {
                 "framework, agent count, risk, review status, description, agents, tools by agent, workflow steps, integrations, verification checks, and risk summary"
             }
+            DisclosureCategory::ScanCoverage => {
+                "configuration files (MCP/agent) that could not be fully read or parsed, with the reason"
+            }
         }
     }
 }
@@ -173,6 +179,9 @@ fn field_category(path: &str) -> Option<DisclosureCategory> {
     }
     if path.starts_with("agenticApps") {
         return under_path(path, APP_FIELDS).map(|_| DisclosureCategory::AgenticAppRecords);
+    }
+    if path.starts_with("coverage") {
+        return under_path(path, COVERAGE_FIELDS).map(|_| DisclosureCategory::ScanCoverage);
     }
     None
 }
@@ -403,6 +412,9 @@ const APP_FIELDS: &[&str] = &[
     "type",
 ];
 
+/// Fields on the top-level `coverage[*]` entries ([`ScannerCoverage`]).
+const COVERAGE_FIELDS: &[&str] = &["coverage", "kind", "ruleId", "label", "detail", "category"];
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Coverage walker — fails loud on undisclosed fields
 // ═══════════════════════════════════════════════════════════════════════════
@@ -495,6 +507,9 @@ pub fn disclosure_categories(payload: &ContractPayload) -> Vec<DisclosureCategor
     }
     if !payload.agentic_apps.is_empty() {
         cats.push(DisclosureCategory::AgenticAppRecords);
+    }
+    if !payload.coverage.is_empty() {
+        cats.push(DisclosureCategory::ScanCoverage);
     }
 
     // MCP server categories — derived from the actual server data.
@@ -833,6 +848,13 @@ pub(crate) fn max_payload() -> ContractPayload {
             risk_summary: "low".into(),
             content_hash: Some("jkl012".into()),
         }],
+        coverage: vec![ScannerCoverage {
+            kind: "skipped".into(),
+            rule_id: "scan/config-parse".into(),
+            label: "Config file unparseable".into(),
+            detail: "/tmp/mcp.json (expected value)".into(),
+            category: Some("configuration".into()),
+        }],
     }
 }
 
@@ -943,6 +965,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         validate_payload_coverage(&payload);
     }
@@ -999,6 +1022,7 @@ mod tests {
             }],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         let cats = disclosure_categories(&payload);
         assert!(
@@ -1017,6 +1041,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         let cats = disclosure_categories(&payload);
         assert!(
@@ -1075,6 +1100,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         print_submit_disclosure(&payload);
     }

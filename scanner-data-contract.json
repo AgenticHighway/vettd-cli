@@ -14,6 +14,22 @@
 	],
 	"additionalProperties": false,
 	"properties": {
+		"coverage": {
+			"type": "array",
+			"description": "Config files (MCP/agent) that could not be fully read or parsed; surfaced so the signal is machine-readable. Omitted when empty.",
+			"items": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["kind", "ruleId", "label", "detail"],
+				"properties": {
+					"kind": { "type": "string" },
+					"ruleId": { "type": "string" },
+					"label": { "type": "string" },
+					"detail": { "type": "string" },
+					"category": { "type": "string" }
+				}
+			}
+		},
 		"scanMeta": {
 			"description": "Metadata about the scan itself. Sent once per payload.",
 			"type": "object",
