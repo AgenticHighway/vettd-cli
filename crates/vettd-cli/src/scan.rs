@@ -478,6 +478,14 @@ fn discover_scan_candidates(
     prepared
 }
 
+/// A root path for progress display, with the home directory shortened to `~`.
+fn display_root(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
+        Some(rel) => format!("~/{}", rel.display()),
+        None => path.display().to_string(),
+    }
+}
+
 fn discover_refreshable_roots(
     roots: Vec<DiscoveryRoot>,
     tick: &dyn Fn(&str),
@@ -514,12 +522,17 @@ fn discover_refreshable_roots(
             }
         }
 
+        // Name the directory being walked, and keep the name beside the file
+        // count the walkers emit, so a long walk shows where it is.
+        let root_label = display_root(&plan.root.path);
+        tick(&format!("walking {root_label}"));
+        let root_tick = |detail: &str| tick(&format!("{root_label}: {detail}"));
         // Harness roots (origin "host") are walked completely; user-space
         // roots stay depth-bounded.
         let root_candidates = if plan.root.origin == "host" {
-            walk_harness_root(&plan.root.path, &plan.root.origin, Some(tick))
+            walk_harness_root(&plan.root.path, &plan.root.origin, Some(&root_tick))
         } else {
-            walk_bounded(&plan.root.path, &plan.root.origin, Some(tick))
+            walk_bounded(&plan.root.path, &plan.root.origin, Some(&root_tick))
         };
         let keep_paths = root_candidates
             .iter()
@@ -780,6 +793,16 @@ fn tag_analysis_origin(artifact: &mut ArtifactReport) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_root_shortens_the_home_directory() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(super::display_root(&home.join(".claude")), "~/.claude");
+        assert_eq!(
+            super::display_root(std::path::Path::new("/opt/x")),
+            "/opt/x"
+        );
+    }
+
     use super::*;
     use crate::contract::build_contract_payload;
     use crate::scan_cache::FileStateSnapshot;

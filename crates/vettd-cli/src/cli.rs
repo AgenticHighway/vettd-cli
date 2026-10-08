@@ -100,12 +100,19 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum ScanSubcommand {
-    /// Default scan — critical host roots plus bounded user-space/project roots
+    /// Default scan — agent config locations plus bounded user-space/project dirs
+    ///
+    /// Examines everything `quick` does, then walks common workspace folders
+    /// (Documents, Downloads, projects, code, ...) up to a depth limit.
     Default {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Quick scan — critical OS-aware agent config areas only
+    /// Quick scan — user-scoped agent configs (~/.claude, ~/.codex, ~/.config/opencode, ...)
+    ///
+    /// Examines each supported AI harness's per-user locations, walked
+    /// completely at any depth, and prints the locations it examined. Add
+    /// --all-users to include other local users' homes.
     Quick {
         /// Also examine other local users' agent config directories
         /// (those this account can read)
@@ -114,7 +121,11 @@ pub enum ScanSubcommand {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Full scan — entire filesystem from root
+    /// Full scan — every readable location, for project-scoped assets anywhere
+    ///
+    /// Walks the whole filesystem (all mounted volumes and users' homes),
+    /// skipping only virtual filesystems, network mounts and VCS metadata.
+    /// Can take several minutes; prints time per root.
     Full {
         #[command(flatten)]
         output: OutputArgs,
