@@ -197,8 +197,8 @@ mod tests {
         }
     }
 
-    /// Sets HOME to a temp directory for the duration of the test, then
-    /// restores the original HOME in Drop. Used by tests that read the
+    /// Sets VETTD_HOME to a temp directory for the duration of the test, then
+    /// restores the original value in Drop. Used by tests that read the
     /// per-user config via [`crate::cli::load_access_config`] so they don't
     /// accidentally pick up the developer's real `~/.vettd/.vettd.toml`.
     struct ScopedEnvHome {
@@ -209,7 +209,7 @@ mod tests {
     impl ScopedEnvHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let var = ScopedEnvVar::set("HOME", dir.path().to_str().unwrap());
+            let var = ScopedEnvVar::set("VETTD_HOME", dir.path().to_str().unwrap());
             Self { _var: var, dir }
         }
 
@@ -275,8 +275,7 @@ mod tests {
     fn search_beta_testing_enabled_from_config() {
         // When the config has search_beta_testing = true and no env var is
         // set, the function should return true (the config is consulted).
-        // The config file must live under the `HOME`-isolated dir so
-        // `load_access_config()` (which uses `dirs::home_dir()`) finds it.
+        // The config file must live under the isolated dir so `load_access_config()` finds it.
         let home = ScopedEnvHome::new();
         let vettd_dir = home.home_path().join(".vettd");
         std::fs::create_dir_all(&vettd_dir).unwrap();

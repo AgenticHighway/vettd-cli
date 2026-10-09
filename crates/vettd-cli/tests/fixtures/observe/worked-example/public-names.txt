@@ -1,0 +1,8 @@
+# Display names allowed through --scrub in the public worked example. Only public, harness-provided
+# assets: the four MCP connectors and the one built-in skill the session invoked. Everything else
+# is shown as <type>:<asset_id prefix>.
+mcp_server:github
+mcp_server:Notion
+mcp_server:Google_Drive
+mcp_server:Gmail
+skill:workflow-authoring

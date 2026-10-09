@@ -283,6 +283,12 @@ Current non-goals include:
 - reconstructing exact agent execution history
 - building a complete inventory of every tool on the host
 
+`vettd observe` is a carve-out from the fourth item, and a narrow one. It reads agent session
+transcripts by explicit per-user opt-in and emits hashes and counts only — no message text, no
+paths, no names, no timestamp finer than a UTC calendar day. It is not process inspection, and it
+does not reconstruct execution history: a record is a per-run summary, not a replay. See
+[`observe.md`](observe.md).
+
 ## Source of truth in code
 
 If this document and the implementation ever diverge, check these files:

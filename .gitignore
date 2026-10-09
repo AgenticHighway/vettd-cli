@@ -14,6 +14,8 @@ target/
 .DS_Store
 ._*
 test-runs/
+# Throwaway $HOMEs the integration tests seed; a panicking test leaves one behind.
+crates/vettd-cli/tests/tmp-homes/
 vettd-contract.json
 vettd-contract.json
 vettd-report.json

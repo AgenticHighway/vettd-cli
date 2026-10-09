@@ -164,6 +164,13 @@ These modules never touch the filesystem, network, or terminal. They are safe to
 | `capabilities.rs` | Map signals → high-level capability names                                                      |
 | `lite_mode.rs`    | Filter results for free-tier users                                                             |
 | `contract/`       | Transform ScanReport → AH contract format (types, prompts, skills, agents, mcp, apps, helpers) |
+| `observe/extract.rs` | Project `SessionFacts` → `RunFacts` (counts, outcomes, loaded-set segments)                 |
+| `observe/attribute/` | Attribute invocations to assets by content hash, descriptor hash, or name pseudonym         |
+| `observe/envelope.rs` | Assemble the wire envelope; the only module that decides what may egress                   |
+| `observe/gate.rs`    | Enforce `telemetry-field-gate.json` over a built payload                                     |
+| `observe/canonical.rs` | Canonical JSON bytes, SHA-256 and HMAC-SHA256 primitives                                  |
+| `observe/rank.rs`    | Wilson intervals and evidence-state display floors for the local report                     |
+| `observe/taskcat.rs` | Task category from a published, versioned tool-mix rule set                                 |
 
 ### Side-effect modules (I/O)
 
@@ -182,6 +189,11 @@ These modules interact with the outside world:
 | `setup.rs`            | Interactive prompts + config file writes                                                                               |
 | `wizard.rs`           | Interactive terminal UI                                                                                                |
 | `progress.rs`         | Writes to stderr                                                                                                       |
+| `observe/source.rs`   | Streams session transcripts from a byte cursor, read-only                                                              |
+| `observe/claude_code/` | Discovers and reads `~/.claude/projects/**`; projects each line to hashes and counts in memory                        |
+| `observe/store.rs`    | SQLite read cursors and submission ledger in `~/.vettd/observer/` (WAL; opened only for `--submit`)                    |
+| `observe/submit.rs`   | HTTP POST to `/api/observations/ingest`, sharing `submit.rs`'s retry policy                                            |
+| `observe/pipeline.rs` | Orchestrates the above; owns the ordering that keeps the disclosure first and the gate before any write                |
 
 For `quick`, default `scan`, and repeated explicit `folder` / `repo` scans,
 `scan.rs` now also opens the local scan cache, records the current scan profile
@@ -321,10 +333,12 @@ receive the complete report.
 | File                             | Purpose                     | Created by                         |
 | -------------------------------- | --------------------------- | ---------------------------------- |
 | `~/.config/vettd/config.json`   | API key + endpoint          | `vettd auth`                       |
-| `~/.vettd/.vettd.toml`          | Access mode (lite / licensed) | User creates manually            |
+| `~/.vettd/.vettd.toml`          | Access mode (lite / licensed) and the `[telemetry]` observe opt-in | User creates manually, or `vettd observe enable` |
 | `~/.vettd/scanner_uuid`         | Persistent scanner identity | Auto-generated on first submit     |
 | `~/.vettd/scanner_account_uuid` | Persistent account identity | Auto-generated on first submit     |
 | `~/.vettd/rules/*.toml`         | Custom detection rules      | User creates (see custom-rules.md) |
+| `~/.vettd/observer_secret`      | HMAC key behind observe pseudonyms; never transmitted | Auto-generated on first `vettd observe` |
+| `~/.vettd/observer/observer-v1.sqlite3` | Observe read cursors + submission ledger | Auto-created on first `vettd observe --submit` |
 
 ## Custom rule system
 
