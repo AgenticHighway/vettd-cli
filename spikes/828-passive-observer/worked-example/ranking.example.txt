@@ -1,0 +1,45 @@
+wrote worked-example/observations.example.json (34409 bytes, sha256 7e113ec3fdfab9cf...)
+gate: OK (85 allowed leaf paths, 0 violations)
+Observed asset evidence for task: close spike 828: verify the repo, decide the five questions, build the observer prototype
+Stratum: harness=claude_code model=all task_category=shell_ops (1 runs over 1 observed days)
+The task category was read from the stated task with a keyword table; other categories are listed as context, never merged in.
+Pooled in this view (recorded, not stratified): effort, permission_mode, entrypoint_class, day.
+Models pooled in this view: claude-fable-5-1 (1 runs), claude-opus-5 (1 runs)
+Ranked by the upper bound of the 95% interval on the observed non-success rate, ascending (n >= 50 calls):
+  1. mcp_server:github  tier=inferred state=observed  10 non-successes in 135 calls (95% interval 4.1%–13.1%) over 1 runs; latency mean 930 ms in 135 paired calls (observed)
+Not enough evidence yet (sorted by calls seen; never interleaved with the ranked list):
+  -  mcp_server:Notion  tier=inferred state=insufficient_evidence  1 non-successes in 15 calls; needs 5 more calls for an interval; latency mean 1447 ms in 15 paired calls (observed)
+  -  mcp_server:Google_Drive  tier=inferred state=insufficient_evidence  0 non-successes in 3 calls; needs 17 more calls for an interval; latency insufficient_evidence (3 paired calls)
+  -  mcp_server:Gmail  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (1 paired calls)
+  -  skill:workflow-authoring  tier=inferred state=insufficient_evidence  0 non-successes in 1 calls; needs 19 more calls for an interval; latency insufficient_evidence (0 paired calls)
+Loaded in these runs but never invoked (51 assets: 3 mcp_server, 48 skill): no invocation evidence; listed in the payload, not ranked.
+Loaded-only assets (rules files, prompts): context-cost estimate only, no non-success figure applies:
+  -  rules_file:336cc4fbf19b  tier=inferred state=observed  context cost est. 2 tokens (file_bytes_div4) in 1 runs
+  -  rules_file:6495ed93579c  tier=inferred state=observed  context cost est. 1497 tokens (file_bytes_div4) in 1 runs
+Cost (display-time derivation, not stored), from tokens in this stratum and the price table dated 2026-09-02:
+  claude-fable-5-1: USD 213.60 over 1 runs
+  claude-opus-5: USD 35.81 over 1 runs
+Every figure above is an observation from harness logs on this machine, not a causal claim.
+
+
+==============================================================================
+SYNTHETIC DEMO — invented counts, not observations; shown only so the populated
+ranking layout can be seen. Written to worked-example/observations.example.json.synthetic.json
+==============================================================================
+Observed asset evidence for task: close spike 828: verify the repo, decide the five questions, build the observer prototype
+Stratum: harness=claude_code model=all task_category=shell_ops (40 runs over 28 observed days)
+The task category was read from the stated task with a keyword table; other categories are listed as context, never merged in.
+Pooled in this view (recorded, not stratified): effort, permission_mode, entrypoint_class, day.
+Ranked by the upper bound of the 95% interval on the observed non-success rate, ascending (n >= 50 calls):
+  1. mcp_server:SYNTHETIC-server-alpha  tier=inferred state=observed  16 non-successes in 80 calls (95% interval 12.7%–30.0%) over 40 runs; latency mean 1047 ms in 80 paired calls (observed)
+  2. mcp_server:SYNTHETIC-server-beta  tier=inferred state=observed  48 non-successes in 80 calls (95% interval 49.0%–70.0%) over 40 runs; latency mean 1547 ms in 80 paired calls (observed)
+Not enough evidence yet (sorted by calls seen; never interleaved with the ranked list):
+  -  mcp_server:SYNTHETIC-server-delta  tier=inferred state=insufficient_evidence  3 non-successes in 16 calls; needs 4 more calls for an interval; latency mean 2341 ms in 16 paired calls (observed)
+  -  skill:SYNTHETIC-skill-gamma  tier=inferred state=insufficient_evidence  0 non-successes in 5 calls; needs 15 more calls for an interval; latency mean 420 ms in 5 paired calls (observed)
+Loaded-only assets (rules files, prompts): context-cost estimate only, no non-success figure applies:
+  -  rules_file:SYNTHETIC-rules-epsilon  tier=inferred state=observed  context cost est. 48000 tokens (file_bytes_div4) in 40 runs
+Context, other task categories in this harness (not merged): mixed 20 runs
+Cost (display-time derivation, not stored), from tokens in this stratum and the price table dated 2026-09-02:
+  claude-sonnet-5: USD 1.02 over 40 runs
+Every figure above is an observation from harness logs on this machine, not a causal claim.
+
