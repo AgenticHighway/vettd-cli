@@ -172,8 +172,8 @@ fi
 
 section "Single file scan"
 
-# Scan the repo's agents.md — a known agentic artifact
-AGENTS_FILE="$REPO_ROOT/agents.md"
+# Scan the repo's AGENTS.md — a known agentic artifact
+AGENTS_FILE="$REPO_ROOT/AGENTS.md"
 FILE_JSON="$OUT_DIR/${TIMESTAMP}-file.json"
 
 expect_ok       "file scan (agents.md, overview)"  $RUN scan file "$AGENTS_FILE"
@@ -470,15 +470,20 @@ fi
 # ── 12. Error cases ─────────────────────────────────────────────────
 
 section "Error cases"
-expect_fail  "file scan (nonexistent file)"  $RUN file /tmp/vettd-no-such-file-12345.txt
-expect_fail  "submit without API key"        $RUN quick --submit
+expect_fail  "file scan (nonexistent file)"  $RUN scan file /tmp/vettd-no-such-file-12345.txt
+expect_fail  "submit without API key"        $RUN scan quick --submit
 
 # ── 13. Full scan (smoke test — quick bail) ──────────────────────────
 
 section "Full scan (smoke test)"
-echo "  (scans from / — capped at 500k files, will take longer)"
-echo "  Running with --summary to keep output brief..."
-expect_ok "full scan (--summary)" $RUN full --summary
+# `scan full` walks every readable location with no cap: minutes on a typical
+# machine, hours on a large Windows drive. Opt in with VETTD_SMOKE_FULL=1.
+if [[ "${VETTD_SMOKE_FULL:-}" == "1" ]]; then
+    echo "  Running with --summary to keep output brief..."
+    expect_ok "full scan (--summary)" $RUN scan full --summary
+else
+    skip "full scan — set VETTD_SMOKE_FULL=1 to enable"
+fi
 
 # ── 14. Auth config ──────────────────────────────────────────────────
 
@@ -570,7 +575,7 @@ if [ "$LOCAL_AVAILABLE" = true ] && [ -n "$AH_TEST_API_KEY" ]; then
     LOCAL_SUBMIT_JSON="$OUT_DIR/${TIMESTAMP}-local-submit.json"
 
     # Scan + submit to local
-    if $RUN file "$AGENTS_FILE" \
+    if $RUN scan file "$AGENTS_FILE" \
         --contract \
         --out "$LOCAL_SUBMIT_JSON" \
         --submit "$AH_TEST_LOCAL_ENDPOINT" \
@@ -582,7 +587,7 @@ if [ "$LOCAL_AVAILABLE" = true ] && [ -n "$AH_TEST_API_KEY" ]; then
     expect_json_file "local submit contract saved" "$LOCAL_SUBMIT_JSON"
 
     # Quick scan + submit to local
-    if $RUN quick \
+    if $RUN scan quick \
         --submit "$AH_TEST_LOCAL_ENDPOINT" \
         --api-key "$AH_TEST_API_KEY" > /dev/null 2>&1; then
         pass "local submit (quick scan → localhost)"
@@ -591,7 +596,7 @@ if [ "$LOCAL_AVAILABLE" = true ] && [ -n "$AH_TEST_API_KEY" ]; then
     fi
 
     # Test auth rejection with bad key
-    if $RUN file "$AGENTS_FILE" \
+    if $RUN scan file "$AGENTS_FILE" \
         --submit "$AH_TEST_LOCAL_ENDPOINT" \
         --api-key "${AH_TEST_API_NO_KEY:-ah_invalid_key_000}" > /dev/null 2>&1; then
         fail "local submit (bad key should fail but didn't)"
@@ -613,7 +618,7 @@ if [ -n "$AH_TEST_API_KEY" ]; then
 
     # File scan + submit to production
     REMOTE_OUTPUT=""
-    REMOTE_OUTPUT=$($RUN file "$AGENTS_FILE" \
+    REMOTE_OUTPUT=$($RUN scan file "$AGENTS_FILE" \
         --contract \
         --out "$REMOTE_SUBMIT_JSON" \
         --submit "$AH_TEST_REMOTE_ENDPOINT" \
@@ -631,7 +636,7 @@ if [ -n "$AH_TEST_API_KEY" ]; then
 
     # Quick scan + submit to production
     REMOTE_OUTPUT=""
-    REMOTE_OUTPUT=$($RUN quick \
+    REMOTE_OUTPUT=$($RUN scan quick \
         --submit "$AH_TEST_REMOTE_ENDPOINT" \
         --allow-public-endpoint \
         --api-key "$AH_TEST_API_KEY" 2>&1) && REMOTE_QUICK_OK=true || REMOTE_QUICK_OK=false
@@ -663,7 +668,7 @@ if [ -n "$AH_TEST_API_KEY" ]; then
     expect_json_file "remote submit repo contract saved" "$REMOTE_REPO_JSON"
 
     # Test bad key against production
-    if $RUN file "$AGENTS_FILE" \
+    if $RUN scan file "$AGENTS_FILE" \
         --submit "$AH_TEST_REMOTE_ENDPOINT" \
         --allow-public-endpoint \
         --api-key "${AH_TEST_API_NO_KEY:-ah_invalid_key_000}" > /dev/null 2>&1; then

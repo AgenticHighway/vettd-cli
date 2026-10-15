@@ -1355,7 +1355,12 @@ pub fn run() {
     }
 
     // Offer interactive follow-up actions for local-only scans.
-    if !machine_mode && is_interactive() {
+    if offers_post_scan_prompt(
+        machine_mode,
+        is_interactive(),
+        io::stdout().is_terminal(),
+        io::stderr().is_terminal(),
+    ) {
         let cmd_name = command_name(&sub);
         prompt_post_scan_action(&report, scan_duration_ms, cmd_name);
     }
@@ -1461,6 +1466,20 @@ enum PostScanAction {
 
 fn is_interactive() -> bool {
     io::stdin().is_terminal()
+}
+
+/// Whether to show the post-scan "Next step" picker.
+///
+/// The picker blocks on a keypress and draws on stderr. If stdout is piped or
+/// stderr is redirected, nobody is watching the terminal: the scan would
+/// print its report and then wait forever on an invisible prompt.
+fn offers_post_scan_prompt(
+    machine_mode: bool,
+    stdin_tty: bool,
+    stdout_tty: bool,
+    stderr_tty: bool,
+) -> bool {
+    !machine_mode && stdin_tty && stdout_tty && stderr_tty
 }
 
 /// Resolve the scan subcommand, failing fast in non-interactive mode.
@@ -1769,6 +1788,17 @@ mod tests {
             Err(err) => assert!(err.contains("vettd scan quick"), "guidance was: {err}"),
             Ok(_) => panic!("expected an error with no subcommand and no TTY"),
         }
+    }
+
+    #[test]
+    fn post_scan_prompt_only_when_every_stream_is_a_terminal() {
+        // `vettd scan quick | Out-Host` (stdout piped) or `2> err.txt` (stderr
+        // redirected) with a console stdin used to block forever on the picker.
+        assert!(offers_post_scan_prompt(false, true, true, true));
+        assert!(!offers_post_scan_prompt(false, true, false, true));
+        assert!(!offers_post_scan_prompt(false, true, true, false));
+        assert!(!offers_post_scan_prompt(false, false, true, true));
+        assert!(!offers_post_scan_prompt(true, true, true, true));
     }
 
     #[test]
