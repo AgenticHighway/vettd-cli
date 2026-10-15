@@ -107,21 +107,21 @@ pub fn print_locked_summary(artifacts: &[ArtifactReport]) {
     if let Some(obj) = summary["by_origin"].as_object() {
         eprintln!("  Analysis handoff:");
         for (k, v) in obj {
-            eprintln!("    {}: {}", k, v);
+            eprintln!("    {k}: {v}");
         }
     }
     if let Some(obj) = summary["by_status"].as_object() {
         eprintln!("  Status distribution:");
         for status in &["critical", "high", "medium", "low", "info", "pending"] {
             if let Some(v) = obj.get(*status) {
-                eprintln!("    {}: {}", status, v);
+                eprintln!("    {status}: {v}");
             }
         }
     }
     if let Some(obj) = summary["by_type"].as_object() {
         eprintln!("  Locked artifact types:");
         for (k, v) in obj {
-            eprintln!("    {}: {}", k, v);
+            eprintln!("    {k}: {v}");
         }
     }
     eprintln!();

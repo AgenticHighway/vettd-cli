@@ -574,8 +574,7 @@ pub fn render_disclosure(payload: &ContractPayload) -> String {
     }
 
     lines.push(format!(
-        "  {} AI artifact record(s): prompts, skills, agents, agentic apps",
-        record_count
+        "  {record_count} AI artifact record(s): prompts, skills, agents, agentic apps"
     ));
 
     if !payload.mcp_servers.is_empty() {

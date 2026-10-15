@@ -216,7 +216,7 @@ mod tests {
         // In any environment with a home directory, vettd_dir() must succeed
         // rather than panicking. This is the key behavioral guarantee of fix #4.
         let result = vettd_dir();
-        assert!(result.is_ok(), "vettd_dir() returned Err: {:?}", result);
+        assert!(result.is_ok(), "vettd_dir() returned Err: {result:?}");
         let dir = result.unwrap();
         assert!(dir.ends_with(".vettd"));
     }

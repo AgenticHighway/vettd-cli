@@ -863,7 +863,7 @@ pub fn handle_search(
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
                 );
             } else if resp.skills.is_empty() {
-                println!("No results for \"{}\".", query);
+                println!("No results for \"{query}\".");
             } else {
                 print_cards(&resp.skills, true);
                 let shown = resp.skills.len();
@@ -924,7 +924,7 @@ fn handle_mcp_search(
 onboarding/outage state, not an empty result. Try again shortly."
                     );
                 } else {
-                    println!("No MCP servers for \"{}\".", query);
+                    println!("No MCP servers for \"{query}\".");
                 }
             } else {
                 print_mcp_cards(&resp.mcp_servers);
@@ -1639,12 +1639,7 @@ fn push_signal_row(out: &mut String, label: &str, a: String, b: Option<String>, 
             label_w = label_w,
             val_w = COMPARE_VALUE_W,
         )),
-        None => out.push_str(&format!(
-            "  {DIM}{:<label_w$}{RESET}  {}\n",
-            label,
-            a,
-            label_w = label_w,
-        )),
+        None => out.push_str(&format!("  {DIM}{label:<label_w$}{RESET}  {a}\n")),
     }
 }
 
@@ -2094,7 +2089,7 @@ fn render_card_row(
     let grade_display = format!("{gc}{grade_visible}{RESET}{grade_pad}");
 
     let slug = card.slug.as_deref().unwrap_or(&card.name);
-    let slug_padded = format!("{slug:<w$}", w = slug_w);
+    let slug_padded = format!("{slug:<slug_w$}");
     let asset_type = card
         .source_type
         .as_deref()
@@ -2131,15 +2126,11 @@ fn render_card_row(
             FRESH_COL_W,
         );
         format!(
-            "{grade_display}  {freshness_display}  {slug_padded}  {asset_type:<src$}  {signals_display:<sig$}  {DIM}{desc_display}{RESET}\n",
-            src = SOURCE_COL_W,
-            sig = SIGNALS_COL_W,
+            "{grade_display}  {freshness_display}  {slug_padded}  {asset_type:<SOURCE_COL_W$}  {signals_display:<SIGNALS_COL_W$}  {DIM}{desc_display}{RESET}\n"
         )
     } else {
         format!(
-            "{grade_display}  {slug_padded}  {asset_type:<src$}  {signals_display:<sig$}  {DIM}{desc_display}{RESET}\n",
-            src = SOURCE_COL_W,
-            sig = SIGNALS_COL_W,
+            "{grade_display}  {slug_padded}  {asset_type:<SOURCE_COL_W$}  {signals_display:<SIGNALS_COL_W$}  {DIM}{desc_display}{RESET}\n"
         )
     }
 }
@@ -2613,8 +2604,7 @@ mod tests {
         let val: serde_json::Value = serde_json::to_value(&card).unwrap();
         assert!(
             val.get("freshness").is_none(),
-            "absent freshness must be omitted, not null: {}",
-            val
+            "absent freshness must be omitted, not null: {val}"
         );
     }
 
@@ -2667,8 +2657,7 @@ mod tests {
         // omitted, preserving the pre-slice JSON shape.
         assert!(
             val.get("freshness").is_none(),
-            "absent freshness must be omitted from detail JSON: {}",
-            val
+            "absent freshness must be omitted from detail JSON: {val}"
         );
     }
 
@@ -2775,8 +2764,7 @@ mod tests {
         let val: serde_json::Value = serde_json::to_value(&card).unwrap();
         assert!(
             val.get("signalCategories").is_none(),
-            "absent signalCategories must be omitted: {}",
-            val
+            "absent signalCategories must be omitted: {val}"
         );
     }
 
@@ -3139,8 +3127,7 @@ mod tests {
         assert_eq!(visible_width(&padded_ok), FRESH_COL_W);
         assert!(
             padded_ok.ends_with("     "),
-            "expected 5 trailing spaces, got: {:?}",
-            padded_ok
+            "expected 5 trailing spaces, got: {padded_ok:?}"
         );
     }
 
@@ -3396,8 +3383,7 @@ mod tests {
         let val = serde_json::to_value(&without).unwrap();
         assert!(
             val.get("signalCount").is_none(),
-            "absent signalCount must be omitted from JSON: {}",
-            val
+            "absent signalCount must be omitted from JSON: {val}"
         );
 
         // The detail payload carries the same additive field.

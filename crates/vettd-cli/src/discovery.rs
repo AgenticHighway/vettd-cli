@@ -1001,7 +1001,7 @@ mod tests {
     fn host_roots_returns_existing_paths() {
         let roots = host_roots();
         for root in &roots {
-            assert!(root.exists(), "{:?} should exist", root);
+            assert!(root.exists(), "{root:?} should exist");
         }
     }
 

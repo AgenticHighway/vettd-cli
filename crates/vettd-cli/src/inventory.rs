@@ -151,7 +151,7 @@ pub fn handle_search(query: &str, page: u32, sort: &str, reverse: bool, json: bo
                     serde_json::to_string_pretty(&resp).unwrap_or_default()
                 );
             } else if resp.skills.is_empty() {
-                println!("No results for \"{}\" in your inventory.", query);
+                println!("No results for \"{query}\" in your inventory.");
             } else {
                 directory::print_cards(&resp.skills, false);
                 let shown = resp.skills.len();

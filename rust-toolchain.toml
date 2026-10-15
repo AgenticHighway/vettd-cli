@@ -4,6 +4,9 @@
 #
 # IMPORTANT: When rust-toolchain.toml exists, it overrides dtolnay/rust-toolchain
 # action inputs (targets, components). Components needed in CI must be listed here.
+#
+# 1.88.0 is the minimum toolchain that builds p256 0.14.0's dependency tree
+# (sha2 0.11.1 requires rustc 1.88; ctutils 0.4.3 requires 1.87).
 [toolchain]
-channel = "1.85.1"
+channel = "1.88.0"
 components = ["clippy", "rustfmt"]

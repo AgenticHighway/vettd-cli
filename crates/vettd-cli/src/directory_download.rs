@@ -670,7 +670,7 @@ mod tests {
         buf.extend_from_slice(&header);
         buf.extend_from_slice(data);
         let pad = (512 - (data.len() % 512)) % 512;
-        buf.extend(std::iter::repeat(0u8).take(pad));
+        buf.extend(std::iter::repeat_n(0u8, pad));
     }
 
     const ROOT: &str = "azure-skills-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";

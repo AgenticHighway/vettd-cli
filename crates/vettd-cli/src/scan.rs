@@ -236,8 +236,7 @@ pub fn run_scan_with_options(
                     }
                     Err(e) => {
                         eprintln!(
-                            "Warning: detector cache disabled for {} during this run: {e}",
-                            detector_name
+                            "Warning: detector cache disabled for {detector_name} during this run: {e}"
                         );
                     }
                 }
