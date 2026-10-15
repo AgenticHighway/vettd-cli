@@ -642,9 +642,13 @@ fn build_file_state_snapshot(candidate: &Candidate) -> Option<FileStateSnapshot>
     // digest `models::gather_file_primitives` embeds in report metadata (which
     // hashes only the first 1 MiB of files > 8 MiB for the display). A
     // same-size/same-mtime edit beyond that prefix must still produce a
-    // different key (issue #199 AC #1, unqualified by size). The displayed
-    // metadata hash may stay sampled; the cache key uses the full hash.
-    let content_hash = full_file_sha256(&candidate.path);
+    // different key (issue #199 AC #1). That guarantee is about artifact
+    // files, so it is scoped to them: see `needs_content_hash`.
+    let content_hash = if needs_content_hash(&candidate.path, size_bytes) {
+        full_file_sha256(&candidate.path)
+    } else {
+        None
+    };
     Some(file_state_from_row(
         &canonical_path,
         &candidate.origin,
@@ -655,6 +659,20 @@ fn build_file_state_snapshot(candidate: &Candidate) -> Option<FileStateSnapshot>
     ))
 }
 
+/// Files at or below this size are always content-hashed for the cache key,
+/// whatever their name, so a small artifact file a detector matches by some
+/// other rule keeps its tamper identity. Anything larger that is not a named
+/// artifact (model weights, archives, build output) is identified by its stat
+/// tuple alone, so scan cost does not scale with unrelated file size.
+const CONTENT_HASH_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Whether the cache key for this candidate includes a full-file digest.
+/// Named artifact files (`CONTENT_READ_ALLOWLIST` / globs) are always hashed in
+/// full, regardless of size; other files only when small.
+fn needs_content_hash(path: &Path, size_bytes: u64) -> bool {
+    size_bytes <= CONTENT_HASH_MAX_BYTES || crate::models::is_content_read_allowed(path)
+}
+
 /// Full-file SHA-256 of a candidate, used ONLY for the cache's content-tamper
 /// identity.
 ///
@@ -662,8 +680,8 @@ fn build_file_state_snapshot(candidate: &Candidate) -> Option<FileStateSnapshot>
 /// 1 MiB of files larger than 8 MiB), this hashes the entire file stream so
 /// the cache key reflects any byte change regardless of where it occurs. The
 /// tamper-target artifact files (.cursorrules, AGENTS.md, mcp.json, SKILL.md)
-/// are small, so full-hashing is cheap; for large non-artifact files it is
-/// still the correct call for issue #199 AC #1.
+/// are small, so full-hashing is cheap. Callers gate on `needs_content_hash`
+/// so large unrelated files are never streamed.
 fn full_file_sha256(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut file = fs::File::open(path).ok()?;
@@ -884,6 +902,58 @@ mod tests {
             first_key, second_key,
             "state key must change (cache miss) for a beyond-prefix same-size same-mtime edit"
         );
+    }
+
+    #[test]
+    fn large_non_artifact_file_is_identified_by_stat_without_a_content_read() {
+        // Scan cost must not scale with the size of unrelated files (model
+        // weights, archives, build output). Above the small-file threshold a
+        // non-artifact file gets no content digest, so it is never streamed.
+        let dir = tempdir().unwrap();
+        let blob = dir.path().join("weights.bin");
+        let size = CONTENT_HASH_MAX_BYTES as usize + 1;
+        fs::write(&blob, vec![0u8; size]).unwrap();
+
+        let snap = snapshot_candidates(&[candidate(&blob, "root")]);
+        let state = snap[0].file_state.as_ref().unwrap();
+        assert!(state.content_hash.is_none());
+        assert!(!state.state_key.is_empty());
+        assert_eq!(state.size_bytes, size as u64);
+    }
+
+    #[test]
+    fn small_non_allowlisted_file_keeps_its_content_digest() {
+        // A small file a detector matches by some rule other than the
+        // allowlist is still an artifact candidate: a same-size, same-mtime
+        // edit must keep producing a different key (issue #199).
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("custom-rules.mdc");
+        fs::write(&file, b"allow: read").unwrap();
+        let first = snapshot_candidates(&[candidate(&file, "host")]);
+        let first_state = first[0].file_state.as_ref().unwrap();
+        assert!(first_state.content_hash.is_some());
+        let first_key = first_state.state_key.clone();
+
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, b"allow: exec").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(mtime))
+            .unwrap();
+
+        let second = snapshot_candidates(&[candidate(&file, "host")]);
+        assert_ne!(first_key, second[0].file_state.as_ref().unwrap().state_key);
+    }
+
+    #[test]
+    fn large_named_artifact_file_is_always_hashed_in_full() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("SKILL.md");
+        fs::write(&file, vec![b'a'; CONTENT_HASH_MAX_BYTES as usize + 1]).unwrap();
+        let snap = snapshot_candidates(&[candidate(&file, "host")]);
+        assert!(snap[0].file_state.as_ref().unwrap().content_hash.is_some());
     }
 
     #[test]
