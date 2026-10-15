@@ -254,8 +254,14 @@ jobs:
             - name: Cache Cargo
               uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
+            # Pinned: an unversioned `cargo install` resolved to
+            # cargo-geiger 0.14.0, which requires rustc 1.97 — newer than
+            # the rustc pinned in rust-toolchain.toml. 0.13.0 is the last
+            # release supporting that toolchain. Pinning here matches the
+            # repo policy that audit tool versions are pinned rather than
+            # floating to whatever upstream publishes.
             - name: Install cargo-geiger
-              run: cargo install cargo-geiger --locked
+              run: cargo install cargo-geiger --locked --version 0.13.0
 
             # Non-blocking (|| true) — geiger can exit non-zero if it
             # encounters crates it can't analyze. The output itself is
