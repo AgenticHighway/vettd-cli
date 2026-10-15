@@ -358,7 +358,7 @@ impl ScanCache {
         keep_paths: &HashSet<String>,
     ) -> Result<(), String> {
         let root = root_path.to_string_lossy().to_string();
-        let root_prefix = format!("{root}/%");
+        let root_prefix = format!("{root}{}%", std::path::MAIN_SEPARATOR);
         let existing_paths = self.profile_root_paths(profile_key, &root, &root_prefix)?;
         let stale_paths: Vec<String> = existing_paths
             .into_iter()
@@ -1076,7 +1076,7 @@ mod tests {
             .profile_root_paths(
                 &profile.profile_key,
                 &root.to_string_lossy(),
-                &format!("{}/%", root.to_string_lossy()),
+                &format!("{}{}%", root.to_string_lossy(), std::path::MAIN_SEPARATOR),
             )
             .unwrap();
         assert_eq!(remaining, vec![first.to_string_lossy().to_string()]);

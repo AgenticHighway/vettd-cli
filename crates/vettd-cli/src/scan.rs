@@ -184,7 +184,7 @@ pub fn run_scan_with_options(
     );
 
     // 2. Run built-in (native) detectors
-    tick(&format!("Scanning {} files…", candidates.len()));
+    tick(&format!("checking {} files…", candidates.len()));
     if let (Some(cache), Some(profile)) = (scan_cache.as_mut(), cache_profile.as_ref()) {
         if let Err(e) = cache.upsert_profile(profile) {
             eprintln!("Warning: failed to initialize scan-cache profile: {e}");
@@ -438,7 +438,7 @@ fn discover_scan_candidates(tick: &dyn Fn(&str)) -> PreparedDiscovery {
 /// A root path for progress display, with the home directory shortened to `~`.
 fn display_root(path: &Path) -> String {
     match dirs::home_dir().and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
-        Some(rel) => format!("~/{}", rel.display()),
+        Some(rel) => format!("~{}{}", std::path::MAIN_SEPARATOR, rel.display()),
         None => path.display().to_string(),
     }
 }
@@ -720,7 +720,10 @@ mod tests {
     #[test]
     fn display_root_shortens_the_home_directory() {
         let home = dirs::home_dir().unwrap();
-        assert_eq!(super::display_root(&home.join(".claude")), "~/.claude");
+        assert_eq!(
+            super::display_root(&home.join(".claude")),
+            format!("~{}.claude", std::path::MAIN_SEPARATOR)
+        );
         assert_eq!(
             super::display_root(std::path::Path::new("/opt/x")),
             "/opt/x"
@@ -1229,7 +1232,7 @@ mod tests {
                     .and_then(|v| v.as_array())
                     .and_then(|paths| paths.first())
                     .and_then(|path| path.as_str())
-                    .map(|path| path.ends_with(suffix))
+                    .map(|path| Path::new(path).ends_with(suffix))
                     .unwrap_or(false)
             })
             .expect("expected fixture artifact")
@@ -1400,7 +1403,7 @@ mod tests {
             .and_then(|value| value.as_array())
             .and_then(|paths| paths.first())
             .and_then(|path| path.as_str())
-            .is_some_and(|path| path.ends_with("skills/release-notes/SKILL.md")));
+            .is_some_and(|path| Path::new(path).ends_with("skills/release-notes/SKILL.md")));
 
         let payload = build_contract_payload(&report, 0);
         assert_eq!(payload.skills.len(), 1);
@@ -1433,6 +1436,6 @@ mod tests {
             .and_then(|value| value.as_array())
             .and_then(|paths| paths.first())
             .and_then(|path| path.as_str())
-            .is_some_and(|path| path.ends_with(".vscode/mcp.json")));
+            .is_some_and(|path| Path::new(path).ends_with(".vscode/mcp.json")));
     }
 }

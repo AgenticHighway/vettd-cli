@@ -131,6 +131,27 @@ fn print_examined_roots(report: &ScanReport) {
 
 // ── print_overview ──────────────────────────────────────────────────────
 
+/// Skill copies whose content is identical to another reported copy.
+///
+/// The text report lists every copy; `--json` merges identical copies into one
+/// skill with all its locations. Naming the difference keeps the two totals
+/// reconcilable.
+fn identical_skill_copies(report: &ScanReport) -> usize {
+    crate::contract::build_skills(&report.artifacts, &[])
+        .iter()
+        .filter_map(|skill| skill.locations.as_ref())
+        .map(|locations| locations.len().saturating_sub(1))
+        .sum()
+}
+
+fn artifact_count_label(artifacts: usize, identical_copies: usize) -> String {
+    if identical_copies == 0 {
+        format!("{artifacts} artifact(s)")
+    } else {
+        format!("{artifacts} artifact(s), {identical_copies} identical copies merged in --json")
+    }
+}
+
 pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     let w = 58;
     let line = format!("{DIM}{}{RESET}", "─".repeat(w));
@@ -183,9 +204,9 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
         status_parts.push(format!("\x1b[32m{clear_count} clear\x1b[0m"));
     }
     println!(
-        "  {BOLD}RISK{RESET}  {}  {DIM}({} artifact(s)){RESET}",
+        "  {BOLD}RISK{RESET}  {}  {DIM}({}){RESET}",
         status_parts.join(&format!(" {DIM}·{RESET} ")),
-        report.artifacts.len()
+        artifact_count_label(report.artifacts.len(), identical_skill_copies(report))
     );
     println!("  {DIM}{}{RESET}", "─".repeat(w - 2));
 
@@ -730,6 +751,37 @@ mod tests {
         SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_INFO, SEVERITY_LOW, SEVERITY_MEDIUM,
     };
     use serde_json::json;
+
+    #[test]
+    fn text_total_names_the_copies_json_merges() {
+        // Text lists every copy while --json merges identical ones; without
+        // the copy count the two totals look like a bug (1170 vs 1012).
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = ScanReport::new("test");
+        for copy in ["a/demo", "b/demo", "c/other"] {
+            let skill_dir = dir.path().join(copy);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            let body = if copy == "c/other" {
+                "# other"
+            } else {
+                "# demo"
+            };
+            std::fs::write(skill_dir.join("SKILL.md"), body).unwrap();
+            let mut artifact = ArtifactReport::new("skill", 0.9);
+            artifact.metadata.insert(
+                "paths".to_string(),
+                json!([skill_dir.join("SKILL.md").to_string_lossy()]),
+            );
+            report.artifacts.push(artifact);
+        }
+
+        assert_eq!(identical_skill_copies(&report), 1);
+        assert_eq!(
+            artifact_count_label(3, 1),
+            "3 artifact(s), 1 identical copies merged in --json"
+        );
+        assert_eq!(artifact_count_label(3, 0), "3 artifact(s)");
+    }
 
     fn make_artifact(atype: &str, risk: i32, status: &str) -> ArtifactReport {
         let mut a = ArtifactReport::new(atype, 0.8);

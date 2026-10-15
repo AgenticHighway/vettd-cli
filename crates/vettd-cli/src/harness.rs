@@ -80,12 +80,13 @@ pub fn resolve_roots(
             .map(PathBuf::from);
         let candidates = overridden
             .into_iter()
-            .chain(harness.home_dirs.iter().map(|rel| home.join(rel)))
-            .chain(
-                config_dir
-                    .into_iter()
-                    .flat_map(|base| harness.config_dirs.iter().map(move |rel| base.join(rel))),
-            );
+            .chain(harness.home_dirs.iter().map(|rel| join_rel(home, rel)))
+            .chain(config_dir.into_iter().flat_map(|base| {
+                harness
+                    .config_dirs
+                    .iter()
+                    .map(move |rel| join_rel(base, rel))
+            }));
         for path in candidates {
             if path.exists() && seen.insert(path.clone()) {
                 roots.push(path);
@@ -93,6 +94,13 @@ pub fn resolve_roots(
         }
     }
     roots
+}
+
+/// Join a registry path written with `/` one component at a time, so it uses
+/// the platform separator (`Code\User`, not `Code/User`, on Windows).
+fn join_rel(base: &Path, rel: &str) -> PathBuf {
+    rel.split('/')
+        .fold(base.to_path_buf(), |path, part| path.join(part))
 }
 
 /// The current user's harness roots, honoring the real process environment.
@@ -136,9 +144,12 @@ pub fn other_user_homes(current_home: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     {
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let skip = name
-                .to_str()
-                .is_none_or(|n| n.starts_with('.') || NON_USER_HOME_DIRS.contains(&n));
+            let skip = name.to_str().is_none_or(|n| {
+                n.starts_with('.')
+                    || NON_USER_HOME_DIRS
+                        .iter()
+                        .any(|skip| skip.eq_ignore_ascii_case(n))
+            });
             if !skip && entry.path() != current_home && entry.path().is_dir() {
                 candidates.push(entry.path());
             }
@@ -243,6 +254,20 @@ mod tests {
     }
 
     #[test]
+    fn registry_paths_use_the_platform_separator() {
+        // Shown in the "Examined" list, so `Code/User` must not render as
+        // `...\Roaming\Code/User` on Windows.
+        let joined = join_rel(Path::new("base"), "Code/User");
+        assert_eq!(
+            joined.to_string_lossy(),
+            Path::new("base")
+                .join("Code")
+                .join("User")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
     fn a_path_reachable_two_ways_is_reported_once() {
         let home = TempDir::new().unwrap();
         fs::create_dir(home.path().join(".codex")).unwrap();
@@ -256,7 +281,7 @@ mod tests {
     #[test]
     fn other_user_homes_lists_siblings_and_skips_current_and_system_dirs() {
         let users = TempDir::new().unwrap();
-        for name in ["me", "agent", "Shared", ".hidden"] {
+        for name in ["me", "agent", "Shared", ".hidden", "defaultuser0"] {
             fs::create_dir(users.path().join(name)).unwrap();
         }
         fs::write(users.path().join("notes.txt"), "x").unwrap();
