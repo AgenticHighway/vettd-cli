@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
-use super::types::DetectedSkillSource;
+use super::types::{DetectedSkillSource, ScannerCoverage};
 use crate::models::ArtifactReport;
 pub fn first_path(a: &ArtifactReport) -> &str {
     a.metadata
@@ -269,20 +269,101 @@ pub fn humanize_capability(cap: &str) -> String {
     }
 }
 
-const MAX_READ_BYTES: usize = 8192;
+/// Config files are parsed whole (#204): an 8KB head cut mid-UTF-8 made large
+/// MCP configs fail to parse and vanish from the payload silently. 1 MB covers
+/// realistic configs with many servers plus env blocks; anything past it is
+/// reported, not dropped.
+const MAX_READ_BYTES: usize = 1_048_576;
 
-pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
+/// Outcome of trying to load an artifact's file content as text.
+enum ArtifactText {
+    Loaded(String),
+    /// No readable file to load (missing source path, or content reads
+    /// disallowed) — not a scan failure, so nothing is surfaced.
+    Unavailable,
+    /// The file exists but could not be consumed; carries the reason.
+    Failed(String),
+}
+
+fn load_artifact_text(a: &ArtifactReport) -> ArtifactText {
     let path_str = first_path(a);
     if path_str == "unknown" {
-        return None;
+        return ArtifactText::Unavailable;
     }
     let path = std::path::Path::new(path_str);
     if !crate::models::is_content_read_allowed(path) {
-        return None;
+        return ArtifactText::Unavailable;
     }
-    let bytes = std::fs::read(path).ok()?;
-    let len = bytes.len().min(MAX_READ_BYTES);
-    String::from_utf8(bytes[..len].to_vec()).ok()
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => return ArtifactText::Failed(format!("could not read: {e}")),
+    };
+    if bytes.len() > MAX_READ_BYTES {
+        return ArtifactText::Failed(format!(
+            "larger than {MAX_READ_BYTES} bytes — skipped as too large to analyze"
+        ));
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => ArtifactText::Loaded(text),
+        Err(_) => ArtifactText::Failed("not valid UTF-8 — skipped as unparseable".to_string()),
+    }
+}
+
+pub fn read_artifact_head(a: &ArtifactReport) -> Option<String> {
+    match load_artifact_text(a) {
+        ArtifactText::Loaded(text) => Some(text),
+        ArtifactText::Unavailable => None,
+        ArtifactText::Failed(reason) => {
+            eprintln!("Warning: {} {reason}", first_path(a));
+            None
+        }
+    }
+}
+
+/// Read an artifact's config content, recording a top-level coverage entry
+/// when the file exists but cannot be loaded (oversize, non-UTF-8, read
+/// error). Unlike [`read_artifact_head`], the failure is surfaced in the
+/// machine-readable contract output, not only on stderr (issue #204).
+pub fn read_config_with_coverage(
+    a: &ArtifactReport,
+    coverage: &mut Vec<ScannerCoverage>,
+) -> Option<String> {
+    match load_artifact_text(a) {
+        ArtifactText::Loaded(text) => Some(text),
+        ArtifactText::Unavailable => None,
+        ArtifactText::Failed(reason) => {
+            eprintln!("Warning: {} {reason}", first_path(a));
+            coverage.push(ScannerCoverage {
+                kind: "skipped".to_string(),
+                rule_id: "scan/config-load".to_string(),
+                label: "Config file skipped".to_string(),
+                detail: format!("{} ({reason})", first_path(a)),
+                category: Some("configuration".to_string()),
+            });
+            None
+        }
+    }
+}
+
+/// Stable content hash for a file-backed artifact: the discovery-time content
+/// hash when present, otherwise a full-file SHA-256 (#130).
+pub fn artifact_content_hash(a: &ArtifactReport) -> String {
+    // Discovery stores a bounded 1 MB prefix hash for files over 8 MB
+    // (`content_hash_mode = "prefix_sha256"`). #130 requires a whole-file
+    // SHA-256, so only reuse the cached hash when it covers the full file.
+    let full_mode = a
+        .metadata
+        .get("content_hash_mode")
+        .and_then(|v| v.as_str())
+        .is_some_and(|mode| mode == "full_sha256");
+    if full_mode {
+        if let Some(hash) = a.metadata.get("content_hash").and_then(|v| v.as_str()) {
+            if !hash.is_empty() {
+                return hash.to_string();
+            }
+        }
+    }
+    compute_file_hash(first_path(a))
 }
 
 #[cfg(test)]
@@ -300,6 +381,33 @@ mod tests {
     fn first_path_returns_first_element() {
         let a = make_artifact_with_path("/tmp/foo.md");
         assert_eq!(first_path(&a), "/tmp/foo.md");
+    }
+
+    #[test]
+    fn artifact_content_hash_rejects_prefix_mode_hashes() {
+        // #130: contentHash must be a whole-file SHA-256. Discovery stores a
+        // 1 MB prefix hash for files over 8 MB; reusing it would give two
+        // large files that differ only past the prefix the same contentHash.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.md");
+        std::fs::write(&file, "full file content").unwrap();
+
+        let mut a = make_artifact_with_path(&file.to_string_lossy());
+        a.metadata
+            .insert("content_hash".to_string(), serde_json::json!("deadbeef"));
+        a.metadata.insert(
+            "content_hash_mode".to_string(),
+            serde_json::json!("prefix_sha256"),
+        );
+        let hash = artifact_content_hash(&a);
+        assert_ne!(hash, "deadbeef", "prefix hashes must not be reused");
+        assert_eq!(hash, compute_file_hash(&file.to_string_lossy()));
+
+        a.metadata.insert(
+            "content_hash_mode".to_string(),
+            serde_json::json!("full_sha256"),
+        );
+        assert_eq!(artifact_content_hash(&a), "deadbeef");
     }
 
     #[test]

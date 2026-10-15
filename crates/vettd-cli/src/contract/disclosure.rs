@@ -72,6 +72,8 @@ pub enum DisclosureCategory {
     AgentRecords,
     /// `agentic_apps[*]` — agentic application records.
     AgenticAppRecords,
+    /// `coverage[*]` — config files (MCP/agent) that could not be read or parsed.
+    ScanCoverage,
 }
 
 impl DisclosureCategory {
@@ -98,6 +100,7 @@ impl DisclosureCategory {
             DisclosureCategory::SkillRecords => "Scanned skill records",
             DisclosureCategory::AgentRecords => "AI agent configuration records",
             DisclosureCategory::AgenticAppRecords => "Agentic application records",
+            DisclosureCategory::ScanCoverage => "Config scan coverage notes",
         }
     }
 
@@ -142,6 +145,9 @@ impl DisclosureCategory {
             DisclosureCategory::AgenticAppRecords => {
                 "framework, agent count, risk, review status, description, agents, tools by agent, workflow steps, integrations, verification checks, and risk summary"
             }
+            DisclosureCategory::ScanCoverage => {
+                "configuration files (MCP/agent) that could not be fully read or parsed, with the reason"
+            }
         }
     }
 }
@@ -173,6 +179,9 @@ fn field_category(path: &str) -> Option<DisclosureCategory> {
     }
     if path.starts_with("agenticApps") {
         return under_path(path, APP_FIELDS).map(|_| DisclosureCategory::AgenticAppRecords);
+    }
+    if path.starts_with("coverage") {
+        return under_path(path, COVERAGE_FIELDS).map(|_| DisclosureCategory::ScanCoverage);
     }
     None
 }
@@ -206,6 +215,7 @@ fn mcp_category(path: &str) -> Option<DisclosureCategory> {
         || rest == "auth"
         || rest == "verified"
         || rest == "command"
+        || rest == "contentHash"
     {
         return Some(DisclosureCategory::McpServerCommand);
     }
@@ -338,6 +348,16 @@ const SKILL_FIELDS: &[&str] = &[
     "branch",
     "path",
     "remoteUrl",
+    // Content identity + provenance + lineage (issues #274, #255, #130)
+    "contentHash",
+    "locations",
+    "provenance",
+    "identityExclusions",
+    "lineage",
+    "gitRemoteUrl",
+    "gitCommit",
+    "declaredName",
+    "declaredVersion",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -354,6 +374,8 @@ const AGENT_FIELDS: &[&str] = &[
     "capabilities",
     "tools",
     "trustBreakdown",
+    // Content identity (issue #130)
+    "contentHash",
     // AgentCapability
     "enabled",
     // AgentTool
@@ -380,6 +402,8 @@ const APP_FIELDS: &[&str] = &[
     "verificationChecks",
     "riskTags",
     "riskSummary",
+    // Content identity (issue #130)
+    "contentHash",
     // WorkflowStep
     "step",
     "agent",
@@ -387,6 +411,9 @@ const APP_FIELDS: &[&str] = &[
     // Integration
     "type",
 ];
+
+/// Fields on the top-level `coverage[*]` entries ([`ScannerCoverage`]).
+const COVERAGE_FIELDS: &[&str] = &["coverage", "kind", "ruleId", "label", "detail", "category"];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Coverage walker — fails loud on undisclosed fields
@@ -480,6 +507,9 @@ pub fn disclosure_categories(payload: &ContractPayload) -> Vec<DisclosureCategor
     }
     if !payload.agentic_apps.is_empty() {
         cats.push(DisclosureCategory::AgenticAppRecords);
+    }
+    if !payload.coverage.is_empty() {
+        cats.push(DisclosureCategory::ScanCoverage);
     }
 
     // MCP server categories — derived from the actual server data.
@@ -725,6 +755,18 @@ pub(crate) fn max_payload() -> ContractPayload {
                 }]),
             }]),
             detected_source: None,
+            content_hash: Some("abc123".into()),
+            locations: Some(vec![SkillLocation {
+                path: "/tmp/skills/test-skill".into(),
+                provenance: "bundled".into(),
+            }]),
+            identity_exclusions: Some(vec![".git/".into()]),
+            lineage: Some(SkillLineage {
+                git_remote_url: Some("https://github.com/test/repo".into()),
+                git_commit: Some("0123456789abcdef".into()),
+                declared_name: Some("test-skill".into()),
+                declared_version: Some("1.0".into()),
+            }),
         }],
         mcp_servers: vec![McpServer {
             id: "s1".into(),
@@ -734,6 +776,7 @@ pub(crate) fn max_payload() -> ContractPayload {
             auth: "none".into(),
             verified: false,
             command: "npx server".into(),
+            content_hash: Some("def456".into()),
             tools: vec![McpTool {
                 name: "read_file".into(),
                 risk: "low".into(),
@@ -774,6 +817,7 @@ pub(crate) fn max_payload() -> ContractPayload {
                 label: "auth".into(),
                 delta: -5,
             }],
+            content_hash: Some("ghi789".into()),
         }],
         agentic_apps: vec![AgenticApp {
             id: "aa1".into(),
@@ -802,6 +846,14 @@ pub(crate) fn max_payload() -> ContractPayload {
             verification_checks: vec!["check".into()],
             risk_tags: vec!["tag".into()],
             risk_summary: "low".into(),
+            content_hash: Some("jkl012".into()),
+        }],
+        coverage: vec![ScannerCoverage {
+            kind: "skipped".into(),
+            rule_id: "scan/config-parse".into(),
+            label: "Config file unparseable".into(),
+            detail: "/tmp/mcp.json (expected value)".into(),
+            category: Some("configuration".into()),
         }],
     }
 }
@@ -913,6 +965,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         validate_payload_coverage(&payload);
     }
@@ -961,6 +1014,7 @@ mod tests {
                 auth: "none".into(),
                 verified: false,
                 command: "npx server".into(),
+                content_hash: None,
                 tools: vec![],
                 dependent_agents: vec![],
                 network_evidence: vec![],
@@ -968,6 +1022,7 @@ mod tests {
             }],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         let cats = disclosure_categories(&payload);
         assert!(
@@ -986,6 +1041,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         let cats = disclosure_categories(&payload);
         assert!(
@@ -1044,6 +1100,7 @@ mod tests {
             mcp_servers: vec![],
             agents: vec![],
             agentic_apps: vec![],
+            coverage: vec![],
         };
         print_submit_disclosure(&payload);
     }

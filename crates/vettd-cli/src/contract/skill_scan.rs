@@ -9,10 +9,10 @@
 //! should thread the file map already assembled during discovery through to
 //! this call instead of re-reading from disk.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::contract::helpers::first_path;
+use crate::contract::identity::{self, SkillFileLoad};
 use crate::contract::types::{
     ExternalScannerFinding, ExternalScannerResult, ScannerCoverage, ScannerSignal,
 };
@@ -20,15 +20,6 @@ use crate::models::ArtifactReport;
 
 use vettd_skill_scanner::consts::{CURRENT_SCANNER_VERSION, DEFAULT_SOURCE};
 use vettd_skill_scanner::scan_skill;
-
-/// Maximum file read size when loading skill files for the scanner (bytes).
-const MAX_READ_BYTES: usize = 8192;
-
-/// Maximum directory depth to walk when loading skill files.
-const MAX_WALK_DEPTH: usize = 5;
-
-/// Maximum number of files to load for a single skill.
-const MAX_FILES: usize = 200;
 
 /// Structural facts computed by the skill scanner, surfaced at the skill level
 /// (`skills[].hasSkillMd`, `skills[].fileCount`, ...) rather than inside
@@ -66,7 +57,14 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
     let skill_md = Path::new(skill_md_path);
     let skill_root = skill_md.parent().unwrap_or(Path::new("."));
 
-    let (text_files, all_paths) = load_skill_files(skill_root);
+    let load = identity::load_skill_files(skill_root);
+    let SkillFileLoad {
+        text_files,
+        all_paths,
+        skipped,
+        excluded: _,
+        partial,
+    } = load;
     // The pinned scanner (v0.2.0) requires a caller-supplied RFC 3339
     // observation time; signals carry it unmodified. The pure scanner never
     // reads a clock, so the CLI stamps "now" here.
@@ -112,7 +110,7 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
         })
         .collect();
 
-    let coverage: Vec<ScannerCoverage> = scan_result
+    let mut coverage: Vec<ScannerCoverage> = scan_result
         .coverage
         .iter()
         .map(|c| ScannerCoverage {
@@ -123,6 +121,32 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
             category: c.category.clone(),
         })
         .collect();
+
+    // Honest partial-scan disclosure (#204): files the loader could not decode
+    // and caps that cut the scan short must appear in the output instead of
+    // leaving a silent "success".
+    if !skipped.is_empty() {
+        coverage.push(ScannerCoverage {
+            kind: "skipped".to_string(),
+            rule_id: "scan/file-load".to_string(),
+            label: "Files skipped (could not be read as text)".to_string(),
+            detail: skipped.join(", "),
+            category: Some("structure".to_string()),
+        });
+    }
+    if partial {
+        coverage.push(ScannerCoverage {
+            kind: "partial".to_string(),
+            rule_id: "scan/size-limit".to_string(),
+            label: "Skill scan partial".to_string(),
+            detail: format!(
+                "load capped at {} text files / {} MB of text content",
+                identity::MAX_SKILL_FILES,
+                identity::MAX_SKILL_TOTAL_BYTES / (1024 * 1024)
+            ),
+            category: Some("structure".to_string()),
+        });
+    }
 
     Some(SkillScanOutput {
         external: ExternalScannerResult {
@@ -175,110 +199,6 @@ fn map_finding(f: &vettd_skill_scanner::Finding) -> ExternalScannerFinding {
         },
         filepath: f.filepath.clone(),
     }
-}
-
-/// Load text files and collect all paths from a skill root directory.
-///
-/// Files that appear to be binary (by extension) are included in `all_paths`
-/// but not in `text_files`. Content is capped at `MAX_READ_BYTES` per file,
-/// matching the existing detector read semantics in this crate.
-fn load_skill_files(root: &Path) -> (HashMap<String, String>, Vec<String>) {
-    let mut text_files = HashMap::new();
-    let mut all_paths = Vec::new();
-    walk_dir(root, root, &mut text_files, &mut all_paths, 0);
-    (text_files, all_paths)
-}
-
-fn walk_dir(
-    root: &Path,
-    dir: &Path,
-    text_files: &mut HashMap<String, String>,
-    all_paths: &mut Vec<String>,
-    depth: usize,
-) {
-    if depth > MAX_WALK_DEPTH || all_paths.len() >= MAX_FILES {
-        return;
-    }
-
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        if all_paths.len() >= MAX_FILES {
-            break;
-        }
-
-        let path = entry.path();
-        let rel = match path.strip_prefix(root) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
-        };
-
-        if path.is_dir() {
-            walk_dir(root, &path, text_files, all_paths, depth + 1);
-        } else {
-            all_paths.push(rel.clone());
-            if is_likely_text(&path) {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let head: String = content.chars().take(MAX_READ_BYTES).collect();
-                    text_files.insert(rel, head);
-                }
-            }
-        }
-    }
-}
-
-/// Heuristic: treat a file as text if its extension is in a known set or it
-/// has no extension at all (e.g. `Makefile`).
-fn is_likely_text(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    if ext.is_empty() {
-        return true;
-    }
-
-    matches!(
-        ext.as_str(),
-        "md" | "txt"
-            | "json"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "py"
-            | "js"
-            | "ts"
-            | "mjs"
-            | "cjs"
-            | "rs"
-            | "go"
-            | "rb"
-            | "php"
-            | "java"
-            | "kt"
-            | "swift"
-            | "c"
-            | "cpp"
-            | "h"
-            | "cs"
-            | "html"
-            | "xml"
-            | "css"
-            | "sql"
-            | "env"
-            | "ini"
-            | "cfg"
-            | "conf"
-            | "lock"
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -610,5 +530,94 @@ mod tests {
         assert_eq!(round.filepath.as_deref(), Some("SKILL.md"));
         let again = serde_json::to_value(&round).unwrap();
         assert_eq!(again["filepath"], "SKILL.md");
+    }
+
+    // ── honest scan surface (#204) ─────────────────────────────────────
+
+    fn temp_skill_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vettd-skillscan-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn content_past_8kb_is_scanned_not_truncated() {
+        // Why this matters: the old loader truncated every file at 8192 chars,
+        // so content hidden past 8KB was invisible to every check while the
+        // scan still reported success. An external URL that appears ONLY past
+        // the old cap must now be seen by the scanner's URL rule (VTD-0088) —
+        // proof the full file reached the analyzer.
+        let dir = temp_skill_dir("past8k");
+        let mut body = String::from("---\nname: big\ndescription: big skill\n---\n\n# Big\n\n");
+        body.push_str(&"safe filler text. ".repeat(600)); // ~10.2 KB before payload
+        body.push_str("See https://evil.example/payload for details.\n");
+        std::fs::write(dir.join("SKILL.md"), &body).unwrap();
+
+        let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+        let output = run_skill_scanner(&a).unwrap();
+        let findings = output.external.findings.unwrap_or_default();
+        assert!(
+            findings.iter().any(|f| f.rule_id == "VTD-0088"
+                && f.detail
+                    .as_deref()
+                    .map(|d| d.contains("evil.example"))
+                    .unwrap_or(false))
+                || findings.iter().any(|f| f.rule_id == "VTD-0088"),
+            "URL past the old 8KB cap must be found: {findings:?}"
+        );
+        assert!(
+            output
+                .external
+                .coverage
+                .as_ref()
+                .map(|c| c.iter().all(|e| e.kind != "partial"))
+                .unwrap_or(true),
+            "a 10KB skill is under the caps and must not be flagged partial"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn non_utf8_file_surfaces_a_skipped_coverage_entry() {
+        // A file with invalid UTF-8 used to be counted in all_paths but never
+        // scanned, with no finding and no warning. It must now be disclosed.
+        let dir = temp_skill_dir("nonutf8");
+        std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
+        std::fs::write(dir.join("payload.sh"), [0xff_u8, 0xfe, 0x00, 0x80]).unwrap();
+
+        let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+        let output = run_skill_scanner(&a).unwrap();
+        let coverage = output.external.coverage.unwrap_or_default();
+        let skipped = coverage
+            .iter()
+            .find(|c| c.kind == "skipped" && c.rule_id == "scan/file-load");
+        assert!(
+            skipped.is_some_and(|c| c.detail.contains("payload.sh")),
+            "unreadable file must be named in coverage: {coverage:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_skill_surfaces_a_partial_coverage_entry() {
+        // Hitting the 250-file cap used to silently drop files in
+        // read_dir-order. The scan must now say it was partial.
+        let dir = temp_skill_dir("oversized");
+        std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
+        for i in 0..300 {
+            std::fs::write(dir.join(format!("f{i:03}.md")), format!("file {i}")).unwrap();
+        }
+
+        let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+        let output = run_skill_scanner(&a).unwrap();
+        let coverage = output.external.coverage.unwrap_or_default();
+        assert!(
+            coverage
+                .iter()
+                .any(|c| c.kind == "partial" && c.rule_id == "scan/size-limit"),
+            "cap hit must be disclosed as partial: {coverage:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

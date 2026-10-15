@@ -4,22 +4,27 @@ use crate::capabilities::derive_capabilities;
 use crate::models::ArtifactReport;
 
 use super::helpers::{
-    declared_tools, detect_source_repo, first_path, is_same_tool_scope, make_id, qualified_name,
-    read_artifact_head,
+    artifact_content_hash, declared_tools, detect_source_repo, first_path, is_same_tool_scope,
+    make_id, qualified_name, read_config_with_coverage,
 };
-use super::types::{Agent, AgentCapability, AgentTool, TrustFactor};
+use super::types::{Agent, AgentCapability, AgentTool, ScannerCoverage, TrustFactor};
 
 pub fn build_agents(
     agent_artifacts: &[&ArtifactReport],
     mcp_artifacts: &[&ArtifactReport],
+    coverage: &mut Vec<ScannerCoverage>,
 ) -> Vec<Agent> {
     agent_artifacts
         .iter()
-        .map(|a| artifact_to_agent(a, mcp_artifacts))
+        .map(|a| artifact_to_agent(a, mcp_artifacts, coverage))
         .collect()
 }
 
-fn artifact_to_agent(a: &ArtifactReport, mcp_artifacts: &[&ArtifactReport]) -> Agent {
+fn artifact_to_agent(
+    a: &ArtifactReport,
+    mcp_artifacts: &[&ArtifactReport],
+    coverage: &mut Vec<ScannerCoverage>,
+) -> Agent {
     let source_path = first_path(a).to_string();
     let name = qualified_name(&source_path);
     let id = make_id(&source_path, &a.artifact_hash);
@@ -31,10 +36,11 @@ fn artifact_to_agent(a: &ArtifactReport, mcp_artifacts: &[&ArtifactReport]) -> A
     let capabilities = build_capability_flags(&caps);
     let mut tools = build_declared_tools(a);
 
-    link_mcp_tools(&source_path, mcp_artifacts, &mut tools);
+    link_mcp_tools(&source_path, mcp_artifacts, &mut tools, coverage);
 
     let trust_breakdown = build_trust_breakdown(a);
     let source_repo = detect_source_repo(&source_path);
+    let content_hash = artifact_content_hash(a);
 
     Agent {
         id,
@@ -49,6 +55,7 @@ fn artifact_to_agent(a: &ArtifactReport, mcp_artifacts: &[&ArtifactReport]) -> A
         capabilities,
         tools,
         trust_breakdown,
+        content_hash: Some(content_hash),
     }
 }
 
@@ -88,6 +95,7 @@ fn link_mcp_tools(
     source_path: &str,
     mcp_artifacts: &[&ArtifactReport],
     tools: &mut Vec<AgentTool>,
+    coverage: &mut Vec<ScannerCoverage>,
 ) {
     let agent_dir = std::path::Path::new(source_path)
         .parent()
@@ -110,20 +118,35 @@ fn link_mcp_tools(
             continue;
         }
 
-        if let Some(content) = read_artifact_head(mcp) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let servers = val
-                    .get("mcpServers")
-                    .or_else(|| val.get("servers"))
-                    .and_then(|v| v.as_object());
-                if let Some(servers) = servers {
-                    for (server_name, _) in servers {
-                        if seen_mcp_names.insert(server_name.clone()) {
-                            tools.push(AgentTool {
-                                name: server_name.clone(),
-                                tool_type: "mcp".to_string(),
-                            });
-                        }
+        if let Some(content) = read_config_with_coverage(mcp, coverage) {
+            let val = match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(val) => val,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: MCP config {} is unparseable ({}), agent tool links from it are missing",
+                        mcp_path, e
+                    );
+                    coverage.push(ScannerCoverage {
+                        kind: "skipped".to_string(),
+                        rule_id: "scan/config-parse".to_string(),
+                        label: "Config file unparseable".to_string(),
+                        detail: format!("{mcp_path} ({e})"),
+                        category: Some("configuration".to_string()),
+                    });
+                    continue;
+                }
+            };
+            let servers = val
+                .get("mcpServers")
+                .or_else(|| val.get("servers"))
+                .and_then(|v| v.as_object());
+            if let Some(servers) = servers {
+                for (server_name, _) in servers {
+                    if seen_mcp_names.insert(server_name.clone()) {
+                        tools.push(AgentTool {
+                            name: server_name.clone(),
+                            tool_type: "mcp".to_string(),
+                        });
                     }
                 }
             }

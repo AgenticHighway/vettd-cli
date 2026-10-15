@@ -17,6 +17,11 @@ pub struct ContractPayload {
     pub mcp_servers: Vec<McpServer>,
     pub agents: Vec<Agent>,
     pub agentic_apps: Vec<AgenticApp>,
+    /// Config files (MCP/agent) that could not be fully read or parsed.
+    /// Surfaced here so the signal is machine-readable, not stderr-only.
+    /// Additive: omitted from serialized output when empty (issue #204).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<ScannerCoverage>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,6 +134,39 @@ pub struct Skill {
     pub external_scanner_results: Option<Vec<ExternalScannerResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detected_source: Option<DetectedSkillSource>,
+    // Content identity additions (#274, #130) — optional and omitted when
+    // absent. contentHash is the canonical directory digest matching the
+    // hub's computeCanonicalSkillHash; locations lists every path an identical
+    // copy was found in; identityExclusions discloses what the digest left out;
+    // lineage carries git remote/commit and declared name/version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locations: Option<Vec<SkillLocation>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_exclusions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<SkillLineage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillLocation {
+    pub path: String,
+    pub provenance: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillLineage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +310,9 @@ pub struct McpServer {
     pub dependent_agents: Vec<String>,
     pub network_evidence: Vec<NetworkEvidence>,
     pub env_vars: Vec<EnvVarRef>,
+    // #130: stable content hash of the server config entry (#274 identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +341,9 @@ pub struct Agent {
     pub capabilities: Vec<AgentCapability>,
     pub tools: Vec<AgentTool>,
     pub trust_breakdown: Vec<TrustFactor>,
+    // #130: content hash of the agent config file (#274 identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,6 +387,9 @@ pub struct AgenticApp {
     pub verification_checks: Vec<String>,
     pub risk_tags: Vec<String>,
     pub risk_summary: String,
+    // #130: content hash of the container definition file (#274 identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
