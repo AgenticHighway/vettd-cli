@@ -26,7 +26,7 @@ impl ScanProgress {
     fn elapsed_str(&self) -> String {
         let secs = self.start.elapsed().as_secs_f64();
         if secs < 60.0 {
-            format!("{:.1}s", secs)
+            format!("{secs:.1}s")
         } else {
             format!("{}m{:02}s", secs as u64 / 60, secs as u64 % 60)
         }

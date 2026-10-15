@@ -386,7 +386,7 @@ pub fn perform_update(force: bool) -> Result<(), String> {
     // 2. Download
     eprintln!("Downloading {}...", artifact.url);
     let bytes = download_to_file(&artifact.url, &dl_path)?;
-    eprintln!("  Downloaded {} bytes.", bytes);
+    eprintln!("  Downloaded {bytes} bytes.");
 
     // 3. Verify SHA-256
     eprintln!("Verifying integrity (SHA-256)...");
@@ -625,7 +625,7 @@ mod tests {
     fn test_platform_key_returns_ok() {
         // Should not error on any CI/dev platform
         let result = platform_key();
-        assert!(result.is_ok(), "platform_key() failed: {:?}", result);
+        assert!(result.is_ok(), "platform_key() failed: {result:?}");
         let key = result.unwrap();
         assert!(
             [

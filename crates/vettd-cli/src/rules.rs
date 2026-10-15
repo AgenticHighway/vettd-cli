@@ -510,7 +510,7 @@ confidence = 0.5
         let source = write_file(src_dir.path(), "valid.toml", VALID_TOML);
 
         let result = install_rule(&source, dest_dir.path());
-        assert!(result.is_ok(), "install failed: {:?}", result);
+        assert!(result.is_ok(), "install failed: {result:?}");
 
         let dest = result.unwrap();
         assert!(dest.exists());
@@ -703,7 +703,7 @@ confidence = 0.5
         let path = std::path::Path::new("examples/rules/terraform-ai.toml");
         if path.exists() {
             let result = load_rule_file_pub(path);
-            assert!(result.is_ok(), "terraform-ai.toml is invalid: {:?}", result);
+            assert!(result.is_ok(), "terraform-ai.toml is invalid: {result:?}");
             let rule = result.unwrap();
             assert_eq!(rule.detector.artifact_type, "terraform_config");
             assert!(rule.keywords.is_some());
@@ -715,11 +715,7 @@ confidence = 0.5
         let path = std::path::Path::new("examples/rules/internal-tool.toml");
         if path.exists() {
             let result = load_rule_file_pub(path);
-            assert!(
-                result.is_ok(),
-                "internal-tool.toml is invalid: {:?}",
-                result
-            );
+            assert!(result.is_ok(), "internal-tool.toml is invalid: {result:?}");
             let rule = result.unwrap();
             assert_eq!(rule.detector.artifact_type, "internal_tool_config");
         }

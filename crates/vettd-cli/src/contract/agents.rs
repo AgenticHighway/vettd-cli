@@ -123,8 +123,7 @@ fn link_mcp_tools(
                 Ok(val) => val,
                 Err(e) => {
                     eprintln!(
-                        "Warning: MCP config {} is unparseable ({}), agent tool links from it are missing",
-                        mcp_path, e
+                        "Warning: MCP config {mcp_path} is unparseable ({e}), agent tool links from it are missing"
                     );
                     coverage.push(ScannerCoverage {
                         kind: "skipped".to_string(),

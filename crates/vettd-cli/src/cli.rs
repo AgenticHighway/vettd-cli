@@ -2870,8 +2870,7 @@ mod tests {
                         | crate::contract::DisclosureCategory::LogDerivedNetworkEvidence
                         | crate::contract::DisclosureCategory::EnvVarNames
                 ),
-                "unexpected MCP category present: {:?}",
-                cat
+                "unexpected MCP category present: {cat:?}"
             );
         }
     }
