@@ -60,6 +60,7 @@ pub fn limit_lite_mode_report(
         run_id: report.run_id.clone(),
         timestamp: report.timestamp.clone(),
         artifacts: visible,
+        examined_roots: report.examined_roots.clone(),
     };
     (visible_report, hidden_count, hidden)
 }

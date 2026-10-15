@@ -10,27 +10,30 @@ use std::time::Instant;
 use crate::detectors::get_all_detectors;
 use crate::discovery::{
     default_user_space_roots, discover_direct_home_files, discover_file_surface,
-    discover_filesystem_surfaces, discover_home_surfaces, discover_root_surfaces,
-    discover_workdir_surfaces, host_roots, walk_bounded, Candidate,
+    discover_filesystem_surfaces, discover_home_surfaces, discover_workdir_surfaces,
+    host_roots_for, walk_bounded, walk_harness_root, Candidate,
 };
 use crate::models::{ArtifactReport, ScanReport};
 use crate::risk_engine::score_artifact;
 use crate::scan_cache::{
     build_profile, cache_enabled_for_mode, cacheable_detector, detector_fingerprint,
-    snapshot_candidates, CachedCandidate, ScanCache, ScanCacheProfile,
+    snapshot_candidates, CachedCandidate, ScanCache, PROFILE_MAX_AGE_DAYS,
 };
-use crate::scan_refresh::{plan_root_refresh, DiscoveryRoot, RootCursorUpdate, RootRefreshAction};
 use crate::verifier::verify;
 
 struct ScanTimings {
     enabled: bool,
 }
 
+/// A directory to walk, with the origin tag its candidates carry.
+struct DiscoveryRoot {
+    path: PathBuf,
+    origin: String,
+}
+
 struct PreparedDiscovery {
     live_candidates: Vec<Candidate>,
-    reused_cached_candidates: Vec<CachedCandidate>,
     refreshed_roots: Vec<RefreshedRoot>,
-    cursor_updates: Vec<RootCursorUpdate>,
 }
 
 struct RefreshedRoot {
@@ -108,6 +111,20 @@ pub fn run_scan_with_cache(
     skip_cache: bool,
     on_tick: Option<&dyn Fn(&str)>,
 ) -> ScanReport {
+    run_scan_with_options(mode, workdir, file, deep, skip_cache, false, on_tick)
+}
+
+/// Like [`run_scan_with_cache`], and with `all_users` set `host` mode (`scan
+/// quick`) also examines other local users' harness roots.
+pub fn run_scan_with_options(
+    mode: &str,
+    workdir: Option<&Path>,
+    file: Option<&Path>,
+    deep: bool,
+    skip_cache: bool,
+    all_users: bool,
+    on_tick: Option<&dyn Fn(&str)>,
+) -> ScanReport {
     let noop = |_: &str| {};
     let tick: &dyn Fn(&str) = on_tick.unwrap_or(&noop);
     let timings = ScanTimings::from_env();
@@ -140,30 +157,26 @@ pub fn run_scan_with_cache(
 
     // 1. Discover candidates
     let discovery_started_at = Instant::now();
-    let prepared = discover_candidates(
-        mode,
+    let host_roots = if mode == "host" {
+        host_roots_for(all_users)
+    } else {
+        Vec::new()
+    };
+    let target = DiscoveryTarget {
         workdir,
         file,
         deep,
-        tick,
-        scan_cache.as_ref(),
-        cache_profile.as_ref(),
-    );
+        host_roots,
+    };
+    let prepared = discover_candidates(mode, &target, tick);
     // File-state snapshots only feed the scan cache; skip the per-file stat and
     // hashing entirely when the cache is off for this mode (e.g. `scan full`).
-    let mut cached_candidates = if scan_cache.is_some() {
+    let cached_candidates = if scan_cache.is_some() {
         snapshot_candidates(&prepared.live_candidates)
     } else {
         Vec::new()
     };
-    let mut candidates = prepared.live_candidates;
-    candidates.extend(
-        prepared
-            .reused_cached_candidates
-            .iter()
-            .map(|cached| cached.candidate.clone()),
-    );
-    cached_candidates.extend(prepared.reused_cached_candidates);
+    let candidates = prepared.live_candidates;
     timings.emit(
         "discovery",
         &format!("mode={mode} files={}", candidates.len()),
@@ -175,6 +188,9 @@ pub fn run_scan_with_cache(
     if let (Some(cache), Some(profile)) = (scan_cache.as_mut(), cache_profile.as_ref()) {
         if let Err(e) = cache.upsert_profile(profile) {
             eprintln!("Warning: failed to initialize scan-cache profile: {e}");
+        }
+        if let Err(e) = cache.gc_stale_profiles(PROFILE_MAX_AGE_DAYS) {
+            eprintln!("Warning: failed to garbage-collect scan-cache: {e}");
         }
         if let Err(e) = cache.upsert_file_states(&profile.profile_key, &cached_candidates) {
             eprintln!("Warning: failed to record scan-cache file states: {e}");
@@ -286,19 +302,15 @@ pub fn run_scan_with_cache(
                 eprintln!("Warning: failed to prune stale scan-cache rows: {e}");
             }
         }
-        for cursor_update in &prepared.cursor_updates {
-            if let Err(e) = cache.upsert_root_cursor(
-                &cursor_update.root_path,
-                &cursor_update.backend_type,
-                &cursor_update.cursor_token,
-            ) {
-                eprintln!("Warning: failed to update scan-cache root cursor: {e}");
-            }
-        }
     }
 
     let mut report = ScanReport::new(&scanned_path);
     report.artifacts = artifacts;
+    report.examined_roots = target
+        .host_roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
     report
 }
 
@@ -331,23 +343,33 @@ fn resolve_scanned_path(mode: &str, workdir: Option<&Path>, file: Option<&Path>)
     }
 }
 
+/// What a scan targets, resolved once before discovery.
+struct DiscoveryTarget<'a> {
+    workdir: Option<&'a Path>,
+    file: Option<&'a Path>,
+    deep: bool,
+    /// Harness roots for `host` mode (`scan quick`); empty for other modes.
+    host_roots: Vec<PathBuf>,
+}
+
 fn discover_candidates(
     mode: &str,
-    workdir: Option<&Path>,
-    file: Option<&Path>,
-    deep: bool,
+    target: &DiscoveryTarget,
     tick: &dyn Fn(&str),
-    scan_cache: Option<&ScanCache>,
-    cache_profile: Option<&ScanCacheProfile>,
 ) -> PreparedDiscovery {
+    let DiscoveryTarget {
+        workdir,
+        file,
+        deep,
+        host_roots,
+    } = target;
+    let (workdir, file, deep) = (*workdir, *file, *deep);
     match mode {
         "file" => PreparedDiscovery {
             live_candidates: discover_file_surface(
                 file.expect("file path is required for file mode"),
             ),
-            reused_cached_candidates: Vec::new(),
             refreshed_roots: Vec::new(),
-            cursor_updates: Vec::new(),
         },
         "workdir" => PreparedDiscovery {
             live_candidates: discover_workdir_surfaces(
@@ -355,60 +377,43 @@ fn discover_candidates(
                 deep,
                 Some(tick),
             ),
-            reused_cached_candidates: Vec::new(),
             refreshed_roots: Vec::new(),
-            cursor_updates: Vec::new(),
         },
-        "scan" => discover_scan_candidates(tick, scan_cache, cache_profile),
+        "scan" => discover_scan_candidates(tick),
         "filesystem" => PreparedDiscovery {
             live_candidates: discover_filesystem_surfaces(Some(tick)),
-            reused_cached_candidates: Vec::new(),
             refreshed_roots: Vec::new(),
-            cursor_updates: Vec::new(),
         },
         "home" => PreparedDiscovery {
             live_candidates: discover_home_surfaces(Some(tick)),
-            reused_cached_candidates: Vec::new(),
             refreshed_roots: Vec::new(),
-            cursor_updates: Vec::new(),
         },
         "root" => PreparedDiscovery {
-            live_candidates: discover_root_surfaces(Some(tick)),
-            reused_cached_candidates: Vec::new(),
+            live_candidates: crate::root_walk::discover_root_surfaces(Some(tick)),
             refreshed_roots: Vec::new(),
-            cursor_updates: Vec::new(),
         },
-        _ => discover_host_candidates(tick, scan_cache, cache_profile),
+        _ => discover_host_candidates(host_roots, tick),
     }
 }
 
-fn discover_host_candidates(
-    tick: &dyn Fn(&str),
-    scan_cache: Option<&ScanCache>,
-    cache_profile: Option<&ScanCacheProfile>,
-) -> PreparedDiscovery {
-    let roots = host_roots()
-        .into_iter()
+fn discover_host_candidates(host_roots: &[PathBuf], tick: &dyn Fn(&str)) -> PreparedDiscovery {
+    let roots = host_roots
+        .iter()
+        .cloned()
         .map(|path| DiscoveryRoot {
             path,
             origin: "host".to_string(),
         })
         .collect::<Vec<_>>();
-    discover_refreshable_roots(roots, tick, scan_cache, cache_profile)
+    discover_refreshable_roots(roots, tick)
 }
 
-fn discover_scan_candidates(
-    tick: &dyn Fn(&str),
-    scan_cache: Option<&ScanCache>,
-    cache_profile: Option<&ScanCacheProfile>,
-) -> PreparedDiscovery {
+fn discover_scan_candidates(tick: &dyn Fn(&str)) -> PreparedDiscovery {
     let mut prepared = PreparedDiscovery {
         live_candidates: discover_direct_home_files(),
-        reused_cached_candidates: Vec::new(),
         refreshed_roots: Vec::new(),
-        cursor_updates: Vec::new(),
     };
-    let mut roots = host_roots()
+    let mut roots = host_roots_for(false)
         .into_iter()
         .map(|path| DiscoveryRoot {
             path,
@@ -424,59 +429,43 @@ fn discover_scan_candidates(
             }),
     );
 
-    let refreshed = discover_refreshable_roots(roots, tick, scan_cache, cache_profile);
+    let refreshed = discover_refreshable_roots(roots, tick);
     prepared.live_candidates.extend(refreshed.live_candidates);
-    prepared
-        .reused_cached_candidates
-        .extend(refreshed.reused_cached_candidates);
     prepared.refreshed_roots.extend(refreshed.refreshed_roots);
-    prepared.cursor_updates.extend(refreshed.cursor_updates);
     prepared
 }
 
-fn discover_refreshable_roots(
-    roots: Vec<DiscoveryRoot>,
-    tick: &dyn Fn(&str),
-    scan_cache: Option<&ScanCache>,
-    cache_profile: Option<&ScanCacheProfile>,
-) -> PreparedDiscovery {
-    let plans = plan_root_refresh(scan_cache, &roots);
+/// A root path for progress display, with the home directory shortened to `~`.
+fn display_root(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
+        Some(rel) => format!("~/{}", rel.display()),
+        None => path.display().to_string(),
+    }
+}
+
+fn discover_refreshable_roots(roots: Vec<DiscoveryRoot>, tick: &dyn Fn(&str)) -> PreparedDiscovery {
     let mut live_candidates = Vec::new();
-    let mut reused_cached_candidates = Vec::new();
     let mut refreshed_roots = Vec::new();
-    let mut cursor_updates = Vec::new();
 
-    for plan in plans {
-        if let Some(cursor_update) = plan.cursor_update.clone() {
-            cursor_updates.push(cursor_update);
-        }
-
-        if matches!(plan.action, RootRefreshAction::ReuseCached) {
-            if let (Some(cache), Some(profile)) = (scan_cache, cache_profile) {
-                match cache.load_profile_candidates_for_root(&profile.profile_key, &plan.root.path)
-                {
-                    Ok(cached) if !cached.is_empty() => {
-                        reused_cached_candidates.extend(cached);
-                        continue;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to load cached root membership for {}: {e}",
-                            plan.root.path.display()
-                        );
-                    }
-                }
-            }
-        }
-
-        let root_candidates = walk_bounded(&plan.root.path, &plan.root.origin, Some(tick));
+    for root in roots {
+        // Name the directory being walked, and keep the name beside the file
+        // count the walkers emit, so a long walk shows where it is.
+        let root_label = display_root(&root.path);
+        tick(&format!("walking {root_label}"));
+        let root_tick = |detail: &str| tick(&format!("{root_label}: {detail}"));
+        // Harness roots (origin "host") are walked completely; user-space
+        // roots stay depth-bounded.
+        let root_candidates = if root.origin == "host" {
+            walk_harness_root(&root.path, &root.origin, Some(&root_tick))
+        } else {
+            walk_bounded(&root.path, &root.origin, Some(&root_tick))
+        };
         let keep_paths = root_candidates
             .iter()
             .map(|candidate| candidate.path.to_string_lossy().to_string())
             .collect();
         refreshed_roots.push(RefreshedRoot {
-            path: plan.root.path,
+            path: root.path,
             keep_paths,
         });
         live_candidates.extend(root_candidates);
@@ -484,9 +473,7 @@ fn discover_refreshable_roots(
 
     PreparedDiscovery {
         live_candidates,
-        reused_cached_candidates,
         refreshed_roots,
-        cursor_updates,
     }
 }
 
@@ -730,6 +717,16 @@ fn tag_analysis_origin(artifact: &mut ArtifactReport) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_root_shortens_the_home_directory() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(super::display_root(&home.join(".claude")), "~/.claude");
+        assert_eq!(
+            super::display_root(std::path::Path::new("/opt/x")),
+            "/opt/x"
+        );
+    }
+
     use super::*;
     use crate::contract::build_contract_payload;
     use crate::scan_cache::FileStateSnapshot;

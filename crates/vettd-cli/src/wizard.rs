@@ -288,7 +288,10 @@ pub fn pick_scan() -> ScanSubcommand {
 
     match idx {
         0 => ScanSubcommand::Default { output },
-        1 => ScanSubcommand::Quick { output },
+        1 => ScanSubcommand::Quick {
+            all_users: false,
+            output,
+        },
         2 => ScanSubcommand::Full { output },
         3 => {
             let dir = ask("Directory path", ".");

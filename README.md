@@ -125,13 +125,17 @@ vettd rules validate <f>        # Validate a rule file without installing
 - `scan`: Tier 1 plus bounded user-space/project roots such as `Desktop`, `Documents`, `Downloads`, and common repo folders like `Code`, `Projects`, `Workspace`, `src`, and `GitHub`
 - `folder`: explicit target directory plus bounded local adjacency
 - `repo`: explicit target repository plus deeper local adjacency
-- `full`: explicit forensic sweep from filesystem root
+- `full`: complete sweep of every readable location for project-scoped assets: known harness locations first, then the whole filesystem (every mounted volume and other users' homes), skipping only virtual filesystems (`/proc`, `/sys`, `/dev`, ...), network mounts (Linux, each named on stderr) and VCS metadata. Prints time per root and any paths it could not read
 
-Current critical roots are OS-aware:
+`quick` examines the user-scoped locations of each supported AI harness, walked completely at any depth (installed plugins and skills commonly sit 7 or more levels down). The list lives in `crates/vettd-cli/src/harness.rs`, one row per harness:
 
-- macOS: `~/Library/Application Support/Code/User`, `~/Library/Application Support/Code - Insiders/User`, `~/Library/Application Support/Cursor/User`, plus `~/.claude`, `~/.cursor`, `~/.aider`, `~/.continue`, `~/.ollama`, and editor config roots when present
-- Linux: `~/.config/Code/User`, `~/.config/Code - Insiders/User`, `~/.config/Cursor/User`, plus `~/.claude`, `~/.cursor`, `~/.aider`, `~/.continue`, and `~/.ollama`
-- Windows: `%APPDATA%\\Code\\User`, `%APPDATA%\\Code - Insiders\\User`, `%APPDATA%\\Cursor\\User`, plus `%USERPROFILE%\\.claude`, `%USERPROFILE%\\.cursor`, `%USERPROFILE%\\.aider`, `%USERPROFILE%\\.continue`, and `%USERPROFILE%\\.ollama`
+- Home-relative on every OS (`%USERPROFILE%` on Windows): `.claude`, `.cursor`, `.aider`, `.continue`, `.ollama`, `.vscode`, `.vscode-insiders`, `.codex`, `.hermes`, `.openclaw`, `.openhands`, `.config/opencode`, `.agents`, `.gemini`, `.copilot`, `.kiro`, `.windsurf`, `.codeium/windsurf`, `.cline`, `.qwen`
+- Editor user directories under the platform config directory (`~/.config`, `~/Library/Application Support`, `%APPDATA%`): `Code/User`, `Code - Insiders/User`, `Cursor/User`, `opencode`
+- Relocated homes are followed when set: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`, `OPENCLAW_STATE_DIR`
+
+Only locations that exist are scanned. Symlinked skill directories are followed.
+
+`vettd scan quick` prints the locations it examined. `vettd scan quick --all-users` also examines the same locations in other local users' homes (`/home/*`, `/Users/*`, `C:\Users\*`, and `/root` on Linux) that the current account can read; homes it cannot read are named on stderr and skipped.
 
 ## Output formats
 
@@ -310,8 +314,8 @@ Without a TTY and without the equivalent flag, `vettd scan`, `vettd auth`, and
 ## Privacy
 
 - **Path-first scanning** — content is only read from specific allowlisted file types
-- **Bounded walking** — max depth of 5 for shallow scans; full scan enumerates the entire filesystem with no caps
-- **Scoped exclusions** — `.git/`, `node_modules/`, `.venv/`, `target/` and similar are excluded from default, workdir, and filesystem scans (full scan has no exclusions)
+- **Bounded walking** — max depth of 5 for shallow scans; full scan walks every readable location with no depth or file-count cap
+- **Scoped exclusions** — `.git/`, `node_modules/`, `.venv/`, `target/` and similar are excluded from default, workdir, and filesystem scans (full scan walks them too, and skips only virtual filesystems, network mounts and VCS metadata)
 - **Secret detection without storage** — token patterns trigger a signal tag, but values are never stored or transmitted
 - **Browser presence only** — extension directories are noted, but no extension content or preferences are read
 - **Declarative rules** — custom rules are TOML config files; they use the same content-read allowlist as built-in detectors
