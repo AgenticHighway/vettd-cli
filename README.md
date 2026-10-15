@@ -30,7 +30,7 @@ setup or pass one directly at submission time.
 | ----------- | --------------------------------------------------------------------------------------- |
 | **OS**      | macOS (ARM64, x86_64), Linux (ARM64, x86_64), Windows (x86_64)                          |
 | **Runtime** | None — official releases are single binaries with no sidecar service                    |
-| **Build**   | Rust 1.85.1+ (pinned via `rust-toolchain.toml`)                                         |
+| **Build**   | Rust 1.88.0+ (pinned via `rust-toolchain.toml`)                                         |
 | **Network** | Optional — only needed for submission-related flows and self-update                     |
 | **Disk**    | ~15-25 MB for the binary depending on platform; reports are only written when requested |
 

@@ -7,7 +7,7 @@ participating in project discussions or reviews.
 
 ### Prerequisites
 
-- **Rust 1.85.1** (stable) — install via [rustup.rs](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml`; rustup will install it automatically.
+- **Rust 1.88.0** (stable) — install via [rustup.rs](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml`; rustup will install it automatically.
 - **Git**
 - **macOS, Linux, or Windows** (macOS is the primary dev platform)
 - **cargo-deny** (optional, for local supply chain checks) — `cargo install cargo-deny`
@@ -229,7 +229,7 @@ Every PR and push to `main` triggers the [CI workflow](.github/workflows/ci.yml)
 
 ### `cargo clippy` fails with unstable feature errors
 
-You’re likely using a Rust version newer than what’s pinned. Run `rustup show` to verify you’re using the toolchain from `rust-toolchain.toml` (currently 1.85.1).
+You’re likely using a Rust version newer than what’s pinned. Run `rustup show` to verify you’re using the toolchain from `rust-toolchain.toml` (currently 1.88.0).
 
 ### `cargo deny check` fails locally
 
