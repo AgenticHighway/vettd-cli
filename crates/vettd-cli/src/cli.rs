@@ -394,9 +394,6 @@ pub struct OutputArgs {
     /// Allow submission to public (non-local/private) endpoints
     #[arg(long)]
     pub allow_public_endpoint: bool,
-    /// Force a fresh scan — do not reuse the scan cache
-    #[arg(long)]
-    pub no_cache: bool,
 }
 
 impl Default for OutputArgs {
@@ -411,7 +408,6 @@ impl Default for OutputArgs {
             submit: None,
             api_key: None,
             allow_public_endpoint: false,
-            no_cache: false,
         }
     }
 }
@@ -442,7 +438,7 @@ impl Default for AccessConfig {
 /// The cwd `.vettd.toml` lookup was removed (issue #198) because a scanned
 /// repo must never be able to self-gate its own findings. Access-tier config
 /// now lives exclusively under the per-user `~/.vettd/` root, consistent
-/// with where rules, the scan cache, and other per-user state already live.
+/// with where rules and other per-user state already live.
 const ACCESS_CONFIG_FILE: &str = ".vettd.toml";
 
 fn load_access_config() -> AccessConfig {
@@ -1249,7 +1245,6 @@ pub fn run() {
         params.workdir,
         params.file,
         params.deep,
-        out.no_cache,
         params.all_users,
         if interactive { Some(&tick_fn) } else { None },
     );
@@ -2403,56 +2398,6 @@ mod tests {
                 subcommand: Some(ScanSubcommand::Quick { output, .. }),
             }) => {
                 assert_eq!(output.min_severity, "high");
-            }
-            _ => panic!("Expected scan quick command"),
-        }
-    }
-
-    #[test]
-    fn parse_cli_no_cache_flag() {
-        // Issue #199: --no-cache must flip the no_cache field on OutputArgs.
-        let cli = Cli::parse_from(["vettd", "scan", "quick", "--no-cache"]);
-        match cli.command {
-            Some(Commands::Scan {
-                subcommand: Some(ScanSubcommand::Quick { output, .. }),
-            }) => {
-                assert!(output.no_cache, "--no-cache must set no_cache: true");
-            }
-            _ => panic!("Expected scan quick command"),
-        }
-    }
-
-    #[test]
-    fn parse_cli_no_cache_flag_folder() {
-        // Issue #199 clarification: the user runs `scan folder`, which maps to
-        // workdir mode — a mode where `cache_enabled_for_mode` returns true (so
-        // the vettd cache IS normally on). `--no-cache` must therefore flip
-        // `no_cache` on the Folder variant too, else it would be a silent no-op
-        // for the exact command people use. Verified at runtime: with
-        // `--no-cache` the `cache_hits=` timing line never appears, confirming
-        // the cache guard is fully skipped.
-        let cli = Cli::parse_from(["vettd", "scan", "folder", ".", "--no-cache"]);
-        match cli.command {
-            Some(Commands::Scan {
-                subcommand: Some(ScanSubcommand::Folder { output, .. }),
-            }) => {
-                assert!(
-                    output.no_cache,
-                    "--no-cache must set no_cache: true on the folder (workdir) variant"
-                );
-            }
-            _ => panic!("Expected scan folder command"),
-        }
-    }
-
-    #[test]
-    fn parse_cli_no_cache_defaults_false() {
-        let cli = Cli::parse_from(["vettd", "scan", "quick"]);
-        match cli.command {
-            Some(Commands::Scan {
-                subcommand: Some(ScanSubcommand::Quick { output, .. }),
-            }) => {
-                assert!(!output.no_cache, "no-cache defaults to false");
             }
             _ => panic!("Expected scan quick command"),
         }

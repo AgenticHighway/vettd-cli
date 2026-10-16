@@ -469,12 +469,12 @@ mod tests {
 
     #[test]
     fn detect_proximity_depends_on_the_full_candidate_set_not_just_the_container() {
-        // Documents why the `containers` detector must never be served from a
-        // per-file cache (issue #199 Defect B): its `ai_artifact_proximity`
-        // verdict is computed against whatever candidate slice it receives.
-        // A warm scan that re-detects only cache *misses* would hand it an
-        // incomplete slice, dropping an unchanged sibling AI file and flipping
-        // proximity off even though the file still exists on disk.
+        // Documents a property every caller must respect: the `containers`
+        // detector's `ai_artifact_proximity` verdict is computed against
+        // whatever candidate slice it receives, so it is only correct when
+        // given the full candidate set for the tree being scanned. A partial
+        // slice that drops an unchanged sibling AI file flips proximity off
+        // even though the file still exists on disk.
         let dir = temp_candidate_dir();
         let dockerfile = dir.path().join("Dockerfile");
         let agents = dir.path().join("AGENTS.md");
@@ -497,8 +497,8 @@ mod tests {
             .expect("full-set detect should report the Dockerfile");
         assert_eq!(full_docker.metadata["ai_artifact_proximity"], true);
 
-        // Miss-only slice (what a warm cache would pass): sibling absent from
-        // the slice → proximity off, even though the file is unchanged.
+        // Partial slice: sibling absent from the slice → proximity off, even
+        // though the file is unchanged on disk.
         let miss_results = ContainerDetector.detect(&[docker], true);
         let miss_docker = miss_results
             .iter()
