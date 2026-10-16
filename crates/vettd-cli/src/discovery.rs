@@ -346,22 +346,32 @@ impl WalkGuard {
         if !entry.file_type().is_dir() {
             return true;
         }
-        // An organically-found `.vscode` directory is walked in a restricted
-        // mode — `should_descend`/`is_included_file` keep only its direct
-        // `mcp.json` and prune its subdirectories — so the same real directory
-        // yields different files than an unrestricted visit. Never dedupe it: a
-        // plain alias to the same directory must still be walked in full, and a
-        // `.vscode` walk never descends a subdirectory, so on its own it cannot
-        // recurse or expand the walk.
-        if is_vscode_dir(entry) && entry.depth() > 0 {
-            return true;
-        }
+        let restricted = is_vscode_dir(entry) && entry.depth() > 0;
         match entry.path().canonicalize() {
-            // False once the real directory has already been walked.
-            Ok(real) => self.seen.insert(real),
+            Ok(real) => self.allows_dir(real, restricted),
             // Unresolvable: descend rather than risk hiding files.
             Err(_) => true,
         }
+    }
+
+    /// The dedup decision, split out from filesystem access so the invariant
+    /// can be tested directly.
+    ///
+    /// An organically-found `.vscode` directory is walked in a restricted mode —
+    /// `should_descend`/`is_included_file` keep only its direct `mcp.json` and
+    /// prune its subdirectories — so it yields different files than an
+    /// unrestricted visit to the same real directory. A restricted visit is
+    /// therefore never recorded, so it can never suppress a later plain alias.
+    /// A `.vscode` walk also never descends a subdirectory, so exempting it
+    /// cannot let a link web recurse. (An explicit `.vscode` walk root is not
+    /// restricted, so nested `.vscode` directories are exempted unnecessarily
+    /// there; that is rare and harmless.)
+    fn allows_dir(&mut self, real: PathBuf, restricted: bool) -> bool {
+        if restricted {
+            return true;
+        }
+        // False once the real directory has already been walked.
+        self.seen.insert(real)
     }
 }
 
@@ -1125,6 +1135,27 @@ mod tests {
         ];
         want.sort();
         assert_eq!(got, want, "both aliases' files found: {found:?}");
+    }
+
+    #[test]
+    fn walk_guard_never_lets_a_restricted_visit_suppress_an_unrestricted_one() {
+        // A `.vscode` visit sees fewer files than an unrestricted visit to the
+        // same real directory, so it must not mark the directory seen; a plain
+        // visit deduplicates normally. Tested directly to avoid depending on
+        // directory enumeration order.
+        let mut guard = WalkGuard::default();
+        let dir = PathBuf::from("/real/dir");
+
+        assert!(guard.allows_dir(dir.clone(), true));
+        assert!(
+            guard.allows_dir(dir.clone(), true),
+            "restricted never records"
+        );
+        assert!(
+            guard.allows_dir(dir.clone(), false),
+            "a plain alias is still walked"
+        );
+        assert!(!guard.allows_dir(dir.clone(), false), "but only once");
     }
 
     #[test]
