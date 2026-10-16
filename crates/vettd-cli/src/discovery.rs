@@ -321,6 +321,39 @@ pub fn default_user_space_roots() -> Vec<PathBuf> {
 // Walking functions
 // ---------------------------------------------------------------------------
 
+/// Keeps a link-following walk from descending into a directory twice.
+///
+/// `walkdir` rejects a symlink that points at one of its own ancestors, but not
+/// the other way a link can recurse: a link into a *sibling* subtree the walk
+/// has already visited. Every such link multiplies the paths to everything
+/// below it, so a few links between sibling directories make the walk expand
+/// exponentially, and a link that escapes the root (to `/`, `~`, or a parent)
+/// lets a harness walk leave its own tree. Recording the canonical path of each
+/// directory entered keeps every real directory to a single descent, whatever
+/// the link topology.
+///
+/// Only a walk that follows links needs this; call [`Self::allows`] from the
+/// `filter_entry` predicate of a `follow_links(true)` walk.
+#[derive(Default)]
+struct WalkGuard {
+    seen: HashSet<PathBuf>,
+}
+
+impl WalkGuard {
+    /// Whether to keep this entry (and, for a directory, descend into it).
+    fn allows(&mut self, entry: &walkdir::DirEntry) -> bool {
+        if !entry.file_type().is_dir() {
+            return true;
+        }
+        match entry.path().canonicalize() {
+            // False once the real directory has already been walked.
+            Ok(real) => self.seen.insert(real),
+            // Unresolvable: descend rather than risk hiding files.
+            Err(_) => true,
+        }
+    }
+}
+
 pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
     let excluded = nonforensic_excluded_set();
     let mut candidates = Vec::new();
@@ -365,8 +398,9 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
 /// assets inside them: no depth limit, and only VCS metadata is pruned.
 /// `cache/` and `node_modules/` are where plugin managers and npm physically
 /// install skills (e.g. `~/.claude/plugins/cache/...` sits 7 to 9 levels deep),
-/// and skills are commonly symlinked into place, so links are followed. The
-/// walker detects link loops.
+/// and skills are commonly symlinked into place, so links are followed. A
+/// directory reached by more than one path is walked once (see [`WalkGuard`]),
+/// so a web of links cannot grow the walk.
 pub fn walk_harness_root(
     root: &Path,
     origin: &str,
@@ -376,10 +410,11 @@ pub fn walk_harness_root(
     let mut candidates = Vec::new();
     let mut count: usize = 0;
 
+    let mut guard = WalkGuard::default();
     let walker = WalkDir::new(root).follow_links(true);
     let filtered = walker
         .into_iter()
-        .filter_entry(|e| should_descend(e, &excluded, root));
+        .filter_entry(|e| should_descend(e, &excluded, root) && guard.allows(e));
 
     for entry in filtered.filter_map(|e| e.ok()) {
         if !is_included_file(&entry, root) {
@@ -995,6 +1030,48 @@ mod tests {
 
         let found = walk_harness_root(tmp.path(), "host", None);
         assert!(!found.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_walks_a_shared_link_target_once() {
+        // Two links into the same directory must not report its files twice.
+        let tmp = TempDir::new().unwrap();
+        let shared = tmp.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("SKILL.md"), "#\n").unwrap();
+        for name in ["a", "b"] {
+            let dir = tmp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            std::os::unix::fs::symlink(&shared, dir.join("link")).unwrap();
+        }
+
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert_eq!(found.len(), 1, "shared target walked once: {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_walks_each_directory_once_despite_a_link_web() {
+        // Links between sibling directories multiply the paths to everything
+        // below them: without a visited set this 8-directory web is descended
+        // into 133 times, so every real directory is walked many times over.
+        // Each must be walked once.
+        let tmp = TempDir::new().unwrap();
+        let dirs: Vec<_> = (0..8).map(|i| tmp.path().join(format!("d{i}"))).collect();
+        for dir in &dirs {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "#\n").unwrap();
+        }
+        for i in 0..dirs.len() - 1 {
+            std::os::unix::fs::symlink(&dirs[i + 1], dirs[i].join("next")).unwrap();
+        }
+        for i in 0..dirs.len() - 2 {
+            std::os::unix::fs::symlink(&dirs[i + 2], dirs[i].join("skip")).unwrap();
+        }
+
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert_eq!(found.len(), dirs.len(), "each directory once: {found:?}");
     }
 
     #[test]
