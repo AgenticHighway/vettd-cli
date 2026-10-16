@@ -15,15 +15,18 @@
 //! 1. A real `vettd scan quick` run against an isolated `$HOME` must not create
 //!    `~/.vettd/scan-cache/`.
 //! 2. The same run must leave pre-existing legacy cache files byte-for-byte
-//!    untouched — not even a SQLite `-wal`/`-shm` sidecar may appear beside
-//!    them, because merely opening the database creates one.
+//!    untouched, and must not leave a SQLite `-wal`/`-shm` sidecar beside them.
+//!    Note this pins "does not mutate", not "does not open": the sentinels are
+//!    not valid databases, and a read-only open need not change them at all.
+//!    Point 3 is what rules out references to the legacy cache entirely, reads
+//!    included, so it — not this — is the primary guard.
 //! 3. No `.rs` file under `crates/vettd-cli/src/` may mention `scan_cache`,
-//!    `scan-cache`, `scan-v1.sqlite`, `scan-v2.sqlite`, `no_cache` or
-//!    `no-cache` — the last two being the `--no-cache` escape hatch that only
-//!    existed to bypass the cache — case-insensitively.
-//!    There is intentionally no allowlist: the goal is zero occurrences. This
-//!    test file itself does contain those strings, which is why the walk is
-//!    scoped to `src/` (and docs are out of its scope).
+//!    `scan-cache`, `scan-v1.sqlite`, `scan-v2.sqlite` or `--no-cache`, nor
+//!    contain `no_cache` as a whole identifier (the clap field that used to
+//!    back `--no-cache`). Case-insensitive, and deliberately without an
+//!    allowlist: the goal is zero occurrences. This test file itself does
+//!    contain those strings, which is why the walk is scoped to `src/` (and
+//!    docs are out of its scope).
 //!
 //! The contract cache (`contract_sync.rs`, `~/.vettd/contract/`) is a separate
 //! feature, unaffected by the removal, and nothing here asserts about it.
@@ -68,15 +71,23 @@ const LEGACY_CACHE_FILES: [(&str, &str); 2] = [
 ];
 
 /// Case-insensitive needles that may not appear anywhere under
-/// `crates/vettd-cli/src/`. Deliberately no allowlist.
-const FORBIDDEN_SOURCE_REFERENCES: [&str; 6] = [
+/// `crates/vettd-cli/src/`. Each is specific enough that a hit really does mean
+/// the removed per-file scan cache is coming back: the module name, the cache
+/// directory name, the legacy database filenames, and the `--no-cache` flag
+/// written with its leading dashes — so an unrelated `Cache-Control: no-cache`
+/// HTTP header cannot trip the guard. Deliberately no allowlist.
+const FORBIDDEN_SOURCE_REFERENCES: [&str; 5] = [
     "scan_cache",
     "scan-cache",
     "scan-v1.sqlite",
     "scan-v2.sqlite",
-    "no_cache",
-    "no-cache",
+    "--no-cache",
 ];
+
+/// Matched as a whole identifier rather than a substring, so a future
+/// `no_cache_headers()` helper is not mistaken for the clap field that backed
+/// `--no-cache`. Case-insensitive, like the needles above.
+const FORBIDDEN_SOURCE_TOKENS: [&str; 1] = ["no_cache"];
 
 // ---------------------------------------------------------------------------
 // Test 1 — the scan never creates the cache directory
@@ -162,10 +173,14 @@ fn source_tree_has_no_reference_to_the_removed_scan_cache() {
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         for (index, line) in contents.lines().enumerate() {
             let lowered = line.to_ascii_lowercase();
-            for needle in FORBIDDEN_SOURCE_REFERENCES {
-                if lowered.contains(needle) {
-                    hits.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
-                }
+            let referenced = FORBIDDEN_SOURCE_REFERENCES
+                .iter()
+                .any(|needle| lowered.contains(needle))
+                || FORBIDDEN_SOURCE_TOKENS
+                    .iter()
+                    .any(|token| contains_identifier(&lowered, token));
+            if referenced {
+                hits.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
             }
         }
     }
@@ -183,6 +198,24 @@ fn source_tree_has_no_reference_to_the_removed_scan_cache() {
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
 // ---------------------------------------------------------------------------
+
+/// Whether `haystack` contains `needle` as a whole identifier — that is, with a
+/// non-identifier character on both sides — rather than as part of a longer one.
+fn contains_identifier(haystack: &str, needle: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].find(needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let before = haystack[..start].chars().next_back();
+        let after = haystack[end..].chars().next();
+        if before.is_none_or(|c| !is_word(c)) && after.is_none_or(|c| !is_word(c)) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
 
 /// Directory holding throwaway `$HOME`s for this test binary, kept inside
 /// `crates/vettd-cli/tests/` beside the other test fixtures rather than in the
@@ -317,16 +350,17 @@ fn seed_legacy_cache(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     expected
 }
 
-/// Fail if a SQLite sidecar appeared beside the seeded legacy databases: merely
-/// opening one of them creates a `-wal`/`-shm`, which is exactly the failure
-/// mode the caller's byte snapshot and this check exist to catch.
+/// Fail if a SQLite sidecar appeared beside the seeded legacy databases. A
+/// reintroduced cache would reopen these files for writing, and SQLite leaves a
+/// `-wal`/`-shm` beside a database it writes to — a side effect the caller's
+/// byte snapshot would otherwise miss if the write never flushed.
 fn assert_no_sqlite_sidecars(dir: &Path) {
     for (name, _) in LEGACY_CACHE_FILES {
         for suffix in ["-wal", "-shm"] {
             let sidecar = dir.join(format!("{name}{suffix}"));
             assert!(
                 !sidecar.exists(),
-                "`vettd scan quick` opened the legacy cache file {name} ({} appeared)",
+                "`vettd scan quick` wrote to the legacy cache file {name} ({} appeared)",
                 sidecar.display()
             );
         }
