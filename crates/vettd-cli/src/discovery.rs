@@ -321,6 +321,60 @@ pub fn default_user_space_roots() -> Vec<PathBuf> {
 // Walking functions
 // ---------------------------------------------------------------------------
 
+/// Keeps a link-following walk from descending into the same real directory
+/// twice.
+///
+/// `walkdir` rejects a symlink that points at one of its own ancestors, but not
+/// the other way a link can recurse: a link into a *sibling* subtree the walk
+/// already visited. Each such link multiplies the paths to everything below it,
+/// so a few links between sibling directories expand the walk combinatorially —
+/// an eight-directory web is descended into 133 times. Recording the canonical
+/// path of each directory entered keeps each real directory to a single
+/// descent, whatever the link topology. (It bounds repeated descent only: a
+/// link that leaves the root, e.g. to `/` or `~`, is still followed once.)
+///
+/// Only a walk that follows links needs this; call [`Self::allows`] from the
+/// `filter_entry` predicate of a `follow_links(true)` walk.
+#[derive(Default)]
+struct WalkGuard {
+    seen: HashSet<PathBuf>,
+}
+
+impl WalkGuard {
+    /// Whether to keep this entry (and, for a directory, descend into it).
+    fn allows(&mut self, entry: &walkdir::DirEntry) -> bool {
+        if !entry.file_type().is_dir() {
+            return true;
+        }
+        let restricted = is_vscode_dir(entry) && entry.depth() > 0;
+        match entry.path().canonicalize() {
+            Ok(real) => self.allows_dir(real, restricted),
+            // Unresolvable: descend rather than risk hiding files.
+            Err(_) => true,
+        }
+    }
+
+    /// The dedup decision, split out from filesystem access so the invariant
+    /// can be tested directly.
+    ///
+    /// An organically-found `.vscode` directory is walked in a restricted mode —
+    /// `should_descend`/`is_included_file` keep only its direct `mcp.json` and
+    /// prune its subdirectories — so it yields different files than an
+    /// unrestricted visit to the same real directory. A restricted visit is
+    /// therefore never recorded, so it can never suppress a later plain alias.
+    /// A `.vscode` walk also never descends a subdirectory, so exempting it
+    /// cannot let a link web recurse. (An explicit `.vscode` walk root is not
+    /// restricted, so nested `.vscode` directories are exempted unnecessarily
+    /// there; that is rare and harmless.)
+    fn allows_dir(&mut self, real: PathBuf, restricted: bool) -> bool {
+        if restricted {
+            return true;
+        }
+        // False once the real directory has already been walked.
+        self.seen.insert(real)
+    }
+}
+
 pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -> Vec<Candidate> {
     let excluded = nonforensic_excluded_set();
     let mut candidates = Vec::new();
@@ -365,8 +419,9 @@ pub fn walk_bounded(root: &Path, origin: &str, on_tick: Option<&dyn Fn(&str)>) -
 /// assets inside them: no depth limit, and only VCS metadata is pruned.
 /// `cache/` and `node_modules/` are where plugin managers and npm physically
 /// install skills (e.g. `~/.claude/plugins/cache/...` sits 7 to 9 levels deep),
-/// and skills are commonly symlinked into place, so links are followed. The
-/// walker detects link loops.
+/// and skills are commonly symlinked into place, so links are followed. A
+/// directory reached by more than one path is walked once (see [`WalkGuard`]),
+/// so a web of links cannot grow the walk.
 pub fn walk_harness_root(
     root: &Path,
     origin: &str,
@@ -376,10 +431,11 @@ pub fn walk_harness_root(
     let mut candidates = Vec::new();
     let mut count: usize = 0;
 
+    let mut guard = WalkGuard::default();
     let walker = WalkDir::new(root).follow_links(true);
     let filtered = walker
         .into_iter()
-        .filter_entry(|e| should_descend(e, &excluded, root));
+        .filter_entry(|e| should_descend(e, &excluded, root) && guard.allows(e));
 
     for entry in filtered.filter_map(|e| e.ok()) {
         if !is_included_file(&entry, root) {
@@ -995,6 +1051,111 @@ mod tests {
 
         let found = walk_harness_root(tmp.path(), "host", None);
         assert!(!found.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_walks_a_shared_link_target_once() {
+        // The shared directory lives outside the root — skills are commonly
+        // symlinked in from elsewhere — and two links point at it: its file must
+        // be reported once, not once per alias.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let shared = tmp.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("SKILL.md"), "#\n").unwrap();
+        for name in ["a", "b"] {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            std::os::unix::fs::symlink(&shared, dir.join("link")).unwrap();
+        }
+
+        let found = walk_harness_root(&root, "host", None);
+        let paths: Vec<_> = found
+            .iter()
+            .map(|c| c.path.canonicalize().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![shared.join("SKILL.md").canonicalize().unwrap()],
+            "shared target walked once: {found:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_walks_each_directory_once_despite_a_link_web() {
+        // Links between sibling directories multiply the paths to everything
+        // below them: without a visited set this 8-directory web is descended
+        // into 133 times, so every real directory is walked many times over.
+        // Each must be walked once.
+        let tmp = TempDir::new().unwrap();
+        let dirs: Vec<_> = (0..8).map(|i| tmp.path().join(format!("d{i}"))).collect();
+        for dir in &dirs {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "#\n").unwrap();
+        }
+        for i in 0..dirs.len() - 1 {
+            std::os::unix::fs::symlink(&dirs[i + 1], dirs[i].join("next")).unwrap();
+        }
+        for i in 0..dirs.len() - 2 {
+            std::os::unix::fs::symlink(&dirs[i + 2], dirs[i].join("skip")).unwrap();
+        }
+
+        let found = walk_harness_root(tmp.path(), "host", None);
+        assert_eq!(found.len(), dirs.len(), "each directory once: {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_does_not_let_a_vscode_alias_hide_another_alias() {
+        // `.vscode` is walked in a restricted mode (direct `mcp.json` only, no
+        // subdirectories). A plain alias to the same directory must not be
+        // skipped just because the `.vscode` alias was walked first, or its
+        // files would be silently lost.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let shared = tmp.path().join("shared");
+        fs::create_dir_all(shared.join("nested")).unwrap();
+        fs::write(shared.join("SKILL.md"), "#\n").unwrap();
+        fs::write(shared.join("nested/SKILL.md"), "#\n").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&shared, root.join(".vscode")).unwrap();
+        std::os::unix::fs::symlink(&shared, root.join("alias")).unwrap();
+
+        let found = walk_harness_root(&root, "host", None);
+        let mut got: Vec<_> = found
+            .iter()
+            .map(|c| c.path.canonicalize().unwrap())
+            .collect();
+        got.sort();
+        let mut want = vec![
+            shared.join("SKILL.md").canonicalize().unwrap(),
+            shared.join("nested/SKILL.md").canonicalize().unwrap(),
+        ];
+        want.sort();
+        assert_eq!(got, want, "both aliases' files found: {found:?}");
+    }
+
+    #[test]
+    fn walk_guard_never_lets_a_restricted_visit_suppress_an_unrestricted_one() {
+        // A `.vscode` visit sees fewer files than an unrestricted visit to the
+        // same real directory, so it must not mark the directory seen; a plain
+        // visit deduplicates normally. Tested directly to avoid depending on
+        // directory enumeration order.
+        let mut guard = WalkGuard::default();
+        let dir = PathBuf::from("/real/dir");
+
+        assert!(guard.allows_dir(dir.clone(), true));
+        assert!(
+            guard.allows_dir(dir.clone(), true),
+            "restricted never records"
+        );
+        assert!(
+            guard.allows_dir(dir.clone(), false),
+            "a plain alias is still walked"
+        );
+        assert!(!guard.allows_dir(dir.clone(), false), "but only once");
     }
 
     #[test]
