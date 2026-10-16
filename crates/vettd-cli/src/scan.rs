@@ -3,7 +3,7 @@
 //! Runs built-in detectors and custom rule-based detectors,
 //! merging their results into a single report.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -15,10 +15,6 @@ use crate::discovery::{
 };
 use crate::models::{ArtifactReport, ScanReport};
 use crate::risk_engine::score_artifact;
-use crate::scan_cache::{
-    build_profile, cache_enabled_for_mode, cacheable_detector, detector_fingerprint,
-    snapshot_candidates, CachedCandidate, ScanCache, PROFILE_MAX_AGE_DAYS,
-};
 use crate::verifier::verify;
 
 struct ScanTimings {
@@ -29,16 +25,6 @@ struct ScanTimings {
 struct DiscoveryRoot {
     path: PathBuf,
     origin: String,
-}
-
-struct PreparedDiscovery {
-    live_candidates: Vec<Candidate>,
-    refreshed_roots: Vec<RefreshedRoot>,
-}
-
-struct RefreshedRoot {
-    path: PathBuf,
-    keep_paths: HashSet<String>,
 }
 
 impl ScanTimings {
@@ -80,10 +66,6 @@ fn timing_value_enabled(value: &str) -> bool {
 /// - `"root"` — entire filesystem from / (full scan)
 /// - `"workdir"` — explicit project directory
 /// - `"file"` — single file
-///
-/// This is the cache-enabled entrypoint. Callers that need to force a fully
-/// cold scan (the `--no-cache` flag wired in `cli.rs`) should call
-/// [`run_scan_with_cache`] with `skip_cache = true` instead.
 pub fn run_scan(
     mode: &str,
     workdir: Option<&Path>,
@@ -91,37 +73,16 @@ pub fn run_scan(
     deep: bool,
     on_tick: Option<&dyn Fn(&str)>,
 ) -> ScanReport {
-    run_scan_with_cache(mode, workdir, file, deep, false, on_tick)
+    run_scan_with_options(mode, workdir, file, deep, false, on_tick)
 }
 
-/// Like [`run_scan`] but lets callers disable the scan cache entirely.
-///
-/// When `skip_cache` is `true` the cache is never opened, so both discovery
-/// and detector reuse fall back to a full scan (equivalent to a cache miss
-/// on every file). This is the hook the `--no-cache` CLI flag should drive:
-/// `cli.rs` reads the flag into `OutputArgs` and calls this function with
-/// `skip_cache = true` instead of [`run_scan`]. Keeping it off [`run_scan`]'s
-/// existing signature avoids churning every existing caller for a
-/// rarely-used escape hatch.
-pub fn run_scan_with_cache(
-    mode: &str,
-    workdir: Option<&Path>,
-    file: Option<&Path>,
-    deep: bool,
-    skip_cache: bool,
-    on_tick: Option<&dyn Fn(&str)>,
-) -> ScanReport {
-    run_scan_with_options(mode, workdir, file, deep, skip_cache, false, on_tick)
-}
-
-/// Like [`run_scan_with_cache`], and with `all_users` set `host` mode (`scan
-/// quick`) also examines other local users' harness roots.
+/// Like [`run_scan`], and with `all_users` set `host` mode (`scan quick`)
+/// also examines other local users' harness roots.
 pub fn run_scan_with_options(
     mode: &str,
     workdir: Option<&Path>,
     file: Option<&Path>,
     deep: bool,
-    skip_cache: bool,
     all_users: bool,
     on_tick: Option<&dyn Fn(&str)>,
 ) -> ScanReport {
@@ -131,29 +92,6 @@ pub fn run_scan_with_options(
     let scan_started_at = Instant::now();
     let detectors = get_all_detectors(mode);
     let scanned_path = resolve_scanned_path(mode, workdir, file);
-    let mut scan_cache = if cache_enabled_for_mode(mode) && !skip_cache {
-        match ScanCache::open_default() {
-            Ok(cache) => Some(cache),
-            Err(e) => {
-                eprintln!("Warning: scan-cache disabled: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let cache_profile = scan_cache.as_ref().map(|_| {
-        build_profile(
-            mode,
-            deep,
-            &scanned_path,
-            &detectors
-                .iter()
-                .map(|detector| detector.name().to_string())
-                .collect::<Vec<_>>(),
-            &crate::rule_engine::rules_fingerprint(),
-        )
-    });
 
     // 1. Discover candidates
     let discovery_started_at = Instant::now();
@@ -168,15 +106,7 @@ pub fn run_scan_with_options(
         deep,
         host_roots,
     };
-    let prepared = discover_candidates(mode, &target, tick);
-    // File-state snapshots only feed the scan cache; skip the per-file stat and
-    // hashing entirely when the cache is off for this mode (e.g. `scan full`).
-    let cached_candidates = if scan_cache.is_some() {
-        snapshot_candidates(&prepared.live_candidates)
-    } else {
-        Vec::new()
-    };
-    let candidates = prepared.live_candidates;
+    let candidates = discover_candidates(mode, &target, tick);
     timings.emit(
         "discovery",
         &format!("mode={mode} files={}", candidates.len()),
@@ -185,17 +115,6 @@ pub fn run_scan_with_options(
 
     // 2. Run built-in (native) detectors
     tick(&format!("checking {} files…", candidates.len()));
-    if let (Some(cache), Some(profile)) = (scan_cache.as_mut(), cache_profile.as_ref()) {
-        if let Err(e) = cache.upsert_profile(profile) {
-            eprintln!("Warning: failed to initialize scan-cache profile: {e}");
-        }
-        if let Err(e) = cache.gc_stale_profiles(PROFILE_MAX_AGE_DAYS) {
-            eprintln!("Warning: failed to garbage-collect scan-cache: {e}");
-        }
-        if let Err(e) = cache.upsert_file_states(&profile.profile_key, &cached_candidates) {
-            eprintln!("Warning: failed to record scan-cache file states: {e}");
-        }
-    }
 
     let mut artifacts: Vec<ArtifactReport> = Vec::new();
     for (i, detector) in detectors.iter().enumerate() {
@@ -207,41 +126,6 @@ pub fn run_scan_with_options(
         ));
         let detector_started_at = Instant::now();
         let before_len = artifacts.len();
-        let detector_name = detector.name();
-        if let (Some(cache), Some(profile)) = (scan_cache.as_mut(), cache_profile.as_ref()) {
-            if cacheable_detector(mode, detector_name) {
-                match reuse_detector_results(
-                    cache,
-                    profile,
-                    detector.as_ref(),
-                    &cached_candidates,
-                    deep,
-                    &mut artifacts,
-                ) {
-                    Ok(cache_stats) => {
-                        timings.emit(
-                            "detector",
-                            &format!(
-                                "index={}/{} name={} new_artifacts={} cache_hits={} cache_misses={}",
-                                i + 1,
-                                detectors.len(),
-                                detector_name,
-                                artifacts.len() - before_len,
-                                cache_stats.hit_files,
-                                cache_stats.miss_files,
-                            ),
-                            detector_started_at,
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: detector cache disabled for {detector_name} during this run: {e}"
-                        );
-                    }
-                }
-            }
-        }
         artifacts.extend(detector.detect(&candidates, deep));
         timings.emit(
             "detector",
@@ -290,18 +174,6 @@ pub fn run_scan_with_options(
         ),
         scan_started_at,
     );
-
-    if let (Some(cache), Some(profile)) = (scan_cache.as_mut(), cache_profile.as_ref()) {
-        for refreshed_root in &prepared.refreshed_roots {
-            if let Err(e) = cache.prune_profile_root_artifacts(
-                &profile.profile_key,
-                &refreshed_root.path,
-                &refreshed_root.keep_paths,
-            ) {
-                eprintln!("Warning: failed to prune stale scan-cache rows: {e}");
-            }
-        }
-    }
 
     let mut report = ScanReport::new(&scanned_path);
     report.artifacts = artifacts;
@@ -355,7 +227,7 @@ fn discover_candidates(
     mode: &str,
     target: &DiscoveryTarget,
     tick: &dyn Fn(&str),
-) -> PreparedDiscovery {
+) -> Vec<Candidate> {
     let DiscoveryTarget {
         workdir,
         file,
@@ -364,38 +236,21 @@ fn discover_candidates(
     } = target;
     let (workdir, file, deep) = (*workdir, *file, *deep);
     match mode {
-        "file" => PreparedDiscovery {
-            live_candidates: discover_file_surface(
-                file.expect("file path is required for file mode"),
-            ),
-            refreshed_roots: Vec::new(),
-        },
-        "workdir" => PreparedDiscovery {
-            live_candidates: discover_workdir_surfaces(
-                workdir.expect("workdir path is required for workdir mode"),
-                deep,
-                Some(tick),
-            ),
-            refreshed_roots: Vec::new(),
-        },
+        "file" => discover_file_surface(file.expect("file path is required for file mode")),
+        "workdir" => discover_workdir_surfaces(
+            workdir.expect("workdir path is required for workdir mode"),
+            deep,
+            Some(tick),
+        ),
         "scan" => discover_scan_candidates(tick),
-        "filesystem" => PreparedDiscovery {
-            live_candidates: discover_filesystem_surfaces(Some(tick)),
-            refreshed_roots: Vec::new(),
-        },
-        "home" => PreparedDiscovery {
-            live_candidates: discover_home_surfaces(Some(tick)),
-            refreshed_roots: Vec::new(),
-        },
-        "root" => PreparedDiscovery {
-            live_candidates: crate::root_walk::discover_root_surfaces(Some(tick)),
-            refreshed_roots: Vec::new(),
-        },
+        "filesystem" => discover_filesystem_surfaces(Some(tick)),
+        "home" => discover_home_surfaces(Some(tick)),
+        "root" => crate::root_walk::discover_root_surfaces(Some(tick)),
         _ => discover_host_candidates(host_roots, tick),
     }
 }
 
-fn discover_host_candidates(host_roots: &[PathBuf], tick: &dyn Fn(&str)) -> PreparedDiscovery {
+fn discover_host_candidates(host_roots: &[PathBuf], tick: &dyn Fn(&str)) -> Vec<Candidate> {
     let roots = host_roots
         .iter()
         .cloned()
@@ -407,11 +262,8 @@ fn discover_host_candidates(host_roots: &[PathBuf], tick: &dyn Fn(&str)) -> Prep
     discover_refreshable_roots(roots, tick)
 }
 
-fn discover_scan_candidates(tick: &dyn Fn(&str)) -> PreparedDiscovery {
-    let mut prepared = PreparedDiscovery {
-        live_candidates: discover_direct_home_files(),
-        refreshed_roots: Vec::new(),
-    };
+fn discover_scan_candidates(tick: &dyn Fn(&str)) -> Vec<Candidate> {
+    let mut candidates = discover_direct_home_files();
     let mut roots = host_roots_for(false)
         .into_iter()
         .map(|path| DiscoveryRoot {
@@ -428,10 +280,8 @@ fn discover_scan_candidates(tick: &dyn Fn(&str)) -> PreparedDiscovery {
             }),
     );
 
-    let refreshed = discover_refreshable_roots(roots, tick);
-    prepared.live_candidates.extend(refreshed.live_candidates);
-    prepared.refreshed_roots.extend(refreshed.refreshed_roots);
-    prepared
+    candidates.extend(discover_refreshable_roots(roots, tick));
+    candidates
 }
 
 /// A root path for progress display, with the home directory shortened to `~`.
@@ -442,9 +292,8 @@ fn display_root(path: &Path) -> String {
     }
 }
 
-fn discover_refreshable_roots(roots: Vec<DiscoveryRoot>, tick: &dyn Fn(&str)) -> PreparedDiscovery {
-    let mut live_candidates = Vec::new();
-    let mut refreshed_roots = Vec::new();
+fn discover_refreshable_roots(roots: Vec<DiscoveryRoot>, tick: &dyn Fn(&str)) -> Vec<Candidate> {
+    let mut candidates = Vec::new();
 
     for root in roots {
         // Name the directory being walked, and keep the name beside the file
@@ -459,153 +308,10 @@ fn discover_refreshable_roots(roots: Vec<DiscoveryRoot>, tick: &dyn Fn(&str)) ->
         } else {
             walk_bounded(&root.path, &root.origin, Some(&root_tick))
         };
-        let keep_paths = root_candidates
-            .iter()
-            .map(|candidate| candidate.path.to_string_lossy().to_string())
-            .collect();
-        refreshed_roots.push(RefreshedRoot {
-            path: root.path,
-            keep_paths,
-        });
-        live_candidates.extend(root_candidates);
+        candidates.extend(root_candidates);
     }
 
-    PreparedDiscovery {
-        live_candidates,
-        refreshed_roots,
-    }
-}
-
-struct DetectorCacheStats {
-    hit_files: usize,
-    miss_files: usize,
-}
-
-fn reuse_detector_results(
-    cache: &mut ScanCache,
-    profile: &crate::scan_cache::ScanCacheProfile,
-    detector: &dyn crate::detectors::base::Detector,
-    candidates: &[CachedCandidate],
-    deep: bool,
-    all_artifacts: &mut Vec<ArtifactReport>,
-) -> Result<DetectorCacheStats, String> {
-    let detector_name = detector.name();
-    let detector_fingerprint = detector_fingerprint(detector_name);
-    let cached_bundles = cache.load_detector_bundles(&profile.profile_key, detector_name)?;
-    let mut misses = Vec::new();
-    let mut miss_candidates = Vec::new();
-    let mut hit_files = 0;
-
-    for candidate in candidates {
-        let Some(file_state) = &candidate.file_state else {
-            misses.push(candidate.clone());
-            miss_candidates.push(candidate.candidate.clone());
-            continue;
-        };
-
-        match cached_bundles.get(&file_state.canonical_path) {
-            Some(bundle)
-                if bundle.file_state_key == file_state.state_key
-                    && bundle.detector_fingerprint == detector_fingerprint =>
-            {
-                all_artifacts.extend(bundle.artifacts.clone());
-                hit_files += 1;
-            }
-            _ => {
-                misses.push(candidate.clone());
-                miss_candidates.push(candidate.candidate.clone());
-            }
-        }
-    }
-
-    let fresh_artifacts = detector.detect(&miss_candidates, deep);
-    let (artifacts_by_path, unattributed) = group_artifacts_by_path(&fresh_artifacts);
-    if unattributed > 0 {
-        eprintln!(
-            "Warning: detector '{detector_name}' produced {unattributed} artifact(s) without a \
-             resolvable metadata[\"paths\"][0]; skipping scan-cache persistence for this \
-             detector this run to avoid silently caching an empty result for the candidate(s) \
-             those artifacts belong to. Results will be re-detected on every scan until this \
-             detector is fixed."
-        );
-    }
-    if unattributed == 0 && cache_attribution_is_safe(detector_name, &artifacts_by_path, &misses) {
-        cache.persist_detector_results(
-            &profile.profile_key,
-            detector_name,
-            &detector_fingerprint,
-            &misses,
-            &artifacts_by_path,
-        )?;
-    }
-    all_artifacts.extend(fresh_artifacts);
-
-    Ok(DetectorCacheStats {
-        hit_files,
-        miss_files: misses.len(),
-    })
-}
-
-fn group_artifacts_by_path(
-    artifacts: &[ArtifactReport],
-) -> (HashMap<String, Vec<ArtifactReport>>, usize) {
-    let mut grouped = HashMap::new();
-    let mut unattributed = 0;
-    for artifact in artifacts {
-        let Some(path) = artifact
-            .metadata
-            .get("paths")
-            .and_then(|value| value.as_array())
-            .and_then(|paths| paths.first())
-            .and_then(|value| value.as_str())
-        else {
-            unattributed += 1;
-            continue;
-        };
-        grouped
-            .entry(path.to_string())
-            .or_insert_with(Vec::new)
-            .push(artifact.clone());
-    }
-    (grouped, unattributed)
-}
-
-/// Guards the detector-registration contract's path-key invariant: a
-/// cacheable detector's artifacts must be keyed (via `metadata["paths"][0]`)
-/// to a canonical path that's actually among this run's candidates.
-/// `persist_detector_results` looks up `artifacts_by_path` by each
-/// candidate's canonical path and silently persists an empty result on a
-/// miss — so an artifact keyed to a path outside `misses` would otherwise
-/// vanish from the cache immediately, then look like a legitimate "zero
-/// artifacts" hit on every subsequent warm scan. If that happens, skip
-/// caching for this detector this run (falling back to always re-detecting,
-/// which is slow but never silently wrong) and warn loudly instead.
-fn cache_attribution_is_safe(
-    detector_name: &str,
-    artifacts_by_path: &HashMap<String, Vec<ArtifactReport>>,
-    misses: &[CachedCandidate],
-) -> bool {
-    let known_paths: HashSet<&str> = misses
-        .iter()
-        .filter_map(|candidate| candidate.file_state.as_ref())
-        .map(|file_state| file_state.canonical_path.as_str())
-        .collect();
-    let orphaned: Vec<&str> = artifacts_by_path
-        .keys()
-        .map(String::as_str)
-        .filter(|path| !known_paths.contains(path))
-        .collect();
-    if orphaned.is_empty() {
-        return true;
-    }
-    eprintln!(
-        "Warning: detector '{detector_name}' reported artifacts for {} path(s) not present in \
-         this run's candidate set; skipping scan-cache persistence for this detector this run \
-         to avoid silently caching an empty result. This usually means \
-         metadata[\"paths\"][0] does not exactly equal the candidate's canonicalized path.",
-        orphaned.len()
-    );
-    false
+    candidates
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +437,6 @@ mod tests {
 
     use super::*;
     use crate::contract::build_contract_payload;
-    use crate::scan_cache::FileStateSnapshot;
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
@@ -741,318 +446,100 @@ mod tests {
         a
     }
 
-    fn cached_candidate_at(path: &str) -> CachedCandidate {
-        CachedCandidate {
-            candidate: Candidate {
-                path: PathBuf::from(path),
-                origin: "workdir".to_string(),
-            },
-            file_state: Some(FileStateSnapshot {
-                canonical_path: path.to_string(),
-                origin: "workdir".to_string(),
-                stable_file_id: None,
-                size_bytes: 0,
-                modified_ns: None,
-                content_hash: None,
-                state_key: "state".to_string(),
-            }),
-        }
-    }
+    // --- cross-run freshness: nothing is persisted between scans ---
 
-    // --- group_artifacts_by_path ---
-
-    #[test]
-    fn group_artifacts_by_path_groups_by_metadata_paths_first_entry() {
-        let artifacts = vec![artifact_at("mcp_config", "/project/mcp.json")];
-        let (grouped, unattributed) = group_artifacts_by_path(&artifacts);
-        assert_eq!(unattributed, 0);
-        assert_eq!(grouped.get("/project/mcp.json").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn group_artifacts_by_path_counts_artifacts_missing_paths_metadata() {
-        let artifact = ArtifactReport::new("mcp_config", 0.8); // no metadata["paths"]
-        let (grouped, unattributed) = group_artifacts_by_path(&[artifact]);
-        assert!(grouped.is_empty());
-        assert_eq!(unattributed, 1);
-    }
-
-    // --- cache_attribution_is_safe: the paths[0]-must-match-a-candidate invariant ---
-
-    #[test]
-    fn cache_attribution_is_safe_when_artifact_paths_match_candidates() {
-        let artifacts = vec![artifact_at("mcp_config", "/project/mcp.json")];
-        let (grouped, _) = group_artifacts_by_path(&artifacts);
-        let misses = vec![cached_candidate_at("/project/mcp.json")];
-
-        assert!(cache_attribution_is_safe("mcp_configs", &grouped, &misses));
-    }
-
-    #[test]
-    fn cache_attribution_is_unsafe_when_artifact_path_has_no_matching_candidate() {
-        // Simulates a detector whose metadata["paths"][0] doesn't exactly
-        // equal the candidate's canonicalized path — e.g. a relative path,
-        // or a symlink target instead of the symlink itself. Without this
-        // guard, persist_detector_results would cache an empty result under
-        // the real candidate's path, silently dropping the artifact from
-        // every subsequent warm scan.
-        let artifacts = vec![artifact_at("mcp_config", "/elsewhere/mcp.json")];
-        let (grouped, _) = group_artifacts_by_path(&artifacts);
-        let misses = vec![cached_candidate_at("/project/mcp.json")];
-
-        assert!(!cache_attribution_is_safe("mcp_configs", &grouped, &misses));
-    }
-
-    #[test]
-    fn cache_attribution_is_safe_for_empty_artifacts() {
-        let (grouped, _) = group_artifacts_by_path(&[]);
-        let misses = vec![cached_candidate_at("/project/mcp.json")];
-
-        assert!(cache_attribution_is_safe("mcp_configs", &grouped, &misses));
-    }
-
-    // --- reuse_detector_results: end-to-end warm-scan regression coverage ---
-
-    struct StubDetector {
-        name: &'static str,
-        artifacts: Vec<ArtifactReport>,
-    }
-
-    impl crate::detectors::base::Detector for StubDetector {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn detect(&self, _candidates: &[Candidate], _deep: bool) -> Vec<ArtifactReport> {
-            self.artifacts.clone()
-        }
-    }
-
-    #[test]
-    fn reuse_detector_results_never_silently_drops_an_unattributed_artifact_on_warm_scans() {
-        // Regression test for the exact failure mode issue #200 calls out:
-        // a cacheable detector that returns an artifact without a
-        // metadata["paths"][0] matching its candidate's canonical path
-        // must not have an empty result cached for that candidate — that
-        // would make the artifact vanish on every subsequent unchanged
-        // (warm) scan, without any error or indication anything is wrong.
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("scan-v1.sqlite3");
-        let file = dir.path().join("mcp.json");
-        std::fs::write(&file, "{}").unwrap();
-
-        let mut cache = ScanCache::open_at(&db_path).unwrap();
-        let profile = build_profile(
-            "workdir",
-            false,
-            "test",
-            &["stub_detector".to_string()],
-            "rules",
-        );
-        cache.upsert_profile(&profile).unwrap();
-
-        let candidates = snapshot_candidates(&[Candidate {
-            path: file.clone(),
-            origin: "workdir".to_string(),
-        }]);
-        cache
-            .upsert_file_states(&profile.profile_key, &candidates)
-            .unwrap();
-
-        // Deliberately missing metadata["paths"] — simulates a detector
-        // that violates the cache-key invariant.
-        let mut broken_artifact = ArtifactReport::new("mcp_config", 0.9);
-        broken_artifact.compute_hash();
-        let detector = StubDetector {
-            name: "stub_detector",
-            artifacts: vec![broken_artifact],
-        };
-
-        let mut cold_scan = Vec::new();
-        reuse_detector_results(
-            &mut cache,
-            &profile,
-            &detector,
-            &candidates,
-            false,
-            &mut cold_scan,
-        )
-        .unwrap();
-        assert_eq!(cold_scan.len(), 1, "artifact should surface on a cold scan");
-
-        // Second scan against the same unchanged file: file_state hasn't
-        // changed, so a naive cache would report this as a hit backed by
-        // whatever was persisted after the first scan.
-        let mut warm_scan = Vec::new();
-        reuse_detector_results(
-            &mut cache,
-            &profile,
-            &detector,
-            &candidates,
-            false,
-            &mut warm_scan,
-        )
-        .unwrap();
-        assert_eq!(
-            warm_scan.len(),
-            1,
-            "artifact must still surface on a warm scan — it should be treated as a \
-             permanent cache miss (always re-detected) rather than have an empty result \
-             cached for it"
-        );
-    }
-
-    /// A detector whose verdict is a fixed marker plus a `paths[0]` pointing at
-    /// each candidate, so a warm scan can distinguish a fresh verdict (new
-    /// marker) from a stale cached one (old marker).
-    struct VerdictDetector {
-        name: &'static str,
-        marker: &'static str,
-    }
-
-    impl crate::detectors::base::Detector for VerdictDetector {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn detect(&self, candidates: &[Candidate], _deep: bool) -> Vec<ArtifactReport> {
-            candidates
-                .iter()
-                .map(|c| {
-                    let mut a = ArtifactReport::new("mcp_config", 0.9);
-                    a.metadata.insert(
-                        "paths".into(),
-                        json!([c.path.to_string_lossy().to_string()]),
-                    );
-                    a.metadata.insert("verdict".into(), json!(self.marker));
-                    a
-                })
-                .collect()
-        }
-    }
-
-    fn verdict_of(artifacts: &[ArtifactReport], path: &Path) -> Option<String> {
-        let path_str = path.to_string_lossy().to_string();
-        artifacts
+    /// Content digest reported for the first artifact whose `metadata["paths"][0]`
+    /// ends with `suffix`.
+    fn content_hash_for(report: &ScanReport, suffix: &str) -> String {
+        report
+            .artifacts
             .iter()
-            .find(|a| {
-                a.metadata
+            .find(|artifact| {
+                artifact
+                    .metadata
                     .get("paths")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.as_str())
-                    .map(|p| p == path_str)
-                    .unwrap_or(false)
+                    .and_then(|value| value.as_array())
+                    .and_then(|paths| paths.first())
+                    .and_then(|path| path.as_str())
+                    .is_some_and(|path| Path::new(path).ends_with(suffix))
             })
-            .and_then(|a| a.metadata.get("verdict"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
+            .and_then(|artifact| artifact.metadata.get("content_hash"))
+            .and_then(|value| value.as_str())
+            .expect("expected an artifact with a content_hash for the given path suffix")
+            .to_string()
     }
 
     #[test]
-    fn same_size_same_mtime_tamper_rejects_stale_detector_verdict() {
-        // Issue #199 AC #1 end-to-end (reviewer finding #10): persisting a
-        // detector verdict, then tampering the artifact while preserving size
-        // AND mtime, must NOT reuse the now-stale cached verdict on the warm
-        // path. The detector re-runs and the fresh verdict matches a cold scan
-        // of the new content — proving rejection at the verdict level, not just
-        // the state-key level.
+    fn repeated_scans_reflect_current_content_on_a_same_size_same_mtime_tamper() {
+        // Issue #293 deleted the per-file scan cache, which treated a file as
+        // unchanged when its size AND mtime matched the previous run, and then
+        // reused that run's detector results. With nothing persisted between
+        // runs, a file edited to different content of the SAME size and the
+        // SAME mtime must still be seen as changed by the next scan — this is
+        // precisely the case the removed cache got wrong, so the property must
+        // not become silently reintroducible.
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("scan-v2.sqlite3");
-        let file = dir.path().join("mcp.json");
-        std::fs::write(&file, b"{}").unwrap(); // content A (2 bytes)
+        let vscode_dir = dir.path().join(".vscode");
+        std::fs::create_dir_all(&vscode_dir).unwrap();
+        let mcp = vscode_dir.join("mcp.json");
 
-        let mut cache = ScanCache::open_at(&db_path).unwrap();
-        let profile = build_profile(
-            "workdir",
-            false,
-            "test",
-            &["tamper_detector".to_string()],
-            "rules",
-        );
-        cache.upsert_profile(&profile).unwrap();
-
-        // Cold scan of content A → verdict-A persisted.
-        let candidates_a = snapshot_candidates(&[Candidate {
-            path: file.clone(),
-            origin: "workdir".to_string(),
-        }]);
-        cache
-            .upsert_file_states(&profile.profile_key, &candidates_a)
-            .unwrap();
-        let detector_a = VerdictDetector {
-            name: "tamper_detector",
-            marker: "verdict-A",
-        };
-        let mut cold_a = Vec::new();
-        reuse_detector_results(
-            &mut cache,
-            &profile,
-            &detector_a,
-            &candidates_a,
-            false,
-            &mut cold_a,
-        )
-        .unwrap();
+        // Two valid MCP configs of identical byte length, differing only in the
+        // server name.
+        let content_a = r#"{"mcpServers":{"alpha":{"command":"node"}}}"#;
+        let content_b = r#"{"mcpServers":{"bravo":{"command":"node"}}}"#;
         assert_eq!(
-            verdict_of(&cold_a, &file).as_deref(),
-            Some("verdict-A"),
-            "cold scan of content A must yield the A verdict"
+            content_a.len(),
+            content_b.len(),
+            "the two contents must be the same size for this test to be meaningful"
         );
 
-        // Tamper: different content of the SAME size, restore the original
-        // mtime so the stat tuple is identical to before the edit.
-        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-        std::fs::write(&file, b"OK").unwrap(); // still 2 bytes, content B
+        std::fs::write(&mcp, content_a).unwrap();
+        let first = content_hash_for(
+            &run_scan("workdir", Some(dir.path()), None, false, None),
+            ".vscode/mcp.json",
+        );
+
+        // Re-scanning the untouched file must be stable, so the `assert_ne!`
+        // below can only pass because the content actually changed.
+        let rescan = content_hash_for(
+            &run_scan("workdir", Some(dir.path()), None, false, None),
+            ".vscode/mcp.json",
+        );
+        assert_eq!(
+            rescan, first,
+            "re-scanning unchanged content must report the same content hash"
+        );
+
+        // Tamper: different content of the same size, with the original mtime
+        // restored so the stat tuple is identical to the pre-edit one.
+        let original_mtime = std::fs::metadata(&mcp).unwrap().modified().unwrap();
+        std::fs::write(&mcp, content_b).unwrap();
         {
             use std::fs::FileTimes;
             use std::fs::OpenOptions;
             OpenOptions::new()
                 .write(true)
-                .open(&file)
+                .open(&mcp)
                 .unwrap()
                 .set_times(FileTimes::new().set_modified(original_mtime))
                 .unwrap();
         }
-        let meta = std::fs::metadata(&file).unwrap();
-        assert_eq!(meta.len(), 2, "size must be unchanged");
+        let meta = std::fs::metadata(&mcp).unwrap();
+        assert_eq!(meta.len(), content_a.len() as u64, "size must be unchanged");
         assert_eq!(
             meta.modified().unwrap(),
             original_mtime,
             "mtime must be unchanged for this test to be meaningful"
         );
 
-        // Warm scan against the tampered file: the same-size same-mtime edit
-        // changes the full-file cache hash + state key, so the stale verdict-A
-        // bundle must NOT be reused. The detector re-runs and yields verdict-B.
-        let candidates_b = snapshot_candidates(&[Candidate {
-            path: file.clone(),
-            origin: "workdir".to_string(),
-        }]);
-        cache
-            .upsert_file_states(&profile.profile_key, &candidates_b)
-            .unwrap();
-        let detector_b = VerdictDetector {
-            name: "tamper_detector",
-            marker: "verdict-B",
-        };
-        let mut warm = Vec::new();
-        reuse_detector_results(
-            &mut cache,
-            &profile,
-            &detector_b,
-            &candidates_b,
-            false,
-            &mut warm,
-        )
-        .unwrap();
-
-        assert_eq!(
-            verdict_of(&warm, &file).as_deref(),
-            Some("verdict-B"),
-            "the stale cached verdict-A must NOT be reused after a same-size \
-             same-mtime tamper; the detector must re-run and produce the fresh \
-             verdict"
+        let after = content_hash_for(
+            &run_scan("workdir", Some(dir.path()), None, false, None),
+            ".vscode/mcp.json",
+        );
+        assert_ne!(
+            after, first,
+            "a same-size same-mtime content change must be reflected by the next scan; \
+             nothing may be reused across runs"
         );
     }
 
@@ -1292,31 +779,11 @@ mod tests {
     }
 
     #[test]
-    fn containers_detector_is_never_cacheable_for_cross_file_coherence() {
-        // Issue #199 Defect B: the `containers` detector derives a
-        // container's `ai_artifact_proximity` from *sibling* AI files, so a
-        // per-file artifact cache is unsound — a warm scan would serve an
-        // unchanged container from cache while its changed siblings are
-        // excluded from the re-detected miss slice, giving warm ≠ cold.
-        // It must always re-detect over the full candidate set.
-        for mode in ["host", "scan", "workdir", "file"] {
-            assert!(
-                !cacheable_detector(mode, "containers"),
-                "'containers' must always re-detect (never be warmed from cache) in {mode} mode"
-            );
-        }
-        // Sanity: a truly per-file detector remains cacheable.
-        assert!(cacheable_detector("workdir", "mcp_configs"));
-        assert!(cacheable_detector("file", "mcp_configs"));
-    }
-
-    #[test]
-    fn containers_warm_scan_matches_cold_for_ai_artifact_proximity() {
-        // Issue #199 Defect B regression: warming from cache must reproduce a
-        // cold scan's cross-file container verdict. The `containers` detector
-        // is never cached, so editing ONLY the Dockerfile (AGENTS.md sibling
-        // unchanged) still re-detects the container against the full tree and
-        // keeps `ai_artifact_proximity` true.
+    fn editing_the_dockerfile_keeps_ai_artifact_proximity_from_sibling_ai_files() {
+        // The `containers` detector derives a container's `ai_artifact_proximity`
+        // from *sibling* AI files, so the verdict must be re-derived from the
+        // whole tree on every scan. Editing ONLY the Dockerfile (AGENTS.md
+        // unchanged) must therefore not change it.
         let tmp = tempfile::TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
         let agents = tmp.path().join("AGENTS.md");
@@ -1327,54 +794,52 @@ mod tests {
         .unwrap();
         std::fs::write(&agents, "# Agents\n\nUse shell tools to inspect files.\n").unwrap();
 
-        let cold_report = run_scan("workdir", Some(tmp.path()), None, true, None);
-        let cold_docker = container_artifact(&cold_report, "Dockerfile");
-        assert_eq!(cold_docker.metadata["ai_artifact_proximity"], true);
+        let before = run_scan("workdir", Some(tmp.path()), None, true, None);
+        assert_eq!(
+            container_artifact(&before, "Dockerfile").metadata["ai_artifact_proximity"],
+            true
+        );
 
-        // Change ONLY the Dockerfile. Its size/mtime change makes it a cache
-        // miss, but the sibling AGENTS.md is unchanged — so this is exactly the
-        // case where a per-file cache would re-detect the container against an
-        // incomplete (miss-only) set and wrongly drop proximity.
+        // Change ONLY the Dockerfile; the sibling AGENTS.md is untouched.
         std::fs::write(
             &dockerfile,
             "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nCMD [\"npm\", \"start\"]\n",
         )
         .unwrap();
 
-        let warm_report = run_scan("workdir", Some(tmp.path()), None, true, None);
-        let warm_docker = container_artifact(&warm_report, "Dockerfile");
+        let after = run_scan("workdir", Some(tmp.path()), None, true, None);
         assert_eq!(
-            warm_docker.metadata["ai_artifact_proximity"], true,
-            "warm scan must still see the colocated AGENTS.md sibling"
+            container_artifact(&after, "Dockerfile").metadata["ai_artifact_proximity"],
+            true,
+            "the second scan must still see the colocated AGENTS.md sibling"
         );
     }
 
     #[test]
-    fn containers_warm_scan_drops_proximity_after_sibling_deleted() {
-        // Issue #199 Defect B regression (inverse): deleting the sibling AI
-        // file must flip `ai_artifact_proximity` off on the next scan even
-        // though the Dockerfile itself is untouched. This is the case a
-        // per-file cache fundamentally cannot get right — the unchanged
-        // container would be a cache hit with stale proximity.
+    fn deleting_the_sibling_ai_file_drops_ai_artifact_proximity() {
+        // The inverse case: deleting the sibling AI file must flip
+        // `ai_artifact_proximity` off on the next scan even though the
+        // Dockerfile itself is untouched, because the container verdict is
+        // re-derived from the whole tree on every scan.
         let tmp = tempfile::TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
         let agents = tmp.path().join("AGENTS.md");
         std::fs::write(&dockerfile, "FROM python:3.11-slim\n").unwrap();
         std::fs::write(&agents, "# Agents\n").unwrap();
 
-        let cold_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        let before = run_scan("workdir", Some(tmp.path()), None, true, None);
         assert_eq!(
-            container_artifact(&cold_report, "Dockerfile").metadata["ai_artifact_proximity"],
+            container_artifact(&before, "Dockerfile").metadata["ai_artifact_proximity"],
             true
         );
 
         std::fs::remove_file(&agents).unwrap();
 
-        let warm_report = run_scan("workdir", Some(tmp.path()), None, true, None);
+        let after = run_scan("workdir", Some(tmp.path()), None, true, None);
         assert_eq!(
-            container_artifact(&warm_report, "Dockerfile").metadata["ai_artifact_proximity"],
+            container_artifact(&after, "Dockerfile").metadata["ai_artifact_proximity"],
             false,
-            "deleting the only colocated AI file must drop proximity on a warm scan"
+            "deleting the only colocated AI file must drop proximity on the next scan"
         );
     }
 

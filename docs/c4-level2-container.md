@@ -18,7 +18,6 @@ flowchart TD
         ScannerUUID["~/.vettd/scanner_uuid\n(persistent identity)"]
         RulesDir["~/.vettd/rules/*.toml\n(custom detection rules)"]
         ContractCache["~/.vettd/contract/\n(cached schema + version)"]
-        ScanCache["~/.vettd/scan-cache/\n(SQLite scan profiles, file states,\ndetector artifacts for repeated scans,\nfuture root cursors)"]
         UpdateFiles["~/.vettd/downloads/\n~/.vettd/vettd.backup"]
         AccessFile["~/.vettd/.vettd.toml\n(access mode only — no endpoint/license)"]
         ReportFiles["vettd-report.json /\nvettd-contract.json /\ncustom output path"]
@@ -37,7 +36,6 @@ flowchart TD
     CLI -->|"reads access settings"| AccessFile
     ScanEngine -->|"reads candidates"| FS
     ScanEngine -->|"loads rules"| RulesDir
-    ScanEngine -.->|"reuses unchanged detector results"| ScanCache
     ScanEngine -->|"produces ScanReport"| OutputLayer
     OutputLayer -->|"writes local reports"| ReportFiles
     OutputLayer -->|"submits when requested"| Submission
@@ -63,4 +61,4 @@ flowchart TD
 | Submission Pipeline | ureq (HTTP)         | Build contract payloads, resolve auth, sync contract version, submit payload                  |
 | Self-Updater        | ureq + flate2/tar   | Verify signed manifests, download platform archives, verify SHA-256, swap binary              |
 | Rule Engine         | toml + validation   | Load, validate, install custom `.toml` detection rules                                        |
-| Local Storage       | Filesystem          | Persist identity, auth, rules, access settings, contract cache, scan cache, update temp files |
+| Local Storage       | Filesystem          | Persist identity, auth, rules, access settings, contract cache, update temp files             |

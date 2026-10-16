@@ -137,31 +137,12 @@ a repeatable local benchmark path for key scan modes.
 
 ### Incremental direction
 
-Longer-term, normal scans should reuse cached metadata and eventually integrate
-OS-native file change feeds so unchanged files do not get rescanned every run.
+Longer-term, normal scans should integrate OS-native file change feeds so
+unchanged files do not get rescanned every run:
 
-The first implementation slices are now in code for `quick`, default `scan`,
-explicit `file`, and repeated explicit `folder` / `repo` scans:
-
-- repeated runs persist scan profiles, file states, and detector output in
-  `~/.vettd/scan-cache/scan-v1.sqlite3`
-- unchanged file-backed detector inputs reuse cached artifacts for
-  `custom_rules`, `containers`, and `mcp_configs`
-- explicit `file` scans now reuse the same cache path, and file-mode
-  `source_risks` participates because it is a deterministic single-file result
-- on macOS, repeated `quick` and `scan` runs now also persist root replay
-  cursors so unchanged bounded roots can skip a fresh directory walk entirely
-- explicit `folder` and `repo` scans now reuse the same cache model, keyed by
-  the resolved target root plus depth mode
-- browser footprint detection remains uncached in this slice
-- watcher-backed refresh outside macOS is still future work
-
-The concrete design for that path now lives in
-[incremental-scan-design.md](incremental-scan-design.md). The short version:
-
-- start with a persistent stat-and-artifact cache for `quick` and `scan`
 - treat OS-native change feeds as accelerators, not the only source of truth
 - prefer replayable event history where the platform supports it
+- watcher-backed refresh is still future work
 - keep `full` mode intentionally non-incremental by default
 
 ## Issue breakdown
@@ -173,7 +154,7 @@ The work is split into mergeable GitHub issues:
 3. [#56](https://github.com/AgenticHighway/vettd-cli/issues/56) Reduce candidate fan-out and memory pressure in the scan pipeline
 4. [#57](https://github.com/AgenticHighway/vettd-cli/issues/57) Eliminate duplicate file reads and hashing in detection
 5. [#58](https://github.com/AgenticHighway/vettd-cli/issues/58) Add scan benchmarking and performance guardrails
-6. [#59](https://github.com/AgenticHighway/vettd-cli/issues/59) Design incremental scan caching and OS-native change tracking
+6. [#59](https://github.com/AgenticHighway/vettd-cli/issues/59) Design incremental scan caching and OS-native change tracking — closed; the per-file scan cache it produced was removed in [#293](https://github.com/AgenticHighway/vettd-cli/issues/293) (it was slower than no cache at every volume). The OS-native change-tracking direction above still stands.
 
 Parent tracker:
 
@@ -191,7 +172,6 @@ Recommended titles:
 3. `perf: reduce candidate fan-out across detectors`
 4. `perf: reuse file digests during detection`
 5. `perf: add scan timing baselines and instrumentation`
-6. `docs: design incremental scan cache and change tracking`
 
 ## Non-goals for the first performance slice
 

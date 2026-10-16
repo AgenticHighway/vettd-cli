@@ -35,55 +35,40 @@ fn read_utf8_head(path: &Path, max_bytes: usize) -> Option<String> {
 // ---------------------------------------------------------------------------
 //
 // This table is the single place that ties a detector's name to which scan
-// modes run it and which of those modes it may be cached in. Adding a
-// detector means adding one `DetectorSpec` entry here — not hand-syncing
-// separate match statements across this module and `scan_cache.rs`.
+// modes run it. Adding a detector means adding one `DetectorSpec` entry here
+// — not hand-syncing separate match statements across this module.
 //
 // Only modes the CLI can actually dispatch (see
 // `cli.rs::resolve_scan_params`) belong in `modes`: "host", "scan", "root",
 // "workdir", "file".
-//
-// `cacheable_modes` must be a subset of `modes`. Caching a detector's
-// results additionally requires that every `ArtifactReport` it returns has
-// `metadata["paths"][0]` exactly equal to the candidate's canonicalized
-// path — `scan.rs::reuse_detector_results` validates this at runtime and
-// refuses to persist (with a loud warning) rather than silently caching an
-// empty result if a detector violates it.
 
 const ALL_MODES: &[&str] = &["host", "scan", "root", "workdir", "file"];
-const CACHE_ELIGIBLE_MODES: &[&str] = &["host", "scan", "workdir", "file"];
 
 struct DetectorSpec {
     name: &'static str,
     modes: &'static [&'static str],
-    cacheable_modes: &'static [&'static str],
 }
 
 const DETECTOR_SPECS: &[DetectorSpec] = &[
     DetectorSpec {
         name: "custom_rules",
         modes: ALL_MODES,
-        cacheable_modes: CACHE_ELIGIBLE_MODES,
     },
     DetectorSpec {
         name: "containers",
         modes: ALL_MODES,
-        cacheable_modes: CACHE_ELIGIBLE_MODES,
     },
     DetectorSpec {
         name: "mcp_configs",
         modes: ALL_MODES,
-        cacheable_modes: CACHE_ELIGIBLE_MODES,
     },
     DetectorSpec {
         name: "source_risks",
         modes: &["workdir", "file"],
-        cacheable_modes: &["file"],
     },
     DetectorSpec {
         name: "browser_footprints",
         modes: &["host", "scan", "root"],
-        cacheable_modes: &[],
     },
 ];
 
@@ -104,16 +89,6 @@ pub fn get_all_detectors(mode: &str) -> Vec<Box<dyn Detector>> {
         .filter(|spec| spec.modes.contains(&mode))
         .map(|spec| make_detector(spec.name, mode))
         .collect()
-}
-
-/// Whether a detector's results may be persisted to the scan cache for the
-/// given mode. See the registration-contract comment above for the full
-/// safety contract this relies on.
-pub fn is_cacheable(mode: &str, detector_name: &str) -> bool {
-    DETECTOR_SPECS
-        .iter()
-        .find(|spec| spec.name == detector_name)
-        .is_some_and(|spec| spec.cacheable_modes.contains(&mode))
 }
 
 #[cfg(test)]
@@ -182,22 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn every_detector_spec_cacheable_modes_are_subset_of_modes() {
-        // The registration contract requires cacheable_modes ⊆ modes: a
-        // detector can't be cache-eligible in a mode it doesn't even run in.
-        for spec in DETECTOR_SPECS {
-            for cacheable_mode in spec.cacheable_modes {
-                assert!(
-                    spec.modes.contains(cacheable_mode),
-                    "detector '{}' lists '{}' as cacheable but not as a mode it runs in",
-                    spec.name,
-                    cacheable_mode
-                );
-            }
-        }
-    }
-
-    #[test]
     fn every_detector_spec_name_is_constructible() {
         // Guards against DETECTOR_SPECS and make_detector() drifting apart:
         // every registered name must be constructible in every mode it
@@ -213,9 +172,9 @@ mod tests {
     fn every_detector_spec_constructed_name_matches_its_registration() {
         // Guards against a copy-paste mistake where a spec's `name` field
         // and the detector `make_detector` actually builds for it disagree
-        // — that would make `is_cacheable`/`get_all_detectors` reason about
-        // one name while the running detector reports another, silently
-        // breaking mode gating and cache lookups for it.
+        // — that would make `get_all_detectors` reason about one name while
+        // the running detector reports another, silently breaking mode gating
+        // for it.
         for spec in DETECTOR_SPECS {
             for mode in spec.modes {
                 let detector = make_detector(spec.name, mode);
@@ -272,18 +231,6 @@ mod tests {
             DETECTOR_SPECS.len(),
             "duplicate detector name in DETECTOR_SPECS"
         );
-    }
-
-    #[test]
-    fn is_cacheable_matches_source_risks_file_only_contract() {
-        assert!(is_cacheable("file", "source_risks"));
-        assert!(!is_cacheable("workdir", "source_risks"));
-        assert!(is_cacheable("file", "mcp_configs"));
-    }
-
-    #[test]
-    fn is_cacheable_unknown_detector_is_false() {
-        assert!(!is_cacheable("host", "nonexistent_detector"));
     }
 
     #[test]

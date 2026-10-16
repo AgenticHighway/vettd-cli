@@ -8,8 +8,6 @@ For the planned follow-on source-analysis work derived from remaining
 DefenseClaw heuristics, see [cisco-source-analysis-plan.md](cisco-source-analysis-plan.md).
 For the planned scan performance and tiered discovery work, see
 [performance-scan-plan.md](performance-scan-plan.md).
-For the planned incremental scan cache and change-tracking roadmap, see
-[incremental-scan-design.md](incremental-scan-design.md).
 
 ## System context
 
@@ -67,7 +65,6 @@ vettd/
 │   │       ├── updater.rs    # Signed manifest update flow
 │   │       ├── lite_mode.rs  # Free-tier output limiting
 │   │       ├── capabilities.rs # Signal-to-capability mapping
-│   │       ├── scan_cache.rs # Persistent cache for repeated quick/scan runs
 │   │       └── progress.rs   # Progress indicator
 ├── examples/
 │   └── rules/                # Example custom detection rules (.toml)
@@ -178,15 +175,9 @@ These modules interact with the outside world:
 | `network_evidence.rs` | Runs macOS firewall commands                                                                                           |
 | `updater.rs`          | HTTP GET to hosted signed release metadata + artifact download                                                         |
 | `contract_sync.rs`    | HTTP GET contract version from server, local cache in ~/.vettd/contract/                                              |
-| `scan_cache.rs`       | Local SQLite-backed cache in `~/.vettd/scan-cache/` for repeated `quick`, `scan`, `folder`, and `repo` detector reuse |
 | `setup.rs`            | Interactive prompts + config file writes                                                                               |
 | `wizard.rs`           | Interactive terminal UI                                                                                                |
 | `progress.rs`         | Writes to stderr                                                                                                       |
-
-For `quick`, default `scan`, and repeated explicit `folder` / `repo` scans,
-`scan.rs` now also opens the local scan cache, records the current scan profile
-and file states, and reuses cached detector outputs for unchanged file-backed
-candidates before falling back to live detector execution.
 
 ### Orchestration
 
