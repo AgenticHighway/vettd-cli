@@ -321,16 +321,17 @@ pub fn default_user_space_roots() -> Vec<PathBuf> {
 // Walking functions
 // ---------------------------------------------------------------------------
 
-/// Keeps a link-following walk from descending into a directory twice.
+/// Keeps a link-following walk from descending into the same real directory
+/// twice.
 ///
 /// `walkdir` rejects a symlink that points at one of its own ancestors, but not
 /// the other way a link can recurse: a link into a *sibling* subtree the walk
-/// has already visited. Every such link multiplies the paths to everything
-/// below it, so a few links between sibling directories make the walk expand
-/// exponentially, and a link that escapes the root (to `/`, `~`, or a parent)
-/// lets a harness walk leave its own tree. Recording the canonical path of each
-/// directory entered keeps every real directory to a single descent, whatever
-/// the link topology.
+/// already visited. Each such link multiplies the paths to everything below it,
+/// so a few links between sibling directories expand the walk combinatorially —
+/// an eight-directory web is descended into 133 times. Recording the canonical
+/// path of each directory entered keeps each real directory to a single
+/// descent, whatever the link topology. (It bounds repeated descent only: a
+/// link that leaves the root, e.g. to `/` or `~`, is still followed once.)
 ///
 /// Only a walk that follows links needs this; call [`Self::allows`] from the
 /// `filter_entry` predicate of a `follow_links(true)` walk.
@@ -343,6 +344,16 @@ impl WalkGuard {
     /// Whether to keep this entry (and, for a directory, descend into it).
     fn allows(&mut self, entry: &walkdir::DirEntry) -> bool {
         if !entry.file_type().is_dir() {
+            return true;
+        }
+        // An organically-found `.vscode` directory is walked in a restricted
+        // mode — `should_descend`/`is_included_file` keep only its direct
+        // `mcp.json` and prune its subdirectories — so the same real directory
+        // yields different files than an unrestricted visit. Never dedupe it: a
+        // plain alias to the same directory must still be walked in full, and a
+        // `.vscode` walk never descends a subdirectory, so on its own it cannot
+        // recurse or expand the walk.
+        if is_vscode_dir(entry) && entry.depth() > 0 {
             return true;
         }
         match entry.path().canonicalize() {
@@ -1035,19 +1046,30 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn walk_harness_root_walks_a_shared_link_target_once() {
-        // Two links into the same directory must not report its files twice.
+        // The shared directory lives outside the root — skills are commonly
+        // symlinked in from elsewhere — and two links point at it: its file must
+        // be reported once, not once per alias.
         let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
         let shared = tmp.path().join("shared");
         fs::create_dir_all(&shared).unwrap();
         fs::write(shared.join("SKILL.md"), "#\n").unwrap();
         for name in ["a", "b"] {
-            let dir = tmp.path().join(name);
+            let dir = root.join(name);
             fs::create_dir_all(&dir).unwrap();
             std::os::unix::fs::symlink(&shared, dir.join("link")).unwrap();
         }
 
-        let found = walk_harness_root(tmp.path(), "host", None);
-        assert_eq!(found.len(), 1, "shared target walked once: {found:?}");
+        let found = walk_harness_root(&root, "host", None);
+        let paths: Vec<_> = found
+            .iter()
+            .map(|c| c.path.canonicalize().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![shared.join("SKILL.md").canonicalize().unwrap()],
+            "shared target walked once: {found:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -1072,6 +1094,37 @@ mod tests {
 
         let found = walk_harness_root(tmp.path(), "host", None);
         assert_eq!(found.len(), dirs.len(), "each directory once: {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_harness_root_does_not_let_a_vscode_alias_hide_another_alias() {
+        // `.vscode` is walked in a restricted mode (direct `mcp.json` only, no
+        // subdirectories). A plain alias to the same directory must not be
+        // skipped just because the `.vscode` alias was walked first, or its
+        // files would be silently lost.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let shared = tmp.path().join("shared");
+        fs::create_dir_all(shared.join("nested")).unwrap();
+        fs::write(shared.join("SKILL.md"), "#\n").unwrap();
+        fs::write(shared.join("nested/SKILL.md"), "#\n").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&shared, root.join(".vscode")).unwrap();
+        std::os::unix::fs::symlink(&shared, root.join("alias")).unwrap();
+
+        let found = walk_harness_root(&root, "host", None);
+        let mut got: Vec<_> = found
+            .iter()
+            .map(|c| c.path.canonicalize().unwrap())
+            .collect();
+        got.sort();
+        let mut want = vec![
+            shared.join("SKILL.md").canonicalize().unwrap(),
+            shared.join("nested/SKILL.md").canonicalize().unwrap(),
+        ];
+        want.sort();
+        assert_eq!(got, want, "both aliases' files found: {found:?}");
     }
 
     #[test]
