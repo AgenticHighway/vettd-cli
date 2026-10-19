@@ -58,6 +58,19 @@ fn mcp_server_map(val: &serde_json::Value) -> Option<&serde_json::Map<String, se
         .and_then(|v| v.as_object())
 }
 
+/// The hash is sent to the server, so it must not be derived from secrets.
+/// `env` and `headers` values are blanked; their keys stay, so adding or
+/// renaming a variable still changes identity.
+fn without_secret_values(val: &serde_json::Value) -> serde_json::Value {
+    let mut out = val.clone();
+    for key in ["env", "headers"] {
+        if let Some(obj) = out.get_mut(key).and_then(|v| v.as_object_mut()) {
+            obj.values_mut().for_each(|v| *v = serde_json::Value::Null);
+        }
+    }
+    out
+}
+
 fn mcp_entry_to_server(
     name: &str,
     val: &serde_json::Value,
@@ -80,7 +93,7 @@ fn mcp_entry_to_server(
     // across runs.
     let content_hash = {
         use sha2::{Digest, Sha256};
-        let serialized = serde_json::to_string(val).unwrap_or_default();
+        let serialized = serde_json::to_string(&without_secret_values(val)).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
         format!("{:x}", hasher.finalize())
@@ -354,6 +367,26 @@ fn extract_mcp_tools(server_val: &serde_json::Value, server_name: &str) -> Vec<M
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn content_hash_is_not_derived_from_env_or_header_values() {
+        // The hash leaves the machine, so two configs that differ only in a
+        // secret value must be indistinguishable by it.
+        let artifact = ArtifactReport::new("mcp", 0.8);
+        let hash = |val: serde_json::Value| mcp_entry_to_server("s", &val, &artifact).content_hash;
+        let a = hash(
+            json!({"command": "node", "env": {"TOKEN": "one"}, "headers": {"Authorization": "Bearer one"}}),
+        );
+        let b = hash(
+            json!({"command": "node", "env": {"TOKEN": "two"}, "headers": {"Authorization": "Bearer two"}}),
+        );
+        assert_eq!(a, b);
+        // Keys still count: a new variable is a real config change.
+        let c = hash(
+            json!({"command": "node", "env": {"TOKEN": "one", "OTHER": "x"}, "headers": {"Authorization": "Bearer one"}}),
+        );
+        assert_ne!(a, c);
+    }
 
     #[test]
     fn infer_auth_api_key_from_env_pattern() {

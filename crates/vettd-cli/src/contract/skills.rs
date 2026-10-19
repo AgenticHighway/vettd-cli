@@ -128,7 +128,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         None
     };
     let content_hash = match &identity_load {
-        Some(load) => identity::canonical_digest(&load.text_files),
+        Some(load) => Some(identity::canonical_digest(&load.text_files)),
         None => artifact_content_hash(artifact),
     };
     let locations = (source_path != "unknown").then(|| {
@@ -189,7 +189,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         consumers: find_skill_consumers_by_path(source_path, agents),
         external_scanner_results: scan_output.as_ref().map(|o| vec![o.external.clone()]),
         detected_source,
-        content_hash: Some(content_hash),
+        content_hash,
         locations,
         identity_exclusions,
         lineage,

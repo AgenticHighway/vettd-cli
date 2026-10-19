@@ -472,6 +472,23 @@ fn collect_files(
     };
     let mut entries: Vec<fs::DirEntry> = read_dir.flatten().collect();
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+    // Load this directory's own .gitignore before walking its entries: they are
+    // sorted by name, so `.env` would otherwise be read before its rule exists.
+    let gitignore_rel = if rel_prefix.is_empty() {
+        ".gitignore".to_string()
+    } else {
+        format!("{rel_prefix}/.gitignore")
+    };
+    let gitignore = entries.iter().find(|entry| {
+        entry.file_name() == ".gitignore" && entry.file_type().is_ok_and(|t| t.is_file())
+    });
+    if let Some(entry) = gitignore {
+        if !matches_ignore(&gitignore_rel, rules) {
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                rules.extend(parse_gitignore(&content, rel_prefix));
+            }
+        }
+    }
     for entry in entries {
         let name = entry.file_name().to_string_lossy().to_string();
         let rel = if rel_prefix.is_empty() {
@@ -506,11 +523,6 @@ fn collect_files(
             if matches_ignore(&rel, rules) {
                 excluded.push(rel);
                 continue;
-            }
-            if name == ".gitignore" {
-                if let Ok(content) = fs::read_to_string(entry.path()) {
-                    rules.extend(parse_gitignore(&content, rel_prefix));
-                }
             }
             files.push(rel);
         }
@@ -598,6 +610,21 @@ mod tests {
         assert!(load.excluded.contains(&"notes.bak".to_string()));
         assert!(load.text_files.contains_key("notes.md"));
         assert!(!load.text_files.contains_key("generated/blob.md"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn load_never_reads_a_gitignored_file_that_sorts_before_the_gitignore() {
+        // `.env` sorts before `.gitignore`; walking in name order used to read
+        // and hash it before its rule was loaded, feeding secrets to the digest.
+        let root = fixture_root("gitignore-order");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        fs::write(root.join(".env"), "TOKEN=secret").unwrap();
+
+        let load = load_skill_files(&root);
+        assert!(load.excluded.contains(&".env".to_string()));
+        assert!(!load.text_files.contains_key(".env"));
         fs::remove_dir_all(&root).unwrap();
     }
 
