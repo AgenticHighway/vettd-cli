@@ -94,6 +94,10 @@ const FORBIDDEN_SOURCE_TOKENS: [&str; 1] = ["no_cache"];
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME/USERPROFILE on Windows, so the scan walks the real home"
+)]
 fn scan_quick_does_not_create_the_scan_cache_directory() {
     let home = new_temp_home();
 
@@ -125,6 +129,10 @@ fn scan_quick_does_not_create_the_scan_cache_directory() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME/USERPROFILE on Windows, so the scan walks the real home"
+)]
 fn scan_quick_leaves_preexisting_legacy_cache_files_untouched() {
     let home = new_temp_home();
     let cache_dir = scan_cache_dir(home.path());
