@@ -347,7 +347,7 @@ pub fn read_config_with_coverage(
 
 /// Stable content hash for a file-backed artifact: the discovery-time content
 /// hash when present, otherwise a full-file SHA-256 (#130).
-pub fn artifact_content_hash(a: &ArtifactReport) -> String {
+pub fn artifact_content_hash(a: &ArtifactReport) -> Option<String> {
     // Discovery stores a bounded 1 MB prefix hash for files over 8 MB
     // (`content_hash_mode = "prefix_sha256"`). #130 requires a whole-file
     // SHA-256, so only reuse the cached hash when it covers the full file.
@@ -359,11 +359,14 @@ pub fn artifact_content_hash(a: &ArtifactReport) -> String {
     if full_mode {
         if let Some(hash) = a.metadata.get("content_hash").and_then(|v| v.as_str()) {
             if !hash.is_empty() {
-                return hash.to_string();
+                return Some(hash.to_string());
             }
         }
     }
-    compute_file_hash(first_path(a))
+    // An unreadable file has no content to identify. An empty hash would give
+    // every unreadable asset the same identity, so report none instead.
+    let hash = compute_file_hash(first_path(a));
+    (!hash.is_empty()).then_some(hash)
 }
 
 #[cfg(test)]
@@ -400,14 +403,26 @@ mod tests {
             serde_json::json!("prefix_sha256"),
         );
         let hash = artifact_content_hash(&a);
-        assert_ne!(hash, "deadbeef", "prefix hashes must not be reused");
-        assert_eq!(hash, compute_file_hash(&file.to_string_lossy()));
+        assert_ne!(
+            hash.as_deref(),
+            Some("deadbeef"),
+            "prefix hashes must not be reused"
+        );
+        assert_eq!(hash, Some(compute_file_hash(&file.to_string_lossy())));
 
         a.metadata.insert(
             "content_hash_mode".to_string(),
             serde_json::json!("full_sha256"),
         );
-        assert_eq!(artifact_content_hash(&a), "deadbeef");
+        assert_eq!(artifact_content_hash(&a).as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    fn artifact_content_hash_is_none_for_an_unreadable_file() {
+        // An empty-string hash would give every unreadable asset one shared
+        // identity, so unrelated assets would merge downstream.
+        let a = make_artifact_with_path("/nonexistent/vettd/agent.md");
+        assert_eq!(artifact_content_hash(&a), None);
     }
 
     #[test]

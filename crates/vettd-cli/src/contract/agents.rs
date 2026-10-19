@@ -55,7 +55,7 @@ fn artifact_to_agent(
         capabilities,
         tools,
         trust_breakdown,
-        content_hash: Some(content_hash),
+        content_hash,
     }
 }
 

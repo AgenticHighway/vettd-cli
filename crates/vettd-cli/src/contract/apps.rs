@@ -57,7 +57,7 @@ fn container_to_app(a: &ArtifactReport, local_agents: &[&Agent]) -> AgenticApp {
         verification_checks,
         risk_tags,
         risk_summary,
-        content_hash: Some(artifact_content_hash(a)),
+        content_hash: artifact_content_hash(a),
     }
 }
 
