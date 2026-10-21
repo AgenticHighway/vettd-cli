@@ -663,7 +663,7 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
         "agentCompatibility": ["claude-code"],
         "sources": [],
         "rankFilters": {},
-        "rankings": {"stars": 50, "officialClaudeMarketplace": true}
+        "rankings": {"stars": 50}
     });
     let mock = mount_directory_post(&server, &expected_body, &directory_response_beta());
     let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
@@ -680,7 +680,7 @@ fn beta_search_sends_language_agent_and_rankings_filters_in_post_body() {
             "--agent-compatibility",
             "claude-code",
             "--rankings",
-            r#"{"stars": 50, "officialClaudeMarketplace": true}"#,
+            r#"{"stars": 50}"#,
             "--json",
         ],
         home.path(),
@@ -1012,6 +1012,48 @@ fn invalid_rankings_json_is_rejected_before_any_request() {
 
     assert_eq!(result.status, 1);
     assert!(result.stderr.contains("--rankings is not valid JSON"));
+}
+
+/// vettd#1030, client side: `stars` is the only `--rankings` key the server can
+/// apply, so the three response-only ones are refused locally — naming the key —
+/// before any HTTP request, in the same fail-fast shape as invalid JSON above.
+/// Without this the caller paid for a round trip and got a bare server 400 back.
+#[test]
+fn rankings_key_that_does_not_filter_is_rejected_before_any_request() {
+    for key in [
+        "skillsShLeaderboardRank",
+        "numberOfAggregators",
+        "officialClaudeMarketplace",
+    ] {
+        let home = seed_home("http://127.0.0.1:1/api/scans/ingest", "");
+        let raw = format!(r#"{{"stars": 50, "{key}": 3}}"#);
+
+        let result = run_vettd(
+            &["directory", "search", "pdf", "--rankings", raw.as_str()],
+            home.path(),
+            &[("SEARCH_BETA_TESTING", "1")],
+        );
+
+        assert_eq!(result.status, 1, "stderr: {}", result.stderr);
+        assert!(
+            result.stderr.contains(key),
+            "stderr must name the offending key {key}: {}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("not a filter"),
+            "stderr must say why: {}",
+            result.stderr
+        );
+        // Port 1 is not a vettd server: had the CLI reached the network first, the
+        // failure would have been a connect error instead of this one.
+        assert!(
+            !result.stderr.contains("could not reach"),
+            "must fail before the request: {}",
+            result.stderr
+        );
+        assert!(result.stdout.is_empty(), "stdout: {}", result.stdout);
+    }
 }
 
 #[test]

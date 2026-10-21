@@ -125,9 +125,11 @@ pub struct DirectoryCard {
     pub freshness: Option<PublicFreshness>,
 }
 
-/// External ranking signals for a skill — used both as the `--rankings`
-/// input filter (minimum thresholds) and as the actual values on a
-/// `SEARCH_BETA_TESTING` search response. See `docs/SEARCH_INTERFACE.md`.
+/// External ranking signals on a `SEARCH_BETA_TESTING` search response — all four
+/// values are real there. This is *not* the `--rankings` request shape: the request
+/// accepts only `stars`, because the query service has a filter hook for nothing
+/// else and vettd#1030 made the server reject the other three as filters (see
+/// [`parse_rankings_filter`]). See `docs/SEARCH_INTERFACE.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRankings {
@@ -253,14 +255,16 @@ pub struct SearchFilters {
     pub mcp_category: Vec<String>,
     pub deployment: Vec<String>,
     pub registry_type: Vec<String>,
-    /// Raw JSON from `--rankings`.
+    /// Raw JSON from `--rankings`; parsed and key-checked by
+    /// [`parse_rankings_filter`].
     pub rankings: Option<String>,
 }
 
 /// Parsed / validated filters ready for [`build_search_body`].
 #[derive(Debug, Default)]
 pub struct ValidatedFilters {
-    /// Parsed `--rankings` JSON, or `None` if the flag was absent.
+    /// Parsed `--rankings` JSON object (only the `stars` key can survive
+    /// validation), or `None` if the flag was absent.
     pub rankings: Option<serde_json::Value>,
     /// Parsed `--rank-filter` map (`{key: N}`); empty if none given.
     pub rank_filters: serde_json::Map<String, serde_json::Value>,
@@ -291,6 +295,45 @@ pub(crate) fn parse_rank_filters(
         map.insert(key.to_string(), serde_json::json!(n));
     }
     Ok(map)
+}
+
+/// The keys `--rankings` accepts as filters. `stars` is the only one: the query
+/// service behind `POST /api/directory` exposes a `min_stars` hook and nothing
+/// else, so no other ranking field can actually filter. As of vettd#1030 the
+/// server enforces the same allow-list (`RankingsFilterSchema` is `.strict()` and
+/// 400s naming the key); mirroring it here names the offending key locally instead
+/// of paying for a round trip that was always going to fail, matching how
+/// `--rankings is not valid JSON` and [`parse_rank_filters`] already fail fast.
+/// A key joins this list only when the query service gains a filter hook for it —
+/// a deliberate two-repo change, not a local one. See `docs/SEARCH_INTERFACE.md`.
+const RANKINGS_FILTER_KEYS: [&str; 1] = ["stars"];
+
+/// Parse `--rankings` into the `rankings` object of the POST body.
+///
+/// Returns `Err(message)` for invalid JSON, for a value that is not an object, or
+/// for a key that is not a filter — the caller turns that into an exit-1 CLI error
+/// before any request is sent. Pure (no `process::exit`) so it is unit testable,
+/// like [`parse_rank_filters`].
+pub(crate) fn parse_rankings_filter(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("--rankings is not valid JSON: {e}"))?;
+    let Some(object) = value.as_object() else {
+        return Err(r#"--rankings must be a JSON object, e.g. '{"stars": 50}'"#.to_string());
+    };
+    for key in object.keys() {
+        if !RANKINGS_FILTER_KEYS.contains(&key.as_str()) {
+            let allowed = RANKINGS_FILTER_KEYS
+                .iter()
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "--rankings key '{key}' is not a filter (only {allowed} filters). \
+The other ranking fields are response values, and the server rejects them as filters too."
+            ));
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -747,8 +790,9 @@ fn any_filter_set(f: &SearchFilters) -> bool {
 ///
 /// Exits the process with a clear error if any filter (or
 /// `--asset-type mcp`) is supplied without `SEARCH_BETA_TESTING` enabled,
-/// if `--rankings` isn't valid JSON, or if a `--rank-filter` is malformed.
-/// See `docs/SEARCH_INTERFACE.md`.
+/// if `--rankings` isn't a JSON object of accepted filter keys (vettd#1030:
+/// only `stars` filters, and the name of the offending key is printed), or if a
+/// `--rank-filter` is malformed. See `docs/SEARCH_INTERFACE.md`.
 pub(crate) fn validate_search_filters(f: &SearchFilters, beta: bool) -> ValidatedFilters {
     if any_filter_set(f) && !beta {
         eprintln!(
@@ -758,16 +802,16 @@ SEARCH_BETA_TESTING=1."
         );
         std::process::exit(1);
     }
-    let rankings = f
-        .rankings
-        .as_deref()
-        .map(|raw| match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Error: --rankings is not valid JSON: {e}");
+    let rankings = match f.rankings.as_deref() {
+        Some(raw) => match parse_rankings_filter(raw) {
+            Ok(value) => Some(value),
+            Err(msg) => {
+                eprintln!("Error: {msg}");
                 std::process::exit(1);
             }
-        });
+        },
+        None => None,
+    };
     let rank_filters = match parse_rank_filters(&f.rank_filters) {
         Ok(m) => m,
         Err(msg) => {
@@ -2450,17 +2494,17 @@ mod tests {
 
     #[test]
     fn build_search_body_passes_rankings_object_through() {
+        // vettd#1030: `stars` is the only key that survives validation, so this is also
+        // the shape that reaches the wire — the validated object is forwarded verbatim
+        // (`min_stars` is the query service's mapping, not the CLI's).
         let filters = SearchFilters {
             asset_type: "skill".to_string(),
-            rankings: Some(r#"{"stars": 50, "officialClaudeMarketplace": true}"#.to_string()),
+            rankings: Some(r#"{"stars": 50}"#.to_string()),
             ..SearchFilters::default()
         };
         let validated = validate_search_filters(&filters, true);
         let body = build_search_body("q", 1, "newest", false, &filters, &validated);
-        assert_eq!(
-            body["rankings"],
-            serde_json::json!({"stars": 50, "officialClaudeMarketplace": true})
-        );
+        assert_eq!(body["rankings"], serde_json::json!({"stars": 50}));
     }
 
     #[test]
@@ -2495,6 +2539,56 @@ mod tests {
     fn parse_rank_filters_rejects_empty_key() {
         let err = parse_rank_filters(&["=10".to_string()]).unwrap_err();
         assert!(err.contains("empty key"));
+    }
+
+    #[test]
+    fn parse_rankings_filter_accepts_stars_and_an_empty_object() {
+        assert_eq!(
+            parse_rankings_filter(r#"{"stars": 50}"#).unwrap(),
+            serde_json::json!({"stars": 50})
+        );
+        // `{}` means "no ranking constraint", which is what an absent flag means too.
+        assert_eq!(parse_rankings_filter("{}").unwrap(), serde_json::json!({}));
+    }
+
+    /// vettd#1030. `stars` is the only ranking key the query service can filter on, so
+    /// the three response-only ones used to be accepted and silently ignored: filtering
+    /// on them returned an unfiltered result set that read as a filtered one. They are
+    /// refused here, each with its own name in the message — a rejection that does not
+    /// say which key broke would leave the caller guessing at the JSON they typed.
+    #[test]
+    fn parse_rankings_filter_rejects_each_response_only_key_by_name() {
+        for key in [
+            "skillsShLeaderboardRank",
+            "numberOfAggregators",
+            "officialClaudeMarketplace",
+        ] {
+            let raw = format!(r#"{{"stars": 50, "{key}": 3}}"#);
+            let err = parse_rankings_filter(&raw).unwrap_err();
+            assert!(err.contains(key), "error must name {key}: {err}");
+            assert!(err.contains("not a filter"), "error must say why: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_rankings_filter_rejects_any_other_key_too() {
+        // The allow-list is `stars`, not a deny-list of the three known response fields.
+        let err = parse_rankings_filter(r#"{"start": 50}"#).unwrap_err();
+        assert!(err.contains("'start'"), "{err}");
+    }
+
+    #[test]
+    fn parse_rankings_filter_keeps_the_invalid_json_message() {
+        // Existing CLI contract, locked by `invalid_rankings_json_is_rejected_before_any_request`
+        // in tests/search_integration.rs: tightening the key rules must not swallow it.
+        let err = parse_rankings_filter("not-json").unwrap_err();
+        assert!(err.starts_with("--rankings is not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn parse_rankings_filter_rejects_a_non_object() {
+        let err = parse_rankings_filter("50").unwrap_err();
+        assert!(err.contains("must be a JSON object"), "{err}");
     }
 
     #[test]

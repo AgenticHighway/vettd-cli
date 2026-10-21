@@ -79,11 +79,11 @@ type SearchRequestBody = {
 };
 
 type RankingsFilter = {
-  stars?: number;                        // "at least this value"
-  skillsShLeaderboardRank?: number;      // "at least this value"
-  numberOfAggregators?: number;          // "at least this value"
-  officialClaudeMarketplace?: boolean;   // "must equal this value"
-  // additional numeric/boolean keys are omitted-key = unconstrained
+  stars?: number;   // "at least this value" — maps to query-service `min_stars`
+  // `stars` is the only accepted key (vettd#1030). skillsShLeaderboardRank /
+  // numberOfAggregators / officialClaudeMarketplace are response-only fields —
+  // no query-service filter hook exists for them, so sending one is a 400.
+  // The response-side `rankings` object (below) still carries all four.
 };
 ```
 
@@ -104,9 +104,12 @@ Validation the handler owns:
 - Unknown `rankings` keys are **rejected with a 400**
   (`RankingsFilterSchema` is `.strict()`, and the error names the key).
   Decided 2026-09-10: strict is the reversible direction, since a key can be
-  accepted later but never un-accepted. The CLI does no client-side
-  validation of key names, so the server is the only place this can be
-  caught.
+  accepted later but never un-accepted. As of vettd#1030 the accepted set is
+  **`stars` only**: the three other ranking fields have no query-service filter
+  hook, so accepting them meant an accepted filter that never ran. The CLI
+  mirrors that allow-list (`parse_rankings_filter`) and fails locally first —
+  exit 1, key named — so the caller learns which key was wrong without a round
+  trip; the server still enforces it for every other client.
 
 **Response body** — same envelope as GET, with three additive fields per
 result item:
