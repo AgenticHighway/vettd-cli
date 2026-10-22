@@ -139,10 +139,24 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
     }
 }
 
+/// Human-facing stderr line announcing an in-flight submission.
+///
+/// Prints only the destination host, never the full ingest URL: terminals
+/// auto-linkify bare URLs, and the POST-only `/api/scans/ingest` path answers
+/// GET with 405, so a clickable link is a dead end (issue #259). The line
+/// labels the destination as a POST-only ingest endpoint so it is not mistaken
+/// for a browsable results page.
+fn submit_status_line(endpoint: &str) -> String {
+    format!(
+        "Submitting scan to {} (POST-only ingest endpoint)...",
+        crate::network::endpoint_display_host(endpoint)
+    )
+}
+
 /// POST the payload using the resolved auth config.
 pub fn do_submit(payload_json: &str, auth: &AuthConfig) -> Result<(), String> {
     preflight_submission(auth)?;
-    eprintln!("Submitting scan to {}...", auth.endpoint);
+    eprintln!("{}", submit_status_line(&auth.endpoint));
     match submit_contract_payload(payload_json, auth) {
         Ok(()) => Ok(()),
         Err(e) => Err(format!("Submission failed: {e}")),
@@ -184,5 +198,45 @@ mod tests {
         let submit_flag = Some(Some("http://localhost:8080/ingest".to_string()));
         let result = resolve_submit_auth(&submit_flag, Some("ah_test"), false);
         assert!(result.is_ok(), "local URL should pass without flag");
+    }
+
+    #[test]
+    fn submit_status_line_is_not_a_clickable_ingest_url() {
+        // Issue #259: terminals linkify the full ingest URL on the submit path,
+        // so users click a POST-only API route and get an HTTP 405. The line
+        // must show the destination (host is sufficient) without printing the
+        // URL itself, and must label it as a POST-only ingest endpoint.
+        let line = submit_status_line("https://vettd.agentichighway.ai/api/scans/ingest");
+        assert!(
+            line.contains("vettd.agentichighway.ai"),
+            "line must still name the destination host, got: {line}"
+        );
+        assert!(
+            !line.contains("https://"),
+            "line must not print a linkifiable URL, got: {line}"
+        );
+        assert!(
+            !line.contains("/api/scans/ingest"),
+            "line must not print the ingest API path, got: {line}"
+        );
+        assert!(
+            line.contains("POST-only ingest endpoint"),
+            "line must label the destination as POST-only, got: {line}"
+        );
+    }
+
+    #[test]
+    fn submit_status_line_keeps_local_host_and_port() {
+        // Self-hosted/dev endpoints must remain identifiable: the host:port is
+        // shown in place of the URL.
+        let line = submit_status_line("http://localhost:3000/api/scans/ingest");
+        assert!(
+            line.contains("localhost:3000"),
+            "host:port should be shown for local endpoints, got: {line}"
+        );
+        assert!(
+            !line.contains("http://"),
+            "line must not print a linkifiable URL, got: {line}"
+        );
     }
 }
