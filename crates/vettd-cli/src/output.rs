@@ -139,10 +139,23 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
     }
 }
 
+/// Render the pre-submission progress line.
+///
+/// The ingest endpoint is a POST-only API route, so a browser GET on it returns
+/// HTTP 405. Printing the full URL lets terminals auto-linkify it and the user
+/// lands on a dead "page" (issue #259), so only the host is shown, labelled as
+/// the ingest API endpoint rather than a page to view results.
+fn submit_line(endpoint: &str) -> String {
+    format!(
+        "Submitting scan to {} — POST-only ingest API endpoint, not a browsable page...",
+        crate::network::endpoint_display_host(endpoint)
+    )
+}
+
 /// POST the payload using the resolved auth config.
 pub fn do_submit(payload_json: &str, auth: &AuthConfig) -> Result<(), String> {
     preflight_submission(auth)?;
-    eprintln!("Submitting scan to {}...", auth.endpoint);
+    eprintln!("{}", submit_line(&auth.endpoint));
     match submit_contract_payload(payload_json, auth) {
         Ok(()) => Ok(()),
         Err(e) => Err(format!("Submission failed: {e}")),
@@ -184,5 +197,55 @@ mod tests {
         let submit_flag = Some(Some("http://localhost:8080/ingest".to_string()));
         let result = resolve_submit_auth(&submit_flag, Some("ah_test"), false);
         assert!(result.is_ok(), "local URL should pass without flag");
+    }
+
+    #[test]
+    fn submit_line_never_prints_a_linkifiable_url() {
+        // WHY: terminals auto-linkify scheme-prefixed URLs, and a browser GET on
+        // the ingest route returns HTTP 405 — the user expects a results page and
+        // gets an error (issue #259). Fails if the bare endpoint is printed again.
+        let endpoint = DEFAULT_PRODUCTION_ENDPOINT;
+        let line = submit_line(endpoint);
+        assert!(
+            !line.contains("http") && !line.contains("://"),
+            "submit line must not contain a linkifiable URL, got: {line}"
+        );
+        assert!(
+            !line.contains(endpoint),
+            "submit line must not print the full ingest endpoint, got: {line}"
+        );
+    }
+
+    #[test]
+    fn submit_line_names_the_destination_host() {
+        // WHY: suppressing the URL must not hide where the scan is sent.
+        let line = submit_line(DEFAULT_PRODUCTION_ENDPOINT);
+        assert!(
+            line.contains("vettd.agentichighway.ai"),
+            "submit line should name the destination host, got: {line}"
+        );
+    }
+
+    #[test]
+    fn submit_line_labels_the_destination_as_a_post_only_ingest_endpoint() {
+        // WHY: the value is an API endpoint, not a browsable page; the line has to
+        // say so so it is not mistaken for a way to view results.
+        let line = submit_line(DEFAULT_PRODUCTION_ENDPOINT);
+        assert!(
+            line.contains("POST") && line.contains("ingest"),
+            "submit line should label the destination as the POST-only ingest API \
+             endpoint, got: {line}"
+        );
+    }
+
+    #[test]
+    fn submit_line_keeps_the_port_for_self_hosted_endpoints() {
+        // WHY: self-hosters identify their target by host:port; stripping the path
+        // must not strip the port too.
+        let line = submit_line("http://localhost:3000/api/scans/ingest");
+        assert!(
+            line.contains("localhost:3000"),
+            "submit line should keep host:port for self-hosted endpoints, got: {line}"
+        );
     }
 }
