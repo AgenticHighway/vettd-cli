@@ -243,6 +243,11 @@ vettd auth --key your-api-key \
   --allow-public-endpoint
 ```
 
+> **The ingest endpoint is a POST-only API route**: a browser GET on
+> `/api/scans/ingest` returns HTTP 405. The submission progress line therefore
+> names the destination host (`Submitting scan to <host> (POST-only ingest endpoint)...`)
+> rather than printing a clickable URL.
+
 ### What is included in a submission
 
 Each submission payload contains:
