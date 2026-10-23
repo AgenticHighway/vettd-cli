@@ -139,13 +139,8 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
     }
 }
 
-/// Human-facing stderr line announcing an in-flight submission.
-///
-/// Prints only the destination host, never the full ingest URL: terminals
-/// auto-linkify bare URLs, and the POST-only `/api/scans/ingest` path answers
-/// GET with 405, so a clickable link is a dead end (issue #259). The line
-/// labels the destination as a POST-only ingest endpoint so it is not mistaken
-/// for a browsable results page.
+/// Names only the host: terminals linkify full URLs, and the POST-only
+/// ingest route answers a browser GET with 405 (#259).
 fn submit_status_line(endpoint: &str) -> String {
     format!(
         "Submitting scan to {} (POST-only ingest endpoint)...",
@@ -202,10 +197,7 @@ mod tests {
 
     #[test]
     fn submit_status_line_is_not_a_clickable_ingest_url() {
-        // Issue #259: terminals linkify the full ingest URL on the submit path,
-        // so users click a POST-only API route and get an HTTP 405. The line
-        // must show the destination (host is sufficient) without printing the
-        // URL itself, and must label it as a POST-only ingest endpoint.
+        // #259: a linkified ingest URL sends users to a 405.
         let line = submit_status_line("https://vettd.agentichighway.ai/api/scans/ingest");
         assert!(
             line.contains("vettd.agentichighway.ai"),
@@ -227,8 +219,6 @@ mod tests {
 
     #[test]
     fn submit_status_line_keeps_local_host_and_port() {
-        // Self-hosted/dev endpoints must remain identifiable: the host:port is
-        // shown in place of the URL.
         let line = submit_status_line("http://localhost:3000/api/scans/ingest");
         assert!(
             line.contains("localhost:3000"),
