@@ -222,8 +222,8 @@ pub enum DirectorySubcommand {
         #[arg(long = "agent-compatibility")]
         agent_compatibility: Vec<String>,
         /// Minimum-threshold ranking filter as a JSON object, e.g.
-        /// '{"stars": 50}'. Only `stars` filters today; the other keys are
-        /// accepted but not applied. Requires SEARCH_BETA_TESTING=1.
+        /// '{"stars": 50}'. Only `stars` is accepted; other ranking fields are
+        /// response values, not filters. Requires SEARCH_BETA_TESTING=1.
         #[arg(long)]
         rankings: Option<String>,
         /// Which catalog to search: skill (default) or mcp. `mcp` requires SEARCH_BETA_TESTING=1.

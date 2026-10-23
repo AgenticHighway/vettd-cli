@@ -125,9 +125,9 @@ pub struct DirectoryCard {
     pub freshness: Option<PublicFreshness>,
 }
 
-/// External ranking signals for a skill — used both as the `--rankings`
-/// input filter (minimum thresholds) and as the actual values on a
-/// `SEARCH_BETA_TESTING` search response. See `docs/SEARCH_INTERFACE.md`.
+/// External ranking signals on a `SEARCH_BETA_TESTING` search response. Not the
+/// `--rankings` request shape, which accepts only `stars` (see
+/// [`parse_rankings_filter`]). See `docs/SEARCH_INTERFACE.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRankings {
@@ -291,6 +291,26 @@ pub(crate) fn parse_rank_filters(
         map.insert(key.to_string(), serde_json::json!(n));
     }
     Ok(map)
+}
+
+/// The only `--rankings` key the server can filter on (query-service `min_stars`).
+/// Mirrors the server's `RankingsFilterSchema`, so the bad key is named locally.
+const RANKINGS_FILTER_KEY: &str = "stars";
+
+/// Parse `--rankings` into the `rankings` object of the POST body, rejecting
+/// invalid JSON, non-objects, and keys other than `stars`.
+pub(crate) fn parse_rankings_filter(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("--rankings is not valid JSON: {e}"))?;
+    let Some(object) = value.as_object() else {
+        return Err(r#"--rankings must be a JSON object, e.g. '{"stars": 50}'"#.to_string());
+    };
+    if let Some(key) = object.keys().find(|k| k.as_str() != RANKINGS_FILTER_KEY) {
+        return Err(format!(
+            "--rankings key '{key}' is not a filter (only '{RANKINGS_FILTER_KEY}' filters)"
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -747,8 +767,8 @@ fn any_filter_set(f: &SearchFilters) -> bool {
 ///
 /// Exits the process with a clear error if any filter (or
 /// `--asset-type mcp`) is supplied without `SEARCH_BETA_TESTING` enabled,
-/// if `--rankings` isn't valid JSON, or if a `--rank-filter` is malformed.
-/// See `docs/SEARCH_INTERFACE.md`.
+/// if `--rankings` isn't a JSON object with only `stars`, or if a
+/// `--rank-filter` is malformed. See `docs/SEARCH_INTERFACE.md`.
 pub(crate) fn validate_search_filters(f: &SearchFilters, beta: bool) -> ValidatedFilters {
     if any_filter_set(f) && !beta {
         eprintln!(
@@ -758,16 +778,16 @@ SEARCH_BETA_TESTING=1."
         );
         std::process::exit(1);
     }
-    let rankings = f
-        .rankings
-        .as_deref()
-        .map(|raw| match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Error: --rankings is not valid JSON: {e}");
+    let rankings = match f.rankings.as_deref() {
+        Some(raw) => match parse_rankings_filter(raw) {
+            Ok(value) => Some(value),
+            Err(msg) => {
+                eprintln!("Error: {msg}");
                 std::process::exit(1);
             }
-        });
+        },
+        None => None,
+    };
     let rank_filters = match parse_rank_filters(&f.rank_filters) {
         Ok(m) => m,
         Err(msg) => {
@@ -2452,15 +2472,12 @@ mod tests {
     fn build_search_body_passes_rankings_object_through() {
         let filters = SearchFilters {
             asset_type: "skill".to_string(),
-            rankings: Some(r#"{"stars": 50, "officialClaudeMarketplace": true}"#.to_string()),
+            rankings: Some(r#"{"stars": 50}"#.to_string()),
             ..SearchFilters::default()
         };
         let validated = validate_search_filters(&filters, true);
         let body = build_search_body("q", 1, "newest", false, &filters, &validated);
-        assert_eq!(
-            body["rankings"],
-            serde_json::json!({"stars": 50, "officialClaudeMarketplace": true})
-        );
+        assert_eq!(body["rankings"], serde_json::json!({"stars": 50}));
     }
 
     #[test]
@@ -2495,6 +2512,48 @@ mod tests {
     fn parse_rank_filters_rejects_empty_key() {
         let err = parse_rank_filters(&["=10".to_string()]).unwrap_err();
         assert!(err.contains("empty key"));
+    }
+
+    #[test]
+    fn parse_rankings_filter_accepts_stars_and_an_empty_object() {
+        assert_eq!(
+            parse_rankings_filter(r#"{"stars": 50}"#).unwrap(),
+            serde_json::json!({"stars": 50})
+        );
+        assert_eq!(parse_rankings_filter("{}").unwrap(), serde_json::json!({}));
+    }
+
+    /// Response-only keys used to be silently ignored as filters (vettd#1030).
+    #[test]
+    fn parse_rankings_filter_rejects_each_response_only_key_by_name() {
+        for key in [
+            "skillsShLeaderboardRank",
+            "numberOfAggregators",
+            "officialClaudeMarketplace",
+        ] {
+            let raw = format!(r#"{{"stars": 50, "{key}": 3}}"#);
+            let err = parse_rankings_filter(&raw).unwrap_err();
+            assert!(err.contains(key), "error must name {key}: {err}");
+            assert!(err.contains("not a filter"), "error must say why: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_rankings_filter_rejects_any_other_key_too() {
+        let err = parse_rankings_filter(r#"{"start": 50}"#).unwrap_err();
+        assert!(err.contains("'start'"), "{err}");
+    }
+
+    #[test]
+    fn parse_rankings_filter_keeps_the_invalid_json_message() {
+        let err = parse_rankings_filter("not-json").unwrap_err();
+        assert!(err.starts_with("--rankings is not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn parse_rankings_filter_rejects_a_non_object() {
+        let err = parse_rankings_filter("50").unwrap_err();
+        assert!(err.contains("must be a JSON object"), "{err}");
     }
 
     #[test]

@@ -79,11 +79,8 @@ type SearchRequestBody = {
 };
 
 type RankingsFilter = {
-  stars?: number;                        // "at least this value"
-  skillsShLeaderboardRank?: number;      // "at least this value"
-  numberOfAggregators?: number;          // "at least this value"
-  officialClaudeMarketplace?: boolean;   // "must equal this value"
-  // additional numeric/boolean keys are omitted-key = unconstrained
+  stars?: number;   // "at least this value" (query-service `min_stars`)
+  // the only accepted key; other ranking fields are response-only (400)
 };
 ```
 
@@ -104,9 +101,8 @@ Validation the handler owns:
 - Unknown `rankings` keys are **rejected with a 400**
   (`RankingsFilterSchema` is `.strict()`, and the error names the key).
   Decided 2026-09-10: strict is the reversible direction, since a key can be
-  accepted later but never un-accepted. The CLI does no client-side
-  validation of key names, so the server is the only place this can be
-  caught.
+  accepted later but never un-accepted. Only `stars` is accepted (vettd#1030);
+  the CLI mirrors this and fails locally first.
 
 **Response body** — same envelope as GET, with three additive fields per
 result item:
