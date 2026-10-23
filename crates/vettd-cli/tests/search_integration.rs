@@ -1014,10 +1014,7 @@ fn invalid_rankings_json_is_rejected_before_any_request() {
     assert!(result.stderr.contains("--rankings is not valid JSON"));
 }
 
-/// vettd#1030, client side: `stars` is the only `--rankings` key the server can
-/// apply, so the three response-only ones are refused locally — naming the key —
-/// before any HTTP request, in the same fail-fast shape as invalid JSON above.
-/// Without this the caller paid for a round trip and got a bare server 400 back.
+/// vettd#1030: response-only `--rankings` keys fail locally, naming the key.
 #[test]
 fn rankings_key_that_does_not_filter_is_rejected_before_any_request() {
     for key in [
@@ -1045,8 +1042,7 @@ fn rankings_key_that_does_not_filter_is_rejected_before_any_request() {
             "stderr must say why: {}",
             result.stderr
         );
-        // Port 1 is not a vettd server: had the CLI reached the network first, the
-        // failure would have been a connect error instead of this one.
+        // Port 1 has no server, so reaching the network would fail differently.
         assert!(
             !result.stderr.contains("could not reach"),
             "must fail before the request: {}",

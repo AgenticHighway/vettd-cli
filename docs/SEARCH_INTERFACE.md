@@ -107,7 +107,7 @@ vettd directory search <query> \
 |---|---|---|
 | `--language <lang>` | yes | Filter to skills whose implementation language matches, e.g. `--language python --language typescript`. |
 | `--agent-compatibility <agent>` | yes | Filter to skills compatible with the named agent/runtime, e.g. `--agent-compatibility claude-code --agent-compatibility cursor`. |
-| `--rankings '<json>'` | no | Minimum-threshold filter as a JSON object. **Only `stars` is accepted**, and it maps to the catalog's min-stars filter (`rankings.stars` → query-service `min_stars`). The other ranking fields are response values, not filters: `skillsShLeaderboardRank` / `numberOfAggregators` / `officialClaudeMarketplace` are a CLI error (exit 1) naming the key, reported before any request (vettd#1030 — the server rejects them too). |
+| `--rankings '<json>'` | no | Minimum-star filter, e.g. `'{"stars": 50}'` (→ query-service `min_stars`). Only `stars` is accepted; any other key is a CLI error (exit 1) naming the key, before any request. |
 | `--source <s>` | yes | Filter by discovery source, e.g. `--source marketplace --source seed`. Real push-down (`sources` → query-service `sources`). Applies to both `--asset-type skill` and `mcp`. |
 | `--rank-filter <key=N>` | yes | Per-source search-rank ceiling, e.g. `--rank-filter search_rank_skills_sh_rank=100`. Repeated flags merge into a `{key: N}` map (`rankFilters` → query-service `rank_filters`). Skill only. A malformed value (no `=`, non-integer `N`, empty key) is a CLI error (exit 1) reported before any request. |
 | `--asset-type <skill\|mcp>` | no | Which catalog to search. Default `skill`. `mcp` (directory only) changes the response envelope — see "MCP search" below. |
@@ -127,11 +127,8 @@ CLI error (exit 1), never a silent no-op.
 ```
 
 `--rankings '{"stars": 50}'` returns only skills with 50+ stars. Any other key,
-and any invalid JSON, is a CLI error (exit 1) naming the key and reported before
-any request is sent: the query service has a filter hook for `min_stars` and
-nothing else, so a key accepted here would have been an accepted filter that
-never ran — an unfiltered page that reads as filtered (vettd#1030). All four
-ranking fields are still real on the **response** (see below).
+or invalid JSON, is a CLI error (exit 1) before any request is sent. All four
+ranking fields are still returned on the response.
 
 **Request** — with the beta flag on, the CLI always issues:
 
@@ -578,7 +575,7 @@ $ $BIN directory search "x" --rank-filter bogus
 Error: --rank-filter 'bogus' must be in key=N form
 
 $ $BIN directory search "x" --rankings '{"numberOfAggregators": 2}'
-Error: --rankings key 'numberOfAggregators' is not a filter (only 'stars' filters). The other ranking fields are response values, and the server rejects them as filters too.
+Error: --rankings key 'numberOfAggregators' is not a filter (only 'stars' filters)
 
 $ unset SEARCH_BETA_TESTING; $BIN directory search "x" --asset-type mcp
 Error: search filters (--language/--agent-compatibility/--rankings/--source/--rank-filter/--asset-type mcp/--mcp-category/--deployment/--registry-type) require SEARCH_BETA_TESTING=1.
@@ -698,15 +695,8 @@ Answered 2026-09-10. Rationale and the alternatives considered are in
   later without breaking any caller, but can never start rejecting one. The
   asymmetry with client-side response deserialization (which ignores unknown
   fields) is deliberate — strict on input, lenient on output.
-- **What about ranking keys that are accepted but never applied?** **Rejected —
-  landed in vettd#1030.** `rankings.stars` is the only sub-field that filters (it
-  maps to the query-service's `min_stars`). `skillsShLeaderboardRank`,
-  `numberOfAggregators` and `officialClaudeMarketplace` are no longer accepted as
-  filters: the server 400s naming the key, and the CLI's `parse_rankings_filter`
-  refuses them first so the key is named without a wasted round trip. Their
-  *response* values are unchanged and real, which is why this is one contract in
-  two shapes rather than one schema: `SkillRankings` (response — all four) vs.
-  `RANKINGS_FILTER_KEYS` (request — `stars` only). The two allow-lists live in
-  different repos on purpose; a key becomes filterable only when the query service
-  gains a hook for it (payload indexes — A13), which is a change in both. Until a
-  hook exists, do not advertise them as filters.
+- **What about ranking keys that are accepted but never applied?** Rejected
+  (vettd#1030). Only `rankings.stars` filters (query-service `min_stars`); the
+  server 400s on the other three and the CLI rejects them first. Their response
+  values are unchanged. Making one filterable needs a query-service hook (A13)
+  and a change in both repos.
