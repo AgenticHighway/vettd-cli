@@ -139,10 +139,19 @@ fn preflight_submission(auth: &AuthConfig) -> Result<(), String> {
     }
 }
 
+/// Host only: terminals linkify full URLs, and the POST-only ingest route
+/// answers a browser GET with 405 (#259).
+fn submit_status_line(endpoint: &str) -> String {
+    format!(
+        "Submitting scan to {}...",
+        crate::network::endpoint_display_host(endpoint)
+    )
+}
+
 /// POST the payload using the resolved auth config.
 pub fn do_submit(payload_json: &str, auth: &AuthConfig) -> Result<(), String> {
     preflight_submission(auth)?;
-    eprintln!("Submitting scan to {}...", auth.endpoint);
+    eprintln!("{}", submit_status_line(&auth.endpoint));
     match submit_contract_payload(payload_json, auth) {
         Ok(()) => Ok(()),
         Err(e) => Err(format!("Submission failed: {e}")),
@@ -184,5 +193,18 @@ mod tests {
         let submit_flag = Some(Some("http://localhost:8080/ingest".to_string()));
         let result = resolve_submit_auth(&submit_flag, Some("ah_test"), false);
         assert!(result.is_ok(), "local URL should pass without flag");
+    }
+
+    #[test]
+    fn submit_status_line_shows_host_not_ingest_url() {
+        // #259: a linkified ingest URL sends users to a 405.
+        assert_eq!(
+            submit_status_line("https://vettd.agentichighway.ai/api/scans/ingest"),
+            "Submitting scan to vettd.agentichighway.ai..."
+        );
+        assert_eq!(
+            submit_status_line("http://localhost:3000/api/scans/ingest"),
+            "Submitting scan to localhost:3000..."
+        );
     }
 }
