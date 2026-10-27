@@ -65,7 +65,7 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
         excluded: _,
         partial,
     } = load;
-    // The pinned scanner (v0.2.0) requires a caller-supplied RFC 3339
+    // The pinned scanner requires a caller-supplied RFC 3339
     // observation time; signals carry it unmodified. The pure scanner never
     // reads a clock, so the CLI stamps "now" here.
     let observed_at = chrono::Utc::now().to_rfc3339();
