@@ -872,7 +872,7 @@ mod tests {
         validate_payload_coverage(&payload);
     }
 
-    /// Regression (epic #879 review): the v0.2.0 scanner pin emits `signals`
+    /// Regression (epic #879 review): the pinned scanner emits `signals`
     /// and `coverage` for real skills, and `scan --submit` panicked on the
     /// first unknown serialized key (`dataCategory`, `valueNum`, ...) because
     /// the walker had no mapping for the signal/coverage rows. A skill with

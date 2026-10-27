@@ -10,7 +10,7 @@ CLI contract on tag bump") — a dependency of the #879 release train. It is the
 counterpart of [AgenticHighway/vettd#925]("Signal emission path: scanner crate to vettd ingest").
 
 `vettd-skill-scanner` is consumed here as a tag-pinned Git dependency
-(`crates/vettd-cli/Cargo.toml` → `tag = "v0.2.0"`). The crate's `main` carries
+(`crates/vettd-cli/Cargo.toml` → `tag = "v0.3.0"`). The crate's `main` carries
 `Signal` output fields (`crates/vettd-skill-scanner/src/signal.rs`) plus the
 structural facts on `SkillScanResult` (`has_skill_md`, `has_scripts`,
 `has_references`, `has_evals`, `has_assets`, `file_count`). Every field on
@@ -68,7 +68,7 @@ and its `additionalProperties: false` sites — that is what this gate enforces.
 
 ## What is NOT undecided
 
-- The pin location (`crates/vettd-cli/Cargo.toml`, `tag = "v0.2.0"`).
+- The pin location (`crates/vettd-cli/Cargo.toml`, `tag = "v0.3.0"`).
 - `scanner-data-contract.json` changes go through the gate: a field may only enter it
   when the manifest classifies it as `surface` at the matching boundary.
 - `scanner-data-contract.json` has `additionalProperties: false` at every nested site;
@@ -81,7 +81,7 @@ and its `additionalProperties: false` sites — that is what this gate enforces.
 
 - `cargo fmt --all --check`, `cargo clippy -- -D warnings`, `cargo test` — all green on
   this branch.
-- `scripts/check-scanner-field-gate.sh` passes at the current pin (v0.2.0), and its
+- `scripts/check-scanner-field-gate.sh` passes at the current pin (v0.3.0), and its
   failure modes (pin mismatch, unclassified field, unknown decision, surface-not-mapped,
   gate-mapped, skill-level field missing from the contract JSON) were each verified to
   fail with a targeted error.

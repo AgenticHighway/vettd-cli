@@ -1,7 +1,7 @@
 {
   "title": "vettd-cli scanner field gate manifest",
   "description": "Records the surface-or-gate decision for every field on the pinned vettd-skill-scanner SkillScanResult. Governed by vettd-cli#243 (epic #879). The gate script scripts/check-scanner-field-gate.sh fails a tag bump unless every new crate output field is classified here. Surface fields carry a contractPath: `skills[].externalScannerResults[].*` for fields mapped into the scanner adapter (contract/skill_scan.rs), `skills[].<field>` for fields surfaced directly on the skill record (contract/skills.rs + scanner-data-contract.json skills.items.properties).",
-  "pinTag": "v0.2.0",
+  "pinTag": "v0.3.0",
   "defaultLeaning": "surface-additive",
   "defaultLeaningNote": "Optional, additively-shaped fields (per the epic convention: additive, optional, open strings, no closed enums, required unchanged, byte-identical when empty) are surfaced additively into scanner-data-contract.json when the bump author explicitly classifies them. Anything unclassified fails the bump.",
   "fields": {
