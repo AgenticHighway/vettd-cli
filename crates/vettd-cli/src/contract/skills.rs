@@ -203,9 +203,11 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
     let detected_source = detect_skill_source(source_path);
-    let frontmatter = read_skill_frontmatter(artifact);
 
     let scan_output = super::skill_scan::output_for(artifact);
+    // The frontmatter must describe the same bytes as `contentHash` and
+    // `bundleDigest`, so it comes from the analysed SKILL.md text (#314/P2).
+    let frontmatter = read_skill_frontmatter(artifact, scan_output.as_ref());
     let assessment = super::skill_scan::assess(scan_output.as_ref());
     let overall_grade = grade_from_scanner_result(
         scan_output.as_ref().map(|o| &o.external),
@@ -388,14 +390,22 @@ enum Collecting {
 /// Read and parse the SKILL.md frontmatter for an artifact, if the file is
 /// readable. Never fails the skill build — unreadable/missing files yield an
 /// empty frontmatter.
-fn read_skill_frontmatter(artifact: &ArtifactReport) -> SkillFrontmatter {
+fn read_skill_frontmatter(
+    artifact: &ArtifactReport,
+    scan_output: Option<&super::skill_scan::SkillScanOutput>,
+) -> SkillFrontmatter {
+    // Prefer the SKILL.md text the scan analysed: a second read could pair an
+    // old description with a digest of newer bytes (#314/P2).
+    if let Some(text) = scan_output.and_then(|output| output.skill_md_text.as_deref()) {
+        return parse_skill_frontmatter(text);
+    }
     let path = first_path(artifact);
     if path == "unknown" {
         return SkillFrontmatter::default();
     }
-    // The same hardened, bounded reader the analysis uses (#315/P0): a FIFO or
-    // an oversized SKILL.md can neither block nor spike memory here, and the
-    // read is bounded by the analysis byte cap.
+    // No scan output to share bytes with, so read through the same hardened,
+    // bounded reader the analysis uses (#315/P0): a FIFO or an oversized
+    // SKILL.md can neither block nor spike memory here.
     match identity::read_text_file(std::path::Path::new(path), identity::MAX_SKILL_TOTAL_BYTES) {
         identity::TextRead::Text(content) => parse_skill_frontmatter(&content),
         _ => SkillFrontmatter::default(),
@@ -867,7 +877,7 @@ mod tests {
         content.push_str(&"x".repeat(identity::MAX_SKILL_TOTAL_BYTES as usize + 1));
         std::fs::write(&skill_md, content).unwrap();
         assert_eq!(
-            read_skill_frontmatter(&artifact_for(&skill_md)).description,
+            read_skill_frontmatter(&artifact_for(&skill_md), None).description,
             None,
             "frontmatter must respect the analysis byte bound"
         );
@@ -893,12 +903,33 @@ mod tests {
         let artifact = artifact_for(&skill_md);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(read_skill_frontmatter(&artifact).description);
+            let _ = tx.send(read_skill_frontmatter(&artifact, None).description);
         });
         let description = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a FIFO at SKILL.md must never block the frontmatter read");
         assert_eq!(description, None);
+    }
+
+    #[test]
+    fn frontmatter_comes_from_the_analysed_bytes() {
+        // Why this matters: the frontmatter used a second, unsynchronised read,
+        // so a SKILL.md change between the scan and the build paired an old
+        // description/version with a `contentHash`/`bundleDigest` of newer
+        // bytes (#314/P2). The metadata must travel with the analysed text.
+        let (dir, mut a) = artifact_with_scan_output();
+        {
+            let cached = a.cached_skill_scan.as_mut().unwrap();
+            cached.skill_md_text =
+                Some("---\nname: scanned\ndescription: From the scan\n---\nBody\n".to_string());
+        }
+        let skills = build_skills(&[a], &[]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].description, "From the scan",
+            "the description must come from the analysed SKILL.md bytes"
+        );
+        std::fs::remove_dir_all(dir.path()).unwrap();
     }
 
     #[test]
@@ -1618,6 +1649,7 @@ mod tests {
             incomplete_reasons: Vec::new(),
             partial: false,
             identity,
+            skill_md_text: load.text_files.get("SKILL.md").cloned(),
         });
         (dir, a)
     }

@@ -194,15 +194,7 @@ fn load_skill_files_with(
     walk_limit: usize,
     between_phases: &dyn Fn(),
 ) -> SkillFileLoad {
-    let mut walk = AnalysisWalk {
-        files: Vec::new(),
-        excluded: Vec::new(),
-        skipped: Vec::new(),
-        rules: Vec::new(),
-        partial: false,
-        depth_capped: false,
-        budget: WalkBudget::new(walk_limit),
-    };
+    let mut walk = AnalysisWalk::new(walk_limit);
     collect_files(root, "", 0, &mut walk);
     let mut files = walk.files;
     let mut excluded = walk.excluded;
@@ -265,11 +257,7 @@ fn load_skill_files_with(
         incomplete_reasons.push("size-cap");
     }
     for entry in &skipped {
-        incomplete_reasons.push(if entry.ends_with(UNREADABLE_DIR_SUFFIX) {
-            "unreadable-directory"
-        } else {
-            "file-unreadable"
-        });
+        incomplete_reasons.push(reason_for_skipped(entry));
     }
     between_phases();
     let bundle = walk_bundle(root, walk_limit, &analyzed_hashes);
@@ -1244,13 +1232,30 @@ struct AnalysisWalk {
     budget: WalkBudget,
 }
 
+impl AnalysisWalk {
+    fn new(walk_limit: usize) -> Self {
+        Self {
+            files: Vec::new(),
+            excluded: Vec::new(),
+            skipped: Vec::new(),
+            rules: Vec::new(),
+            partial: false,
+            depth_capped: false,
+            budget: WalkBudget::new(walk_limit),
+        }
+    }
+}
+
 /// Enumerate one directory, stopping as soon as the entry budget is spent, so a
 /// hostile flat directory cannot be materialised in full before the bound is
 /// consulted (#315/N5).
 /// Returns the entries collected plus whether the iterator itself reported an
 /// error, which the analysis pass discloses as an unreadable directory
 /// (#315/P2-7).
-fn read_dir_bounded(read_dir: fs::ReadDir, budget: &mut WalkBudget) -> (Vec<fs::DirEntry>, bool) {
+fn read_dir_bounded<I>(read_dir: I, budget: &mut WalkBudget) -> (Vec<fs::DirEntry>, bool)
+where
+    I: Iterator<Item = std::io::Result<fs::DirEntry>>,
+{
     let mut entries = Vec::new();
     let mut errored = false;
     for entry in read_dir {
@@ -1265,6 +1270,29 @@ fn read_dir_bounded(read_dir: fs::ReadDir, budget: &mut WalkBudget) -> (Vec<fs::
     (entries, errored)
 }
 
+/// Record a directory the analysis walk could not fully enumerate. The frozen
+/// 2.9.0 reason vocabulary classifies the suffix as `unreadable-directory`
+/// (#315/P2-7).
+fn note_unreadable_dir(walk: &mut AnalysisWalk, rel_prefix: &str) {
+    let dir_rel = if rel_prefix.is_empty() {
+        "."
+    } else {
+        rel_prefix
+    };
+    walk.skipped
+        .push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
+    walk.partial = true;
+}
+
+/// Map one skipped entry to its frozen reason code.
+fn reason_for_skipped(entry: &str) -> &'static str {
+    if entry.ends_with(UNREADABLE_DIR_SUFFIX) {
+        "unreadable-directory"
+    } else {
+        "file-unreadable"
+    }
+}
+
 fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut AnalysisWalk) {
     if depth > MAX_WALK_DEPTH {
         walk.depth_capped = true;
@@ -1273,14 +1301,7 @@ fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut Analysis
     }
     let Ok(read_dir) = fs::read_dir(dir) else {
         // An unreadable directory truncates the scan — report it, never silent.
-        let dir_rel = if rel_prefix.is_empty() {
-            "."
-        } else {
-            rel_prefix
-        };
-        walk.skipped
-            .push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
-        walk.partial = true;
+        note_unreadable_dir(walk, rel_prefix);
         return;
     };
     // The budget is spent while enumerating, so a directory with millions of
@@ -1290,14 +1311,7 @@ fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut Analysis
         walk.partial = true;
     }
     if entry_errors {
-        let dir_rel = if rel_prefix.is_empty() {
-            "."
-        } else {
-            rel_prefix
-        };
-        walk.skipped
-            .push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
-        walk.partial = true;
+        note_unreadable_dir(walk, rel_prefix);
     }
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
     // Load this directory's own .gitignore before walking its entries: they are
@@ -2288,52 +2302,124 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A tracked repo with a remote, a branch ref and (optionally) a config, so
+    /// each iteration differs only in the one path the test breaks.
+    #[cfg(unix)]
+    fn write_tracked_repo(git_dir: &Path, with_config: bool, with_ref: bool) {
+        fs::create_dir_all(git_dir).unwrap();
+        write_test_index(git_dir, &["skills/own/SKILL.md"]);
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        if with_config {
+            fs::write(
+                git_dir.join("config"),
+                "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+            )
+            .unwrap();
+        }
+        if with_ref {
+            fs::create_dir_all(git_dir.join("refs/heads")).unwrap();
+            fs::write(git_dir.join("refs/heads/main"), format!("{SHA}\n")).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     #[cfg(unix)]
     #[test]
     fn git_metadata_reads_fail_closed_on_a_fifo() {
         // Why this matters: the index reader and the other git helpers used
         // plain path-based reads, so a FIFO planted at `.git/index`, `config`,
-        // `HEAD`, a ref or `packed-refs` blocked the scan until a writer
-        // appeared. Every provenance read must fail closed instead (#315/P0).
-        let root = fixture_repo("fifo-git-meta");
+        // `HEAD` or a ref blocked the scan until a writer appeared. Each
+        // provenance field is read independently, so a hostile file there must
+        // disable exactly that field — and never block (#315/P0).
+        let root = fixture_root("fifo-git-meta");
         fs::create_dir_all(root.join("skills/own")).unwrap();
         let skill = root.join("skills/own/SKILL.md");
         fs::write(&skill, "# own\n").unwrap();
         let git_dir = root.join(".git");
 
-        for target in [
-            "index",
-            "config",
-            "HEAD",
-            "refs/heads/main",
-            "packed-refs",
-            "commondir",
-        ] {
-            let path = git_dir.join(target);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let _ = fs::remove_file(&path);
-            if !make_fifo(&path) {
-                eprintln!("SKIPPED git_metadata_reads_fail_closed_on_a_fifo: mkfifo unavailable");
-                return;
+        // target, with_config, with_ref, remote, commit, detectedSource
+        let cases = [
+            ("(baseline)", true, true, true, true, true),
+            ("index", true, true, false, false, false),
+            ("config", true, true, false, true, false),
+            ("HEAD", true, true, true, false, true),
+            ("refs/heads/main", true, true, true, false, true),
+            ("packed-refs", true, false, true, false, true),
+        ];
+        for (target, with_config, with_ref, want_remote, want_commit, want_source) in cases {
+            let _ = fs::remove_dir_all(&git_dir);
+            write_tracked_repo(&git_dir, with_config, with_ref);
+            if target == "packed-refs" {
+                fs::write(
+                    git_dir.join("packed-refs"),
+                    format!("{SHA} refs/heads/main\n"),
+                )
+                .unwrap();
             }
-            // `commondir` is only consulted when `config` yields nothing.
-            if target == "commondir" {
-                let _ = fs::remove_file(git_dir.join("config"));
+            if target != "(baseline)" {
+                let path = git_dir.join(target);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let _ = fs::remove_file(&path);
+                if !make_fifo(&path) {
+                    eprintln!(
+                        "SKIPPED git_metadata_reads_fail_closed_on_a_fifo: mkfifo unavailable"
+                    );
+                    return;
+                }
             }
             assert!(
                 provenance_reads_return(&root, &skill, target),
                 "a FIFO at .git/{target} must not block provenance reads"
             );
+            let lineage = lineage_for(&skill);
+            assert_eq!(
+                lineage.git_remote_url.is_some(),
+                want_remote,
+                "{target}: remote"
+            );
+            assert_eq!(
+                lineage.git_commit.as_deref() == Some(SHA),
+                want_commit,
+                "{target}: commit"
+            );
+            assert_eq!(
+                crate::contract::helpers::detect_skill_source(&skill.to_string_lossy()).is_some(),
+                want_source,
+                "{target}: detectedSource"
+            );
+        }
+
+        // Worktree layout: the remote lives in the directory `commondir` names.
+        let _ = fs::remove_dir_all(&git_dir);
+        write_tracked_repo(&git_dir, false, true);
+        fs::create_dir_all(root.join("common")).unwrap();
+        fs::write(
+            root.join("common/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+        )
+        .unwrap();
+        let commondir = git_dir.join("commondir");
+        fs::write(&commondir, "../common\n").unwrap();
+        assert!(
+            lineage_for(&skill).git_remote_url.is_some(),
+            "baseline: the remote resolves through commondir"
+        );
+        fs::remove_file(&commondir).unwrap();
+        if make_fifo(&commondir) {
+            assert!(provenance_reads_return(&root, &skill, "commondir"));
             assert_eq!(
                 lineage_for(&skill).git_remote_url,
                 None,
-                "a FIFO at .git/{target} must grant no remote"
+                "a FIFO commondir must grant no remote"
             );
-            fs::remove_file(&path).unwrap();
         }
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Run every provenance read on a worker thread and report whether it
+    /// returned within the deadline.
     #[cfg(unix)]
     fn provenance_reads_return(root: &Path, skill: &Path, label: &str) -> bool {
         let root = root.to_path_buf();
@@ -2423,16 +2509,33 @@ mod tests {
 
     #[test]
     fn enumeration_errors_are_disclosed_as_unreadable_directories() {
-        // Why this matters: an iterator error was dropped silently, so the
-        // analysis pass walked fewer files than the tree held without saying
-        // so (#315/P2-7). The contract is exercised here; a real `ReadDir`
-        // error is not deterministically inducible from a test.
-        let root = fixture_root("readdir-error-contract");
-        fs::write(root.join("a.md"), "x").unwrap();
+        // Why this matters: a `ReadDir` iterator error used to be dropped, so
+        // the analysis pass walked fewer entries than the tree held and
+        // disclosed nothing (#315/P2-7). A real iterator error cannot be
+        // induced deterministically, so inject one into the same bounded
+        // reader `collect_files` uses and follow it to the frozen reason.
         let mut budget = WalkBudget::new(10);
-        let (entries, errored) = read_dir_bounded(fs::read_dir(&root).unwrap(), &mut budget);
-        assert_eq!(entries.len(), 1);
-        assert!(!errored);
-        fs::remove_dir_all(&root).unwrap();
+        let injected: Vec<std::io::Result<fs::DirEntry>> =
+            vec![Err(std::io::Error::other("injected iterator error"))];
+        let (entries, errored) = read_dir_bounded(injected.into_iter(), &mut budget);
+        assert!(entries.is_empty());
+        assert!(errored, "an iterator error must be reported, not dropped");
+
+        let mut walk = AnalysisWalk::new(WALK_SAFETY_LIMIT);
+        note_unreadable_dir(&mut walk, "sub");
+        assert!(
+            walk.partial,
+            "an unreadable directory makes the load partial"
+        );
+        assert_eq!(
+            walk.skipped,
+            vec!["sub/ (unreadable directory)".to_string()]
+        );
+        let reasons: Vec<&str> = walk
+            .skipped
+            .iter()
+            .map(|entry| reason_for_skipped(entry))
+            .collect();
+        assert_eq!(reasons, vec!["unreadable-directory"]);
     }
 }

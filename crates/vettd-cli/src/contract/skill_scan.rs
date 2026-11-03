@@ -73,6 +73,11 @@ pub(crate) struct SkillScanOutput {
     pub partial: bool,
     /// Identity from the same load as this scan (#315/P2-10).
     pub identity: SkillIdentity,
+    /// The `SKILL.md` text this scan analyzed, so the skill-level frontmatter
+    /// (description/version/license/declared name) is read from the same bytes
+    /// as `contentHash` and `bundleDigest` instead of a later, separate read
+    /// (#314/P2).
+    pub skill_md_text: Option<String>,
 }
 
 /// Whether analysis of one skill covered the whole skill (#314).
@@ -203,6 +208,9 @@ fn run_skill_scanner_with_observed_at(
     };
     let mut incomplete_reasons: Vec<String> =
         incomplete_reasons.iter().map(|r| r.to_string()).collect();
+    // Captured before the scan consumes the file map: these are the exact bytes
+    // the scan and the content hash describe (#314/P2).
+    let skill_md_text = text_files.get("SKILL.md").cloned();
     let scan_result = match scan_skill(&text_files, &all_paths, observed_at) {
         Ok(result) => result,
         Err(e) => {
@@ -225,6 +233,7 @@ fn run_skill_scanner_with_observed_at(
                 incomplete_reasons,
                 partial,
                 identity,
+                skill_md_text,
             });
         }
     };
@@ -335,6 +344,7 @@ fn run_skill_scanner_with_observed_at(
         incomplete_reasons,
         partial,
         identity,
+        skill_md_text,
     })
 }
 
