@@ -599,14 +599,14 @@ pub(super) fn is_tracked(work_root: &Path, git_dir: &Path, path: &Path) -> bool 
     let Some(rel) = native_git_relative_path(rel) else {
         return false;
     };
-    if rel.is_empty() {
-        return true;
-    }
     let dir_prefix = format!("{rel}/");
+    // The index must parse even for the work-tree root: an unreadable index
+    // grants nothing (fail closed).
     index_paths(git_dir).is_some_and(|paths| {
-        paths
-            .iter()
-            .any(|p| p == &rel || p.starts_with(&dir_prefix))
+        rel.is_empty()
+            || paths
+                .iter()
+                .any(|p| p == &rel || p.starts_with(&dir_prefix))
     })
 }
 
