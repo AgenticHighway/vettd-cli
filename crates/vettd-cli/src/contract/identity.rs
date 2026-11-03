@@ -418,17 +418,94 @@ pub(crate) struct AssetLineage {
 }
 
 /// Read lineage from the nearest enclosing `.git` directory (files only).
+///
+/// Only a path the enclosing repository actually tracks inherits its remote
+/// and commit: an archive export, copy, or unrelated bundle that merely sits
+/// under a checkout must not be attributed to that repository (vettd#1216).
+/// Tracking is read from the repository's own index; an index this reader
+/// cannot parse yields no lineage (fail closed).
 pub(crate) fn lineage_for(path: &Path) -> AssetLineage {
-    let Some(git_dir) = find_git_dir(path) else {
+    let Some((work_root, git_dir)) = find_git_dir(path) else {
         return AssetLineage::default();
     };
+    if !is_tracked(&work_root, &git_dir, path) {
+        return AssetLineage::default();
+    }
     AssetLineage {
         git_remote_url: read_git_remote(&git_dir),
         git_commit: read_git_head_commit(&git_dir),
     }
 }
 
-fn find_git_dir(path: &Path) -> Option<PathBuf> {
+/// Whether `path` (a file, or a directory containing tracked files) is in
+/// the index of the repository rooted at `work_root`.
+pub(super) fn is_tracked(work_root: &Path, git_dir: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(work_root) else {
+        return false;
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let dir_prefix = format!("{rel}/");
+    index_paths(git_dir).is_some_and(|paths| {
+        paths
+            .iter()
+            .any(|p| rel.is_empty() || p == &rel || p.starts_with(&dir_prefix))
+    })
+}
+
+/// Entry paths from a git index (`DIRC`, versions 2 and 3). Version 4
+/// (prefix-compressed paths) and anything malformed return `None`.
+fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
+    let data = fs::read(git_dir.join("index")).ok()?;
+    if data.get(0..4)? != b"DIRC" {
+        return None;
+    }
+    let version = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?);
+    if version != 2 && version != 3 {
+        return None;
+    }
+    let count = u32::from_be_bytes(data.get(8..12)?.try_into().ok()?);
+    let mut paths = Vec::new();
+    let mut pos = 12usize;
+    for _ in 0..count {
+        // 40 bytes of stat data + 20-byte object id, then 16-bit flags.
+        let flags_at = pos + 60;
+        let flags = u16::from_be_bytes(data.get(flags_at..flags_at + 2)?.try_into().ok()?);
+        let mut name_at = flags_at + 2;
+        if flags & 0x4000 != 0 {
+            if version < 3 {
+                return None;
+            }
+            name_at += 2;
+        }
+        let nul = data.get(name_at..)?.iter().position(|&b| b == 0)?;
+        paths.push(String::from_utf8_lossy(&data[name_at..name_at + nul]).into_owned());
+        // Entries are NUL-padded (at least one NUL) to a multiple of 8 bytes.
+        pos += (name_at - pos + nul + 1).div_ceil(8) * 8;
+    }
+    Some(paths)
+}
+
+/// Test fixture: a minimal git index (version 2) listing `paths`, laid out
+/// as git writes it.
+#[cfg(test)]
+pub(crate) fn write_test_index(git_dir: &Path, paths: &[&str]) {
+    let mut sorted = paths.to_vec();
+    sorted.sort_unstable();
+    let mut out = b"DIRC".to_vec();
+    out.extend(2u32.to_be_bytes());
+    out.extend((sorted.len() as u32).to_be_bytes());
+    for path in sorted {
+        let mut entry = vec![0u8; 60];
+        entry.extend((path.len() as u16 & 0x0fff).to_be_bytes());
+        entry.extend(path.as_bytes());
+        entry.resize((62 + path.len() + 8) & !7, 0);
+        out.extend(entry);
+    }
+    fs::write(git_dir.join("index"), out).unwrap();
+}
+
+/// The nearest enclosing work tree root and its git directory.
+fn find_git_dir(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = if path.is_dir() {
         path.to_path_buf()
     } else {
@@ -437,13 +514,13 @@ fn find_git_dir(path: &Path) -> Option<PathBuf> {
     loop {
         let candidate = current.join(".git");
         if candidate.is_dir() {
-            return Some(candidate);
+            return Some((current, candidate));
         }
         if candidate.is_file() {
             // Worktrees and submodules use a `.git` file pointing at the real
             // git directory via `gitdir: <path>`.
             if let Some(dir) = resolve_gitdir_file(&candidate) {
-                return Some(dir);
+                return Some((current, dir));
             }
         }
         if !current.pop() {
@@ -1045,6 +1122,7 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        write_test_index(&root.join(".git"), &["SKILL.md"]);
 
         let lineage = lineage_for(&root.join("SKILL.md"));
         assert_eq!(
@@ -1070,6 +1148,7 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        write_test_index(&root.join(".git"), &["SKILL.md"]);
 
         let lineage = lineage_for(&root.join("SKILL.md"));
         assert_eq!(
@@ -1127,6 +1206,8 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("repo/SKILL.md"), "# skill\n").unwrap();
+        // A worktree keeps its own index in its own git dir.
+        write_test_index(&worktree_git, &["SKILL.md"]);
 
         let lineage = lineage_for(&root.join("repo/SKILL.md"));
         assert_eq!(
@@ -1137,6 +1218,79 @@ mod tests {
             lineage.git_remote_url.as_deref(),
             Some("https://github.com/acme/skills.git")
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn untracked_bundle_under_a_checkout_does_not_inherit_its_lineage() {
+        // vettd#1216: an archive export or copied bundle sitting inside a
+        // checkout used to report that repository's remote and commit, so a
+        // consumer associated it with the wrong source. Only tracked paths
+        // inherit lineage; an unknown index version fails closed.
+        let root = fixture_root("untracked-lineage");
+        fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        fs::write(
+            root.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/tool.git\n",
+        )
+        .unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            root.join(".git/refs/heads/main"),
+            "0123456789012345678901234567890123456789\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("skills/own")).unwrap();
+        fs::create_dir_all(root.join("exports/other")).unwrap();
+        fs::write(root.join("skills/own/SKILL.md"), "# own\n").unwrap();
+        fs::write(root.join("exports/other/SKILL.md"), "# other\n").unwrap();
+        write_test_index(&root.join(".git"), &["README.md", "skills/own/SKILL.md"]);
+
+        let own = lineage_for(&root.join("skills/own/SKILL.md"));
+        assert_eq!(
+            own.git_remote_url.as_deref(),
+            Some("https://github.com/acme/tool.git")
+        );
+        let other = lineage_for(&root.join("exports/other/SKILL.md"));
+        assert_eq!(other.git_remote_url, None);
+        assert_eq!(other.git_commit, None);
+
+        // Index v4 (prefix-compressed) is not parsed: no lineage, not a guess.
+        let mut v4 = fs::read(root.join(".git/index")).unwrap();
+        v4[4..8].copy_from_slice(&4u32.to_be_bytes());
+        fs::write(root.join(".git/index"), v4).unwrap();
+        assert_eq!(
+            lineage_for(&root.join("skills/own/SKILL.md")).git_commit,
+            None
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn index_reader_matches_a_real_git_index() {
+        // Cross-check the hand-rolled reader against an index written by git
+        // itself, including the extended-flags entry git writes for
+        // `git add --intent-to-add` (index version 3).
+        let root = fixture_root("real-git-index");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+        };
+        if git(&["init", "-q"]).is_err() {
+            eprintln!("SKIPPED index_reader_matches_a_real_git_index: git not available");
+            return;
+        }
+        fs::create_dir_all(root.join("a/bb")).unwrap();
+        fs::write(root.join("SKILL.md"), "x").unwrap();
+        fs::write(root.join("a/bb/long-name-file.md"), "y").unwrap();
+        fs::write(root.join("new.md"), "z").unwrap();
+        git(&["add", "SKILL.md", "a"]).unwrap();
+        git(&["add", "--intent-to-add", "new.md"]).unwrap();
+        let mut paths = index_paths(&root.join(".git")).expect("git's own index must parse");
+        paths.sort();
+        assert_eq!(paths, vec!["SKILL.md", "a/bb/long-name-file.md", "new.md"]);
         fs::remove_dir_all(&root).unwrap();
     }
 

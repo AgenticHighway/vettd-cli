@@ -106,6 +106,11 @@ pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
     while let Some(d) = dir {
         let git_dir = d.join(".git");
         if git_dir.is_dir() {
+            // Same rule as lineage (vettd#1216): a bundle the enclosing repo
+            // does not track (archive export, copy) is not that repo's skill.
+            if !super::identity::is_tracked(d, &git_dir, raw_path) {
+                return None;
+            }
             let raw_remote = read_remote_url(&git_dir.join("config"))?;
             let sanitized = sanitize_git_remote_url(&raw_remote);
             if sanitized == "unknown" {
@@ -672,6 +677,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        crate::contract::identity::write_test_index(&git_dir, &["skills/foo/SKILL.md"]);
     }
 
     #[test]
@@ -753,6 +759,7 @@ mod tests {
         .unwrap();
         // Detached HEAD: a bare SHA, no "ref:" prefix.
         std::fs::write(git_dir.join("HEAD"), "a1b2c3d4e5f6\n").unwrap();
+        crate::contract::identity::write_test_index(&git_dir, &["SKILL.md"]);
 
         let result = detect_skill_source(dir.path().to_str().unwrap());
         match result {
@@ -779,5 +786,25 @@ mod tests {
             }
             other => panic!("expected GitHub variant, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bundle_under_unrelated_repo_gets_neither_detected_source_nor_lineage() {
+        // vettd#1216: a skill bundle moved or exported under some other
+        // repository's checkout must not be attributed to that repository on
+        // either surface. Only the tracked skill keeps its association.
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let tracked = dir.path().join("skills/foo/SKILL.md");
+        let moved = dir.path().join("exports/bar/SKILL.md");
+        for path in [&tracked, &moved] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "# skill").unwrap();
+        }
+
+        assert!(detect_skill_source(tracked.to_str().unwrap()).is_some());
+        assert!(detect_skill_source(moved.to_str().unwrap()).is_none());
+        let lineage = crate::contract::identity::lineage_for(&moved);
+        assert!(lineage.git_remote_url.is_none() && lineage.git_commit.is_none());
     }
 }
