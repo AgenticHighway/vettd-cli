@@ -1,7 +1,9 @@
 //! Shared helpers used across contract submodules.
 
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
+use super::identity::{self, read_git_text};
 use super::types::{DetectedSkillSource, ScannerCoverage};
 use crate::models::ArtifactReport;
 pub fn first_path(a: &ArtifactReport) -> &str {
@@ -57,14 +59,22 @@ pub fn short_hash(input: &str) -> String {
 }
 
 pub fn compute_file_hash(path: &str) -> String {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            format!("{:x}", hasher.finalize())
+    // Streamed and hardeded at the open: a FIFO or device at an artifact path
+    // must not block discovery, and the hash cannot be computed from one.
+    let Some(file) = identity::open_readable_file(std::path::Path::new(path)) else {
+        return String::new();
+    };
+    let mut hasher = Sha256::new();
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return String::new(),
         }
-        Err(_) => String::new(),
     }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Try to find the git remote origin URL for a file path.
@@ -155,8 +165,11 @@ fn emitted_relative_path(rel: &std::path::Path) -> String {
 }
 
 /// Extract the raw (unsanitized) `url = ` line from a `.git/config` file.
+///
+/// Through the hardened reader (#315/P0): a FIFO or oversized `config` yields
+/// no provenance instead of blocking the scan.
 fn read_remote_url(git_config: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(git_config).ok()?;
+    let content = read_git_text(git_config)?;
     for line in content.lines() {
         if let Some(raw) = line.trim().strip_prefix("url = ") {
             return Some(raw.to_string());
@@ -173,7 +186,7 @@ fn is_github_remote(sanitized_url: &str) -> bool {
 /// detached HEAD (bare commit SHA) rather than fabricating a branch name;
 /// callers fall back to a sensible default.
 fn read_current_branch(git_dir: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let content = read_git_text(&git_dir.join("HEAD"))?;
     content
         .trim()
         .strip_prefix("ref: refs/heads/")
@@ -314,10 +327,17 @@ fn load_artifact_text(a: &ArtifactReport) -> ArtifactText {
     if !crate::models::is_content_read_allowed(path) {
         return ArtifactText::Unavailable;
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) => return ArtifactText::Failed(format!("could not read: {e}")),
+    // Bounded and hardened at the open: a FIFO or device at the artifact path
+    // must not block the scan, and an oversized file must not be read whole
+    // before it is rejected (#315/P0).
+    let Some(file) = identity::open_readable_file(path) else {
+        return ArtifactText::Failed("not a regular readable file — skipped".to_string());
     };
+    let mut bytes = Vec::new();
+    let mut limited = file.take(MAX_READ_BYTES as u64 + 1);
+    if let Err(e) = limited.read_to_end(&mut bytes) {
+        return ArtifactText::Failed(format!("could not read: {e}"));
+    }
     if bytes.len() > MAX_READ_BYTES {
         return ArtifactText::Failed(format!(
             "larger than {MAX_READ_BYTES} bytes — skipped as too large to analyze"

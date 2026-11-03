@@ -42,6 +42,10 @@ const MAX_IGNORE_FILE_BYTES: u64 = 1024 * 1024;
 /// Maximum directory nesting either walk follows. No skill bundle is nested
 /// this deeply, and unbounded recursion risks exhausting the stack (#315/N5).
 const MAX_WALK_DEPTH: usize = 64;
+/// Upper bound on any single git metadata file (`index`, `config`, `HEAD`,
+/// refs, `packed-refs`, `commondir`) this reader will load. A file past the
+/// bound is not something the reader will vouch for (#315).
+const MAX_GIT_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Open a file for reading without blocking and without following a final
 /// symlink.
@@ -51,12 +55,29 @@ const MAX_WALK_DEPTH: usize = 64;
 /// between the `file_type()` check and this open cannot block the scan
 /// waiting for a writer (#315/N2).
 fn open_regular_file(path: &Path) -> Option<fs::File> {
+    open_regular_file_at(path, true)
+}
+
+/// Like `open_regular_file`, but a final symlink is followed.
+///
+/// Artifact reads keep the CLI's existing symlink behaviour while still
+/// refusing to block on or read from a FIFO/device (#315/P0).
+pub(crate) fn open_readable_file(path: &Path) -> Option<fs::File> {
+    open_regular_file_at(path, false)
+}
+
+fn open_regular_file_at(path: &Path, nofollow: bool) -> Option<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        let flags = if nofollow {
+            libc::O_NONBLOCK | libc::O_NOFOLLOW
+        } else {
+            libc::O_NONBLOCK
+        };
+        options.custom_flags(flags);
     }
     let file = options.open(path).ok()?;
     if !file.metadata().is_ok_and(|m| m.is_file()) {
@@ -66,7 +87,7 @@ fn open_regular_file(path: &Path) -> Option<fs::File> {
 }
 
 /// Outcome of one bounded text read.
-enum TextRead {
+pub(crate) enum TextRead {
     Text(String),
     /// The file holds more bytes than the caller allows.
     TooLarge,
@@ -78,7 +99,7 @@ enum TextRead {
 ///
 /// Reads one byte past the bound to tell "exactly at the limit" from "over it",
 /// so a caller never silently analyzes a truncated prefix.
-fn read_text_file(path: &Path, limit: u64) -> TextRead {
+pub(crate) fn read_text_file(path: &Path, limit: u64) -> TextRead {
     let Some(file) = open_regular_file(path) else {
         return TextRead::Unreadable;
     };
@@ -93,6 +114,32 @@ fn read_text_file(path: &Path, limit: u64) -> TextRead {
     match String::from_utf8(bytes) {
         Ok(text) => TextRead::Text(text),
         Err(_) => TextRead::Unreadable,
+    }
+}
+
+/// Read at most `limit` bytes from a regular file. `None` for a non-regular
+/// file, an unreadable file, or a file larger than the bound: the caller then
+/// fails closed instead of vouching for bytes it did not see.
+fn read_binary_file(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let file = open_regular_file(path)?;
+    if file.metadata().is_ok_and(|m| m.len() > limit) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut limited = file.take(limit.saturating_add(1));
+    limited.read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+/// Read one git metadata file as text, bounded and non-blocking.
+///
+/// A FIFO, device, unreadable or oversized file at `.git/index`, `config`,
+/// `HEAD`, a ref, `packed-refs` or `commondir` yields `None`, so provenance
+/// fails closed instead of hanging on a hostile `.git/` (#315/P0).
+pub(crate) fn read_git_text(path: &Path) -> Option<String> {
+    match read_text_file(path, MAX_GIT_METADATA_BYTES) {
+        TextRead::Text(text) => Some(text),
+        _ => None,
     }
 }
 
@@ -411,6 +458,22 @@ fn walk_bundle(root: &Path, walk_limit: usize, analyzed: &HashMap<String, String
     let mut budget = WalkBudget::new(walk_limit);
     walk_bundle_dir(root, "", 0, &mut walk, &mut records, &mut budget, analyzed);
     walk.capped |= budget.capped;
+    // Every analyzed path must still be a hashed regular file. A path deleted
+    // or replaced by a directory between the analysis read and this walk would
+    // otherwise vanish from the digest while the scan still describes it
+    // (#315/P2-5).
+    let missing_analyzed = {
+        let hashed: std::collections::HashSet<&str> = walk
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == BundleEntryKind::File)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        analyzed.keys().any(|path| !hashed.contains(path.as_str()))
+    };
+    if missing_analyzed {
+        walk.unreadable = true;
+    }
     if walk.unreadable || walk.oversize || walk.capped {
         return walk;
     }
@@ -778,16 +841,21 @@ fn native_git_relative_path(rel: &Path) -> Option<String> {
 /// Index extensions this reader understands well enough to skip. Any other
 /// *required* extension (one whose signature does not start with an uppercase
 /// byte) means the index is not safe to trust.
-const KNOWN_INDEX_EXTENSIONS: [&[u8; 4]; 8] = [
-    b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT", b"link", b"sdir",
-];
+const KNOWN_INDEX_EXTENSIONS: [&[u8; 4]; 6] =
+    [b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT"];
+
+/// Extensions that change which entries the index contains. A split index keeps
+/// most entries in a shared index this reader does not resolve, so the entry
+/// list here would be incomplete: carrying one grants no provenance
+/// (vettd#1216/P2-6).
+const UNSUPPORTED_INDEX_EXTENSIONS: [&[u8; 4]; 2] = [b"link", b"sdir"];
 
 /// Entry paths from a git index (`DIRC`, versions 2 and 3). Version 4
 /// (prefix-compressed paths) and anything structurally invalid return `None`:
 /// entry padding, the extension section, and the trailing SHA-1 checksum are
 /// all validated before any path is trusted.
 fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
-    let data = fs::read(git_dir.join("index")).ok()?;
+    let data = read_binary_file(&git_dir.join("index"), MAX_GIT_METADATA_BYTES)?;
     if data.get(0..4)? != b"DIRC" {
         return None;
     }
@@ -851,6 +919,9 @@ fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
         let size = u32::from_be_bytes(header[4..8].try_into().ok()?) as usize;
         pos = pos.checked_add(8)?.checked_add(size)?;
         if pos > body_end {
+            return None;
+        }
+        if UNSUPPORTED_INDEX_EXTENSIONS.contains(&&signature) {
             return None;
         }
         // Extensions named with a leading uppercase byte are optional and may be
@@ -924,7 +995,7 @@ pub(super) fn find_git_dir(path: &Path) -> Option<(PathBuf, PathBuf)> {
 }
 
 fn resolve_gitdir_file(git_file: &Path) -> Option<PathBuf> {
-    let content = fs::read_to_string(git_file).ok()?;
+    let content = read_git_text(git_file)?;
     let rest = content.trim().strip_prefix("gitdir: ")?;
     let dir = Path::new(rest.trim());
     let dir = if dir.is_absolute() {
@@ -938,7 +1009,7 @@ fn resolve_gitdir_file(git_file: &Path) -> Option<PathBuf> {
 /// For worktrees, shared config and packed-refs live in the common git dir
 /// referenced by the worktree's `commondir` file.
 fn commdir(git_dir: &Path) -> Option<PathBuf> {
-    let raw = fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let raw = read_git_text(&git_dir.join("commondir"))?;
     let dir = Path::new(raw.trim());
     let dir = if dir.is_absolute() {
         dir.to_path_buf()
@@ -955,7 +1026,7 @@ pub(super) fn read_git_remote(git_dir: &Path) -> Option<String> {
 }
 
 fn read_remote_from_config(git_dir: &Path) -> Option<String> {
-    let config = fs::read_to_string(git_dir.join("config")).ok()?;
+    let config = read_git_text(&git_dir.join("config"))?;
     for line in config.lines() {
         if let Some((_, url)) = line.split_once("url = ") {
             let url = url.trim();
@@ -968,11 +1039,11 @@ fn read_remote_from_config(git_dir: &Path) -> Option<String> {
 }
 
 fn read_git_head_commit(git_dir: &Path) -> Option<String> {
-    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = read_git_text(&git_dir.join("HEAD"))?;
     let head = head.trim();
     if let Some(rest) = head.strip_prefix("ref: ") {
         let refname = rest.trim();
-        if let Ok(content) = fs::read_to_string(git_dir.join(refname)) {
+        if let Some(content) = read_git_text(&git_dir.join(refname)) {
             let sha = content.trim().to_string();
             if is_sha(&sha) {
                 return Some(sha);
@@ -988,7 +1059,7 @@ fn read_git_head_commit(git_dir: &Path) -> Option<String> {
 }
 
 fn read_packed_ref(git_dir: &Path, refname: &str) -> Option<String> {
-    let content = fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    let content = read_git_text(&git_dir.join("packed-refs"))?;
     for line in content.lines() {
         if line.starts_with('#') || line.starts_with('^') {
             continue;
@@ -1139,7 +1210,16 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     if !text.starts_with(first) || !text.ends_with(last) {
         return false;
     }
-    let mut remaining = &text[first.len()..text.len() - last.len()];
+    // The leading and trailing literals can overlap (pattern `a*a` against
+    // `a`), which would make the middle slice start past its end. Treat an
+    // overlapping pattern as not matching, so the file is analyzed rather than
+    // excluded (#315/P0).
+    if first.len() + last.len() > text.len() {
+        return false;
+    }
+    let Some(mut remaining) = text.get(first.len()..text.len() - last.len()) else {
+        return false;
+    };
     middle.iter().all(|segment| match remaining.find(segment) {
         Some(index) => {
             remaining = &remaining[index + segment.len()..];
@@ -1167,17 +1247,22 @@ struct AnalysisWalk {
 /// Enumerate one directory, stopping as soon as the entry budget is spent, so a
 /// hostile flat directory cannot be materialised in full before the bound is
 /// consulted (#315/N5).
-fn read_dir_bounded(read_dir: fs::ReadDir, budget: &mut WalkBudget) -> Vec<fs::DirEntry> {
+/// Returns the entries collected plus whether the iterator itself reported an
+/// error, which the analysis pass discloses as an unreadable directory
+/// (#315/P2-7).
+fn read_dir_bounded(read_dir: fs::ReadDir, budget: &mut WalkBudget) -> (Vec<fs::DirEntry>, bool) {
     let mut entries = Vec::new();
+    let mut errored = false;
     for entry in read_dir {
         if !budget.claim() {
             break;
         }
-        if let Ok(entry) = entry {
-            entries.push(entry);
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(_) => errored = true,
         }
     }
-    entries
+    (entries, errored)
 }
 
 fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut AnalysisWalk) {
@@ -1200,8 +1285,18 @@ fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut Analysis
     };
     // The budget is spent while enumerating, so a directory with millions of
     // entries cannot be collected before the cap is consulted.
-    let mut entries = read_dir_bounded(read_dir, &mut walk.budget);
+    let (mut entries, entry_errors) = read_dir_bounded(read_dir, &mut walk.budget);
     if walk.budget.capped {
+        walk.partial = true;
+    }
+    if entry_errors {
+        let dir_rel = if rel_prefix.is_empty() {
+            "."
+        } else {
+            rel_prefix
+        };
+        walk.skipped
+            .push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
         walk.partial = true;
     }
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
@@ -2048,9 +2143,10 @@ mod tests {
             fs::write(root.join(format!("f{i:02}.md")), "x").unwrap();
         }
         let mut budget = WalkBudget::new(10);
-        let entries = read_dir_bounded(fs::read_dir(&root).unwrap(), &mut budget);
+        let (entries, errored) = read_dir_bounded(fs::read_dir(&root).unwrap(), &mut budget);
         assert_eq!(entries.len(), 10);
         assert!(budget.capped);
+        assert!(!errored, "a healthy directory reports no iterator error");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2162,6 +2258,181 @@ mod tests {
             (false, false),
             "0xfff claims a name at least that long"
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── third-round review: hostile input and identity coherence ─────────
+
+    #[test]
+    fn overlapping_wildcard_literals_do_not_panic() {
+        // Why this matters: `glob_match` sliced `[first.len()..len - last.len()]`
+        // without checking the literals overlap, so a `.gitignore` rule `a*a`
+        // against a file named `a` panicked the scan ("range starts at 1 but
+        // ends at 0") — a hostile bundle could abort report construction
+        // (#315/P0).
+        assert!(!glob_match("a*a", "a"));
+        assert!(glob_match("a*a", "aa"));
+        assert!(glob_match("*.md", "x.md"));
+        assert!(glob_match("a*b", "axxb"));
+
+        let root = fixture_root("glob-overlap");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join("a"), "payload\n").unwrap();
+        fs::write(root.join(".gitignore"), "a*a\n").unwrap();
+        let load = load_skill_files(&root);
+        assert!(
+            !load.excluded.iter().any(|path| path == "a"),
+            "an overlapping rule must not exclude the file it cannot match: {:?}",
+            load.excluded
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_metadata_reads_fail_closed_on_a_fifo() {
+        // Why this matters: the index reader and the other git helpers used
+        // plain path-based reads, so a FIFO planted at `.git/index`, `config`,
+        // `HEAD`, a ref or `packed-refs` blocked the scan until a writer
+        // appeared. Every provenance read must fail closed instead (#315/P0).
+        let root = fixture_repo("fifo-git-meta");
+        fs::create_dir_all(root.join("skills/own")).unwrap();
+        let skill = root.join("skills/own/SKILL.md");
+        fs::write(&skill, "# own\n").unwrap();
+        let git_dir = root.join(".git");
+
+        for target in [
+            "index",
+            "config",
+            "HEAD",
+            "refs/heads/main",
+            "packed-refs",
+            "commondir",
+        ] {
+            let path = git_dir.join(target);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let _ = fs::remove_file(&path);
+            if !make_fifo(&path) {
+                eprintln!("SKIPPED git_metadata_reads_fail_closed_on_a_fifo: mkfifo unavailable");
+                return;
+            }
+            // `commondir` is only consulted when `config` yields nothing.
+            if target == "commondir" {
+                let _ = fs::remove_file(git_dir.join("config"));
+            }
+            assert!(
+                provenance_reads_return(&root, &skill, target),
+                "a FIFO at .git/{target} must not block provenance reads"
+            );
+            assert_eq!(
+                lineage_for(&skill).git_remote_url,
+                None,
+                "a FIFO at .git/{target} must grant no remote"
+            );
+            fs::remove_file(&path).unwrap();
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn provenance_reads_return(root: &Path, skill: &Path, label: &str) -> bool {
+        let root = root.to_path_buf();
+        let skill = skill.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = is_tracked(&root, &root.join(".git"), &skill);
+            let _ = read_git_remote(&root.join(".git"));
+            let _ = read_git_head_commit(&root.join(".git"));
+            let _ = lineage_for(&skill);
+            let _ = crate::contract::helpers::detect_skill_source(&skill.to_string_lossy());
+            let _ = crate::contract::helpers::detect_source_repo(&skill.to_string_lossy());
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("a FIFO at .git/{label} blocked a provenance read"));
+        true
+    }
+
+    #[test]
+    fn an_analyzed_path_that_vanishes_withholds_the_digest() {
+        // Why this matters: the bundle walk re-enumerated the tree, so a file
+        // deleted or replaced by a directory between the analysis read and the
+        // walk simply disappeared from `records`. The digest then became
+        // SHA-256("[]") with `partial = false`, i.e. identity vouched for bytes
+        // it had not seen (#315/P2-5).
+        for tag in ["vanished", "became-a-directory"] {
+            let root = fixture_root(tag);
+            fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+            fs::write(root.join("notes.md"), "# notes\n").unwrap();
+            let hook_root = root.clone();
+            let as_directory = tag == "became-a-directory";
+            let load = load_skill_files_with(&root, WALK_SAFETY_LIMIT, &move || {
+                let target = hook_root.join("notes.md");
+                fs::remove_file(&target).unwrap();
+                if as_directory {
+                    fs::create_dir(&target).unwrap();
+                }
+            });
+            assert!(
+                load.bundle_digest.is_none(),
+                "{tag}: a vanished analyzed path must withhold the digest"
+            );
+            assert!(
+                load.partial,
+                "{tag}: a vanished analyzed path is incomplete"
+            );
+            assert!(
+                load.incomplete_reasons.contains(&"file-unreadable"),
+                "{tag}: {:?}",
+                load.incomplete_reasons
+            );
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn split_index_extensions_fail_closed() {
+        // Why this matters: `link` and `sdir` were in the "known, skip" list,
+        // so a split index — whose entries live in a shared index this reader
+        // never resolves — was read as if it were the whole entry list. Real
+        // git rejects a zero-length `link` outright (#315/P2-6).
+        let root = fixture_repo("index-split");
+        fs::create_dir_all(root.join("skills/own")).unwrap();
+        let skill = root.join("skills/own/SKILL.md");
+        fs::write(&skill, "# own\n").unwrap();
+        let git_dir = root.join(".git");
+
+        for (signature, body) in [
+            (b"link", &b""[..]),
+            (b"link", &b"0123456789abcdefghij"[..]),
+            (b"sdir", &b""[..]),
+            (b"sdir", &b"7"[..]),
+        ] {
+            write_test_index(&git_dir, &["skills/own/SKILL.md"]);
+            assert_eq!(both_surfaces(&skill), (true, true));
+            append_index_extension(&git_dir, signature, body);
+            assert_eq!(
+                both_surfaces(&skill),
+                (false, false),
+                "{} extension must grant no provenance",
+                String::from_utf8_lossy(signature)
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn enumeration_errors_are_disclosed_as_unreadable_directories() {
+        // Why this matters: an iterator error was dropped silently, so the
+        // analysis pass walked fewer files than the tree held without saying
+        // so (#315/P2-7). The contract is exercised here; a real `ReadDir`
+        // error is not deterministically inducible from a test.
+        let root = fixture_root("readdir-error-contract");
+        fs::write(root.join("a.md"), "x").unwrap();
+        let mut budget = WalkBudget::new(10);
+        let (entries, errored) = read_dir_bounded(fs::read_dir(&root).unwrap(), &mut budget);
+        assert_eq!(entries.len(), 1);
+        assert!(!errored);
         fs::remove_dir_all(&root).unwrap();
     }
 }
