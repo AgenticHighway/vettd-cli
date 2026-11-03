@@ -120,7 +120,7 @@ pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
 
     let relative_path = start
         .strip_prefix(&work_root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(emitted_relative_path)
         .unwrap_or_default();
 
     Some(if is_github_remote(&sanitized) {
@@ -134,6 +134,24 @@ pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
             remote_url: sanitized,
         }
     })
+}
+
+/// Encode a work-tree-relative path for `detectedSource.path`.
+///
+/// On Unix the filesystem's own bytes are the path: a literal backslash in a
+/// file name is not a separator, so rewriting it would name a different
+/// location and could alias another tracked skill (vettd#1216/N7). Windows uses
+/// `\` natively while the emitted path must use `/`.
+fn emitted_relative_path(rel: &std::path::Path) -> String {
+    let text = rel.to_string_lossy();
+    #[cfg(windows)]
+    {
+        text.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        text.into_owned()
+    }
 }
 
 /// Extract the raw (unsanitized) `url = ` line from a `.git/config` file.
@@ -845,6 +863,40 @@ mod tests {
                 assert_eq!(path, "skills/foo");
             }
             other => panic!("worktree skill must resolve via the .git file, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detected_source_path_keeps_a_literal_backslash() {
+        // Why this matters: the tracking gate stopped normalising backslashes,
+        // but the emitted `path` still rewrote `foo\bar` to `foo/bar`, naming a
+        // different location (and able to alias another tracked skill).
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let literal = dir.path().join("foo\\bar/SKILL.md");
+        let separated = dir.path().join("baz/bar/SKILL.md");
+        for path in [&literal, &separated] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "# skill").unwrap();
+        }
+        let git_dir = dir.path().join(".git");
+        crate::contract::identity::write_test_index(
+            &git_dir,
+            &["foo\\bar/SKILL.md", "baz/bar/SKILL.md"],
+        );
+
+        match detect_skill_source(literal.to_str().unwrap()) {
+            Some(DetectedSkillSource::GitHub { path, .. }) => {
+                assert_eq!(path, "foo\\bar", "a literal backslash is not a separator")
+            }
+            other => panic!("tracked literal-backslash skill must resolve, got {other:?}"),
+        }
+        match detect_skill_source(separated.to_str().unwrap()) {
+            Some(DetectedSkillSource::GitHub { path, .. }) => {
+                assert_eq!(path, "baz/bar", "separators are emitted as `/`")
+            }
+            other => panic!("tracked skill must resolve, got {other:?}"),
         }
     }
 }
