@@ -29,16 +29,15 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
         if artifact.artifact_type == "skill" {
             let (skill, dedupable) = artifact_to_skill(artifact, agents);
             // A digest only proves identity when it covers the whole skill.
-            // Partial or lossy loads must never merge with another copy whose
-            // digest happens to match on the subset that was read (#204/#274).
+            // Partial or lossy loads, or a bundle whose digest could not be
+            // computed, must never merge with another copy (#204/#274/#315).
             // Key on the bundle digest when present: copies whose analyzed
             // text matches but whose other bytes (ignored scripts, binaries,
-            // symlinks) differ are different assets (#315).
+            // symlinks) differ are different assets.
             let key = if dedupable {
                 skill
                     .bundle_digest
                     .clone()
-                    .or_else(|| skill.content_hash.clone())
                     .unwrap_or_else(|| skill.id.clone())
             } else {
                 format!(
@@ -48,24 +47,7 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
                 )
             };
             match digest_index.get(&key) {
-                Some(&index) => {
-                    let existing = &mut skills[index];
-                    if let Some(locations) = skill.locations {
-                        let locs = existing.locations.get_or_insert_with(Vec::new);
-                        for location in locations {
-                            if !locs.iter().any(|l| l.path == location.path) {
-                                locs.push(location);
-                            }
-                        }
-                    }
-                    // Identical copies consumed by different agents must record
-                    // every consumer, not just the first copy's.
-                    for consumer in skill.consumers {
-                        if !existing.consumers.iter().any(|c| c.id == consumer.id) {
-                            existing.consumers.push(consumer);
-                        }
-                    }
-                }
+                Some(&index) => merge_skill(&mut skills[index], skill),
                 None => {
                     digest_index.insert(key, skills.len());
                     skills.push(skill);
@@ -100,6 +82,118 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
     }
 
     skills
+}
+
+/// Merge a later copy of the same bundle into the record already kept.
+///
+/// Two copies can share a `bundleDigest` (file modes are excluded) while one
+/// of them carries risky unanalyzed content the other does not. Keeping the
+/// first copy's assessment would let the reassuring copy speak for a bundle
+/// that was only partly analyzed (#314/#315), so the combine is conservative:
+/// the worst assessment state, the union of reasons and the union of findings
+/// win, whichever order the copies were scanned in.
+fn merge_skill(existing: &mut Skill, later: Skill) {
+    // Every location a merged copy was found in, and every consumer, must
+    // survive the merge.
+    if let Some(locations) = later.locations {
+        let locs = existing.locations.get_or_insert_with(Vec::new);
+        for location in locations {
+            if !locs.iter().any(|l| l.path == location.path) {
+                locs.push(location);
+            }
+        }
+    }
+    for consumer in later.consumers {
+        if !existing.consumers.iter().any(|c| c.id == consumer.id) {
+            existing.consumers.push(consumer);
+        }
+    }
+
+    existing.assessment_state = worst_assessment_state(
+        existing.assessment_state.as_deref(),
+        later.assessment_state.as_deref(),
+    )
+    .map(str::to_string);
+    let mut reasons: Vec<String> = existing.assessment_reasons.clone().unwrap_or_default();
+    reasons.extend(later.assessment_reasons.clone().unwrap_or_default());
+    reasons.sort();
+    reasons.dedup();
+    existing.assessment_reasons = (!reasons.is_empty()).then_some(reasons);
+
+    let mut results = existing.external_scanner_results.take().unwrap_or_default();
+    if let Some(later_results) = later.external_scanner_results {
+        match results.first_mut() {
+            Some(first) => {
+                for later_result in later_results {
+                    merge_scanner_result(first, later_result);
+                }
+            }
+            None => results = later_results,
+        }
+    }
+    existing.external_scanner_results = (!results.is_empty()).then_some(results);
+
+    // Re-derive the grade from the combined evidence: a merged record that is
+    // no longer complete must not keep an affirmative A.
+    let complete = existing.assessment_state.as_deref() == Some("complete");
+    existing.overall_grade = grade_from_scanner_result(
+        existing
+            .external_scanner_results
+            .as_ref()
+            .and_then(|r| r.first()),
+        complete,
+    )
+    .to_string();
+    existing.trust_level = trust_level_from_grade(&existing.overall_grade).to_string();
+}
+
+fn merge_scanner_result(into: &mut ExternalScannerResult, later: ExternalScannerResult) {
+    let mut findings = into.findings.take().unwrap_or_default();
+    findings.extend(later.findings.unwrap_or_default());
+    findings.sort_by(|a, b| {
+        (
+            &a.rule_id,
+            &a.filepath,
+            &a.label,
+            &a.detail,
+            &a.severity,
+            &a.intent,
+            &a.chain_id,
+        )
+            .cmp(&(
+                &b.rule_id,
+                &b.filepath,
+                &b.label,
+                &b.detail,
+                &b.severity,
+                &b.intent,
+                &b.chain_id,
+            ))
+    });
+    findings.dedup_by(|a, b| {
+        a.rule_id == b.rule_id
+            && a.filepath == b.filepath
+            && a.label == b.label
+            && a.detail == b.detail
+    });
+    into.findings = (!findings.is_empty()).then_some(findings);
+}
+
+fn assessment_rank(state: Option<&str>) -> u8 {
+    match state {
+        Some("failed") => 3,
+        Some("partial") | Some("unsupported") => 2,
+        Some(_) => 0,
+        None => 0,
+    }
+}
+
+fn worst_assessment_state<'a>(a: Option<&'a str>, b: Option<&'a str>) -> Option<&'a str> {
+    if assessment_rank(a) >= assessment_rank(b) {
+        a.or(b)
+    } else {
+        b
+    }
 }
 
 fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, bool) {

@@ -14,6 +14,7 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Parity with the server-side GitHub fetcher limits (vettd-cli#204): 250 text
@@ -21,7 +22,11 @@ use std::path::{Path, PathBuf};
 pub(crate) const MAX_SKILL_FILES: usize = 250;
 pub(crate) const MAX_SKILL_TOTAL_BYTES: u64 = 10 * 1024 * 1024;
 /// Hard stop for the directory walk so a pathological tree cannot hang a scan.
-const WALK_SAFETY_LIMIT: usize = 10_000;
+/// Enforced per visited entry, directories included, inside the walk loop.
+pub(crate) const WALK_SAFETY_LIMIT: usize = 10_000;
+/// Upper bound on the bytes hashed for a single bundle entry. A larger entry
+/// cannot be vouched for by the bundle digest, so the digest is omitted.
+const MAX_BUNDLE_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Directories excluded from identity: version-control metadata.
 const VCS_DIRS: [&str; 3] = [".git", ".hg", ".svn"];
@@ -42,7 +47,8 @@ pub(crate) struct SkillFileLoad {
     pub skipped: Vec<String>,
     /// Paths dropped from identity (VCS dirs, OS junk, own .gitignore matches).
     pub excluded: Vec<String>,
-    /// True when a size/count cap cut the scan short.
+    /// True when the load fell short of the whole skill: a walk/size/count cap,
+    /// an unreadable entry or directory, or an unhashable bundle entry.
     pub partial: bool,
     /// Stable reason codes for every way this load fell short of the whole
     /// skill (#314): `file-cap`, `size-cap`, `file-unreadable`,
@@ -58,32 +64,38 @@ pub(crate) struct SkillFileLoad {
 /// Walk a skill directory deterministically, apply disclosed exclusions, and
 /// load full text content under the server-parity caps.
 pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
-    let mut files: Vec<String> = Vec::new();
-    let mut excluded: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut rules: Vec<IgnoreRule> = Vec::new();
-    let mut partial = false;
-    collect_files(
-        root,
-        "",
-        &mut files,
-        &mut excluded,
-        &mut skipped,
-        &mut rules,
-        &mut partial,
-    );
+    load_skill_files_with_walk_limit(root, WALK_SAFETY_LIMIT)
+}
+
+/// [`load_skill_files`] with an injectable walk budget, so the cap behaviour is
+/// testable without building a ten-thousand-entry tree.
+fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFileLoad {
+    let mut walk = AnalysisWalk {
+        files: Vec::new(),
+        excluded: Vec::new(),
+        skipped: Vec::new(),
+        rules: Vec::new(),
+        partial: false,
+        budget: WalkBudget::new(walk_limit),
+    };
+    collect_files(root, "", &mut walk);
+    let mut files = walk.files;
+    let mut excluded = walk.excluded;
+    let mut skipped = walk.skipped;
+    let mut partial = walk.partial;
+    let budget = walk.budget;
     files.sort();
     excluded.sort();
     skipped.sort();
 
-    // Belt-and-braces: a single flat directory can overshoot the limit in one
-    // pass; nested trees are cut off during the walk itself (see collect_files).
-    if files.len() > WALK_SAFETY_LIMIT {
+    // Record the cap before truncating: checking afterwards is always false.
+    let mut file_cap = budget.capped;
+    if files.len() > walk_limit {
         partial = true;
-        files.truncate(WALK_SAFETY_LIMIT);
+        file_cap = true;
+        files.truncate(walk_limit);
     }
 
-    let mut file_cap = files.len() > WALK_SAFETY_LIMIT;
     let mut size_cap = false;
     let mut text_files: HashMap<String, String> = HashMap::new();
     let mut total_bytes: u64 = 0;
@@ -133,36 +145,57 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
             "file-unreadable"
         });
     }
-    let bundle = walk_bundle(root);
+    let bundle = walk_bundle(root, walk_limit);
+    // The bundle walk stopping short means the digest could not cover every
+    // byte, which is itself an incomplete analysis on top of any scan cap.
+    if bundle.capped {
+        partial = true;
+        incomplete_reasons.push("file-cap");
+    }
+    if bundle.oversize {
+        partial = true;
+        incomplete_reasons.push("size-cap");
+    }
     // Excluded content must not gain trust by being excluded (#315): risky
     // entries the scanner never saw make the assessment partial.
     let analyzed: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
     let unanalyzed_risky = bundle.entries.iter().any(|entry| {
         let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
-        if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(name)) {
-            return false;
-        }
+        // Classify the entry kind before exempting inert OS junk: a symlink
+        // named `.DS_Store` is still a symlink (#314/#315).
         match entry.kind {
-            // Symlinks are never followed or analyzed.
-            BundleEntryKind::Symlink => true,
-            // Not in the analyzed set: gitignored.
-            _ if !analyzed.contains(entry.path.as_str()) => true,
-            // Analyzed set but never decoded as text: risky when executable.
-            BundleEntryKind::File => {
-                !is_likely_text(Path::new(&entry.path))
-                    && (entry.executable || is_executable_extension(&entry.path))
-            }
+            // Symlinks and special entries are never followed or analyzed.
+            BundleEntryKind::Symlink | BundleEntryKind::Special => true,
+            // Already disclosed as `file-unreadable`.
             BundleEntryKind::Unreadable => false,
+            BundleEntryKind::File => {
+                let analyzed_text = analyzed.contains(entry.path.as_str())
+                    && is_likely_text(Path::new(&entry.path));
+                if !analyzed_text && (entry.executable || is_executable_extension(&entry.path)) {
+                    return true;
+                }
+                // Only a genuinely inert junk *file* is exempt.
+                if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(name)) {
+                    return false;
+                }
+                // Not in the analyzed set: gitignored.
+                !analyzed.contains(entry.path.as_str())
+            }
         }
     });
     if unanalyzed_risky {
         incomplete_reasons.push("unanalyzed-content");
     }
     if bundle.unreadable {
+        partial = true;
         incomplete_reasons.push("file-unreadable");
     }
     incomplete_reasons.sort_unstable();
     incomplete_reasons.dedup();
+    debug_assert!(
+        !partial || !incomplete_reasons.is_empty(),
+        "a partial load must name why it fell short"
+    );
 
     SkillFileLoad {
         text_files,
@@ -175,10 +208,40 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
     }
 }
 
+/// Per-entry budget shared by one walk. Counts directories too, so a
+/// file-free tree cannot walk forever (#315/P2).
+struct WalkBudget {
+    limit: usize,
+    visited: usize,
+    capped: bool,
+}
+
+impl WalkBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            visited: 0,
+            capped: false,
+        }
+    }
+
+    /// Claim one entry of the budget. `false` means the budget is exhausted.
+    fn claim(&mut self) -> bool {
+        if self.visited >= self.limit {
+            self.capped = true;
+            return false;
+        }
+        self.visited += 1;
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BundleEntryKind {
     File,
     Symlink,
+    /// FIFO, socket, device node: never opened, never hashed.
+    Special,
     Unreadable,
 }
 
@@ -195,6 +258,10 @@ struct BundleWalk {
     entries: Vec<BundleEntry>,
     digest: Option<String>,
     unreadable: bool,
+    /// Some entry was larger than the hash bound.
+    oversize: bool,
+    /// The walk ran out of entry budget.
+    capped: bool,
 }
 
 /// Walk every entry under `root` except VCS metadata, without the .gitignore,
@@ -202,19 +269,25 @@ struct BundleWalk {
 ///
 /// `bundleDigest` (#315): SHA-256 over the JSON array of `[path, kind, value]`
 /// sorted bytewise by path, where `kind` is `file` (value: SHA-256 hex of the
-/// raw bytes) or `symlink` (value: link target, `/`-normalized, not followed).
-/// Paths are `/`-separated. File modes are excluded so the digest is stable
-/// across platforms. `None` when any entry was unreadable or the walk hit the
-/// safety limit, since the digest could not cover every byte.
-fn walk_bundle(root: &Path) -> BundleWalk {
+/// raw bytes) or `symlink` (value: link target, `/`-separated, not followed).
+/// File modes are excluded so the digest is stable across platforms. Symlink
+/// targets are kept exactly as the filesystem reports them (only Windows path
+/// separators are normalized), so a literal backslash never aliases a
+/// separator. `None` when any entry was unreadable, too large, or the walk hit
+/// the entry budget: the digest must never vouch for bytes it did not see.
+fn walk_bundle(root: &Path, walk_limit: usize) -> BundleWalk {
     let mut walk = BundleWalk {
         entries: Vec::new(),
         digest: None,
         unreadable: false,
+        oversize: false,
+        capped: false,
     };
     let mut records: Vec<(String, &'static str, String)> = Vec::new();
-    walk_bundle_dir(root, "", &mut walk, &mut records);
-    if walk.unreadable || walk.entries.len() > WALK_SAFETY_LIMIT {
+    let mut budget = WalkBudget::new(walk_limit);
+    walk_bundle_dir(root, "", &mut walk, &mut records, &mut budget);
+    walk.capped = budget.capped;
+    if walk.unreadable || walk.oversize || walk.capped {
         return walk;
     }
     records.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
@@ -228,20 +301,25 @@ fn walk_bundle_dir(
     rel_prefix: &str,
     walk: &mut BundleWalk,
     records: &mut Vec<(String, &'static str, String)>,
+    budget: &mut WalkBudget,
 ) {
-    if walk.entries.len() > WALK_SAFETY_LIMIT {
-        return;
-    }
     let Ok(read_dir) = fs::read_dir(dir) else {
         walk.unreadable = true;
         return;
     };
     for entry in read_dir {
+        if !budget.claim() {
+            return;
+        }
         let Ok(entry) = entry else {
             walk.unreadable = true;
             continue;
         };
-        let name = entry.file_name().to_string_lossy().to_string();
+        // A non-UTF-8 name cannot be represented losslessly in the digest.
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            walk.unreadable = true;
+            continue;
+        };
         let rel = if rel_prefix.is_empty() {
             name.clone()
         } else {
@@ -258,43 +336,113 @@ fn walk_bundle_dir(
         };
         if file_type.is_dir() {
             if !VCS_DIRS.contains(&name.as_str()) {
-                walk_bundle_dir(&entry.path(), &rel, walk, records);
+                walk_bundle_dir(&entry.path(), &rel, walk, records, budget);
             }
         } else if file_type.is_symlink() {
-            let target = fs::read_link(entry.path())
-                .map(|t| t.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            records.push((rel.clone(), "symlink", target));
-            walk.entries.push(BundleEntry {
-                path: rel,
-                kind: BundleEntryKind::Symlink,
-                executable: false,
-            });
-        } else {
-            // Regular files and any other entry kind (fifo, socket, device):
-            // hash what can be read, and fail closed on what cannot.
-            let hashed = fs::File::open(entry.path()).ok().and_then(|mut f| {
-                let mut hasher = Sha256::new();
-                std::io::copy(&mut f, &mut hasher).ok()?;
-                Some(format!("{:x}", hasher.finalize()))
-            });
-            let kind = match hashed {
-                Some(hash) => {
-                    records.push((rel.clone(), "file", hash));
-                    BundleEntryKind::File
+            match symlink_target(&entry.path()) {
+                Some(target) => {
+                    records.push((rel.clone(), "symlink", target));
+                    walk.entries.push(BundleEntry {
+                        path: rel,
+                        kind: BundleEntryKind::Symlink,
+                        executable: false,
+                    });
                 }
                 None => {
                     walk.unreadable = true;
-                    BundleEntryKind::Unreadable
+                    walk.entries.push(BundleEntry {
+                        path: rel,
+                        kind: BundleEntryKind::Unreadable,
+                        executable: false,
+                    });
                 }
-            };
+            }
+        } else if file_type.is_file() {
+            match hash_bundle_file(&entry.path()) {
+                HashOutcome::Hashed(hash) => {
+                    records.push((rel.clone(), "file", hash));
+                    walk.entries.push(BundleEntry {
+                        executable: is_executable_mode(&entry),
+                        path: rel,
+                        kind: BundleEntryKind::File,
+                    });
+                }
+                HashOutcome::TooLarge => {
+                    walk.oversize = true;
+                    walk.entries.push(BundleEntry {
+                        executable: true,
+                        path: rel,
+                        kind: BundleEntryKind::File,
+                    });
+                }
+                HashOutcome::Unreadable => {
+                    walk.unreadable = true;
+                    walk.entries.push(BundleEntry {
+                        executable: true,
+                        path: rel,
+                        kind: BundleEntryKind::Unreadable,
+                    });
+                }
+            }
+        } else {
+            // FIFO, socket, device node: opening a FIFO blocks until a writer
+            // appears, so these are never opened. They cannot be hashed either,
+            // which makes the digest unavailable (#315).
+            walk.unreadable = true;
             walk.entries.push(BundleEntry {
-                executable: is_executable_mode(&entry),
+                executable: true,
                 path: rel,
-                kind,
+                kind: BundleEntryKind::Special,
             });
         }
     }
+}
+
+/// The symlink's target, losslessly. `None` when the target cannot be
+/// represented (invalid UTF-8) or cannot be read: the digest is then omitted
+/// rather than collapsing two different targets onto one string.
+fn symlink_target(path: &Path) -> Option<String> {
+    let target = fs::read_link(path).ok()?;
+    let target = target.to_str()?;
+    #[cfg(windows)]
+    let target = target.replace('\\', "/");
+    Some(target.to_string())
+}
+
+enum HashOutcome {
+    Hashed(String),
+    TooLarge,
+    Unreadable,
+}
+
+/// SHA-256 of a regular file's bytes, bounded. Never opens a non-regular file;
+/// re-checks the type after opening to guard against a replacement race.
+fn hash_bundle_file(path: &Path) -> HashOutcome {
+    let Ok(metadata) = fs::metadata(path) else {
+        return HashOutcome::Unreadable;
+    };
+    if !metadata.is_file() {
+        return HashOutcome::Unreadable;
+    }
+    if metadata.len() > MAX_BUNDLE_ENTRY_BYTES {
+        return HashOutcome::TooLarge;
+    }
+    let Ok(file) = fs::File::open(path) else {
+        return HashOutcome::Unreadable;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return HashOutcome::Unreadable;
+    }
+    let mut hasher = Sha256::new();
+    let mut limited = file.take(MAX_BUNDLE_ENTRY_BYTES + 1);
+    if std::io::copy(&mut limited, &mut hasher).is_err() {
+        return HashOutcome::Unreadable;
+    }
+    if limited.limit() == 0 {
+        // The file grew past the bound while it was being read.
+        return HashOutcome::TooLarge;
+    }
+    HashOutcome::Hashed(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(unix)]
@@ -828,21 +976,17 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 
 // --- walk --------------------------------------------------------------------
 
-fn collect_files(
-    dir: &Path,
-    rel_prefix: &str,
-    files: &mut Vec<String>,
-    excluded: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-    rules: &mut Vec<IgnoreRule>,
-    partial: &mut bool,
-) {
-    // Stop descending once the safety limit is reached so a pathological tree
-    // is not fully walked before the cap is noticed (#204).
-    if files.len() > WALK_SAFETY_LIMIT {
-        *partial = true;
-        return;
-    }
+/// Accumulated state of one analysis walk, plus its entry budget.
+struct AnalysisWalk {
+    files: Vec<String>,
+    excluded: Vec<String>,
+    skipped: Vec<String>,
+    rules: Vec<IgnoreRule>,
+    partial: bool,
+    budget: WalkBudget,
+}
+
+fn collect_files(dir: &Path, rel_prefix: &str, walk: &mut AnalysisWalk) {
     let Ok(read_dir) = fs::read_dir(dir) else {
         // An unreadable directory truncates the scan — report it, never silent.
         let dir_rel = if rel_prefix.is_empty() {
@@ -850,8 +994,9 @@ fn collect_files(
         } else {
             rel_prefix
         };
-        skipped.push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
-        *partial = true;
+        walk.skipped
+            .push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
+        walk.partial = true;
         return;
     };
     let mut entries: Vec<fs::DirEntry> = read_dir.flatten().collect();
@@ -867,13 +1012,19 @@ fn collect_files(
         entry.file_name() == ".gitignore" && entry.file_type().is_ok_and(|t| t.is_file())
     });
     if let Some(entry) = gitignore {
-        if !matches_ignore(&gitignore_rel, rules) {
+        if !matches_ignore(&gitignore_rel, &walk.rules) {
             if let Ok(content) = fs::read_to_string(entry.path()) {
-                rules.extend(parse_gitignore(&content, rel_prefix));
+                walk.rules.extend(parse_gitignore(&content, rel_prefix));
             }
         }
     }
     for entry in entries {
+        // The budget counts every entry, directories included, and is checked
+        // inside the loop: a flat tree cannot overshoot it in one pass.
+        if !walk.budget.claim() {
+            walk.partial = true;
+            return;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         let rel = if rel_prefix.is_empty() {
             name.clone()
@@ -881,34 +1032,26 @@ fn collect_files(
             format!("{rel_prefix}/{name}")
         };
         let Ok(file_type) = entry.file_type() else {
-            skipped.push(format!("{rel} (unreadable entry)"));
-            *partial = true;
+            walk.skipped.push(format!("{rel} (unreadable entry)"));
+            walk.partial = true;
             continue;
         };
         if file_type.is_dir() {
-            if VCS_DIRS.contains(&name.as_str()) || matches_ignore(&rel, rules) {
-                excluded.push(format!("{rel}/"));
+            if VCS_DIRS.contains(&name.as_str()) || matches_ignore(&rel, &walk.rules) {
+                walk.excluded.push(format!("{rel}/"));
                 continue;
             }
-            collect_files(
-                &entry.path(),
-                &rel,
-                files,
-                excluded,
-                skipped,
-                rules,
-                partial,
-            );
+            collect_files(&entry.path(), &rel, walk);
         } else if file_type.is_file() {
             if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(&name)) {
-                excluded.push(rel);
+                walk.excluded.push(rel);
                 continue;
             }
-            if matches_ignore(&rel, rules) {
-                excluded.push(rel);
+            if matches_ignore(&rel, &walk.rules) {
+                walk.excluded.push(rel);
                 continue;
             }
-            files.push(rel);
+            walk.files.push(rel);
         }
     }
 }
@@ -1377,5 +1520,258 @@ mod tests {
         b.insert("a.md".to_string(), "1".to_string());
         b.insert("b.md".to_string(), "2".to_string());
         assert_eq!(canonical_digest(&a), canonical_digest(&b));
+    }
+
+    // ── #314/#315 walk, cap, and hostile-input intent tests ─────────────
+
+    #[test]
+    fn walk_cap_always_records_file_cap() {
+        // Why this matters: the cap used to be derived *after* truncation, so
+        // a tree cut short by the walk reported partial=true with no reason
+        // (and `assess` then reported complete). The cap must be recorded
+        // before truncation and name a reason.
+        let root = fixture_root("walk-cap");
+        for i in 0..6 {
+            fs::write(root.join(format!("f{i}.md")), "x").unwrap();
+        }
+        let load = load_skill_files_with_walk_limit(&root, 3);
+        assert!(load.partial, "a truncated walk must be partial");
+        assert!(
+            load.incomplete_reasons.contains(&"file-cap"),
+            "a partial load must say why: {:?}",
+            load.incomplete_reasons
+        );
+        assert!(load.all_paths.len() <= 3);
+        // The bundle walk uses its own budget and must disclose its own cap
+        // rather than silently hashing a subset.
+        assert_eq!(load.bundle_digest, None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_loads_always_carry_reasons() {
+        // The invariant `partial ⇒ reasons non-empty` is what keeps an
+        // incomplete analysis from reading as a clean one downstream.
+        let oversized = fixture_root("partial-cap");
+        for i in 0..300 {
+            fs::write(oversized.join(format!("f{i:03}.md")), "x").unwrap();
+        }
+        let load = load_skill_files(&oversized);
+        assert!(load.partial);
+        assert!(!load.incomplete_reasons.is_empty());
+        fs::remove_dir_all(&oversized).unwrap();
+
+        let junk = fixture_root("partial-junk");
+        fs::write(junk.join("SKILL.md"), "# skill\n").unwrap();
+        std::os::unix::fs::symlink("SKILL.md", junk.join("run")).unwrap();
+        let load = load_skill_files(&junk);
+        assert!(!load.partial, "a symlink alone is disclosed, not a cap");
+        assert!(!load.incomplete_reasons.is_empty());
+        fs::remove_dir_all(&junk).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) -> bool {
+        std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_entries_do_not_block_and_mark_incomplete() {
+        // Why this matters: `File::open` on a FIFO blocks until a writer
+        // appears, so a hostile payload FIFO could hang the whole scan. Special
+        // files must never be opened, and their bytes cannot be vouched for.
+        let root = fixture_root("special");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        if !make_fifo(&root.join("payload.data")) {
+            eprintln!(
+                "SKIPPED special_entries_do_not_block_and_mark_incomplete: mkfifo unavailable"
+            );
+            return;
+        }
+        let started = std::time::Instant::now();
+        let load = load_skill_files(&root);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a FIFO must never be opened"
+        );
+        assert_eq!(
+            load.bundle_digest, None,
+            "an unhashable entry voids the digest"
+        );
+        assert!(load.partial);
+        assert!(
+            load.incomplete_reasons.contains(&"file-unreadable"),
+            "{:?}",
+            load.incomplete_reasons
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn oversized_bundle_entry_omits_digest() {
+        // The digest hashes at most a bounded number of bytes per entry; past
+        // the bound it must say so instead of vouching for a prefix.
+        let root = fixture_root("oversize-entry");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        let big = fs::File::create(root.join("big.md")).unwrap();
+        big.set_len(MAX_BUNDLE_ENTRY_BYTES + 1).unwrap();
+        drop(big);
+
+        let load = load_skill_files(&root);
+        assert_eq!(load.bundle_digest, None);
+        assert!(
+            load.incomplete_reasons.contains(&"size-cap"),
+            "{:?}",
+            load.incomplete_reasons
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn junk_named_symlink_is_unanalyzed() {
+        // Why this matters: the OS-junk name exemption used to run before kind
+        // classification, so `.DS_Store` -> /outside/script.sh was reported
+        // complete/A/Trusted with no reason.
+        let root = fixture_root("junk-symlink");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join("script.sh"), "echo hi\n").unwrap();
+        std::os::unix::fs::symlink("script.sh", root.join(".DS_Store")).unwrap();
+
+        let load = load_skill_files(&root);
+        assert!(
+            load.incomplete_reasons.contains(&"unanalyzed-content"),
+            "a junk-named symlink is still an unanalyzed symlink: {:?}",
+            load.incomplete_reasons
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_targets_are_lossless() {
+        // Why this matters: `a\b` and `a/b` are different targets on Unix, but
+        // the old backslash normalization made them hash identically, so the
+        // digest could not see a symlink swap.
+        let root = fixture_root("symlink-lossless");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/b.md"), "b").unwrap();
+
+        std::os::unix::fs::symlink("a/b.md", root.join("run")).unwrap();
+        let separated = load_skill_files(&root).bundle_digest;
+        assert!(separated.is_some());
+
+        fs::remove_file(root.join("run")).unwrap();
+        std::os::unix::fs::symlink("a\\b.md", root.join("run")).unwrap();
+        let literal = load_skill_files(&root).bundle_digest;
+        assert_ne!(
+            separated, literal,
+            "a literal backslash in a symlink target must not alias a separator"
+        );
+
+        // A target that is not valid UTF-8 cannot be encoded losslessly: the
+        // digest is withheld and the skill is incomplete.
+        use std::os::unix::ffi::OsStrExt;
+        let invalid = std::ffi::OsStr::from_bytes(b"bad-\xff-target");
+        std::os::unix::fs::symlink(invalid, root.join("bad")).unwrap();
+        let load = load_skill_files(&root);
+        assert_eq!(load.bundle_digest, None);
+        assert!(
+            load.incomplete_reasons.contains(&"file-unreadable"),
+            "{:?}",
+            load.incomplete_reasons
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── provenance: lossless path comparison and index integrity ────────
+
+    fn fixture_repo(tag: &str) -> PathBuf {
+        let root = fixture_root(tag);
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+        )
+        .unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        root
+    }
+
+    fn both_surfaces(path: &Path) -> (bool, bool) {
+        let lineage = lineage_for(path);
+        let source =
+            crate::contract::helpers::detect_skill_source(&path.to_string_lossy()).is_some();
+        (lineage.git_remote_url.is_some(), source)
+    }
+
+    #[test]
+    fn literal_backslash_path_is_not_tracked() {
+        // Why this matters: `to_string_lossy().replace('\\', "/")` made an
+        // untracked directory literally named `foo\bar` compare equal to the
+        // tracked `foo/bar`, so it inherited that repo's provenance.
+        let root = fixture_repo("backslash");
+        fs::create_dir_all(root.join("foo/bar")).unwrap();
+        let tracked = root.join("foo/bar/SKILL.md");
+        fs::write(&tracked, "# tracked\n").unwrap();
+        write_test_index(&root.join(".git"), &["foo/bar/SKILL.md"]);
+
+        let lookalike_dir = root.join("foo\\bar");
+        fs::create_dir_all(&lookalike_dir).unwrap();
+        let lookalike = lookalike_dir.join("SKILL.md");
+        fs::write(&lookalike, "# lookalike\n").unwrap();
+
+        assert_eq!(both_surfaces(&tracked), (true, true));
+        assert_eq!(
+            both_surfaces(&lookalike),
+            (false, false),
+            "a literal backslash in a name must never match a tracked path"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_index_fails_closed_on_both_provenance_surfaces() {
+        // Why this matters: the reader used to stop after `count` entries and
+        // never checked padding, extensions, or the trailing checksum, so an
+        // index with its checksum stripped still granted provenance.
+        let root = fixture_repo("corrupt-index");
+        fs::create_dir_all(root.join("skills/own")).unwrap();
+        let skill = root.join("skills/own/SKILL.md");
+        fs::write(&skill, "# own\n").unwrap();
+        let index_file = root.join(".git/index");
+        write_test_index(&root.join(".git"), &["skills/own/SKILL.md"]);
+        let valid = fs::read(&index_file).unwrap();
+        assert_eq!(both_surfaces(&skill), (true, true));
+
+        // Truncated: trailer missing.
+        fs::write(&index_file, &valid[..valid.len() - 20]).unwrap();
+        assert_eq!(both_surfaces(&skill), (false, false), "truncated index");
+
+        // Checksum flipped.
+        let mut bad_checksum = valid.clone();
+        *bad_checksum.last_mut().unwrap() ^= 0xff;
+        fs::write(&index_file, &bad_checksum).unwrap();
+        assert_eq!(both_surfaces(&skill), (false, false), "bad checksum");
+
+        // Non-NUL padding, with a valid checksum so only the padding is wrong.
+        let mut bad_padding = valid.clone();
+        // Entry starts at 12, flags at 72..74, name at 74; the 19-byte name
+        // ends at 93 and the entry is padded to 100, so byte 99 is padding.
+        bad_padding[99] = b'X';
+        let checksum = sha1_digest(&bad_padding[..bad_padding.len() - 20]);
+        let len = bad_padding.len();
+        bad_padding[len - 20..].copy_from_slice(&checksum);
+        fs::write(&index_file, &bad_padding).unwrap();
+        assert_eq!(both_surfaces(&skill), (false, false), "bad padding");
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }
