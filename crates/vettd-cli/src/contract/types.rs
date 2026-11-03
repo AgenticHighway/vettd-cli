@@ -240,6 +240,18 @@ pub struct ExternalScannerFinding {
     /// pinned scanner's `Finding.filepath`; never synthesized.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filepath: Option<String>,
+    // v2.9.0 (#318): finding context forwarded from the pinned scanner's
+    // `Finding`. intent/chainId explain a chain escalation (the scanner sets
+    // both when it raises severity); owaspLlmCategory is the scanner's own
+    // label; source is omitted for the default first-party scanner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owasp_llm_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 // v2.5.0 addition — scanner signal/coverage output surfaced additively.

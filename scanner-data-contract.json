@@ -506,6 +506,22 @@
 										"filepath": {
 											"type": "string",
 											"description": "Relative path from the skill root to the file that produced this finding. Omitted when the finding is package-level."
+										},
+										"intent": {
+											"type": "string",
+											"description": "Scanner-assigned intent (v2.9.0), e.g. 'malicious' or 'negligent'. Chain detection sets it when it groups findings and may raise severity. Omitted when unset."
+										},
+										"chainId": {
+											"type": "string",
+											"description": "Groups co-occurring findings that form an attack chain (v2.9.0). Findings sharing a chainId were escalated together. Omitted when not part of a chain."
+										},
+										"owaspLlmCategory": {
+											"type": "string",
+											"description": "OWASP Top 10 for LLM Applications category assigned by the scanner (v2.9.0). Omitted when not applicable."
+										},
+										"source": {
+											"type": "string",
+											"description": "Scanner that produced this finding (v2.9.0). Omitted for the default first-party scanner."
 										}
 									}
 								}

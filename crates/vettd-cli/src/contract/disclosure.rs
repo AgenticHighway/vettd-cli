@@ -319,6 +319,10 @@ const SKILL_FIELDS: &[&str] = &[
     "label",
     "detail",
     "filepath",
+    // ExternalScannerFinding context (v2.9.0, #318); `source` is listed above
+    "intent",
+    "chainId",
+    "owaspLlmCategory",
     // ScannerSignal (v2.5.0, display-only) — surfaced additively in
     // `externalScannerResults[].signals`.
     "signals",
@@ -721,6 +725,10 @@ pub(crate) fn max_payload() -> ContractPayload {
                     label: "l".into(),
                     detail: Some("d".into()),
                     filepath: Some("SKILL.md".into()),
+                    intent: Some("malicious".into()),
+                    chain_id: Some("chain-1".into()),
+                    owasp_llm_category: Some("LLM01".into()),
+                    source: Some("third-party".into()),
                 }]),
                 signals: Some(vec![ScannerSignal {
                     data_category: "characteristics".into(),

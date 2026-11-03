@@ -265,6 +265,16 @@ fn map_finding(f: &vettd_skill_scanner::Finding) -> ExternalScannerFinding {
             Some(f.detail.clone())
         },
         filepath: f.filepath.clone(),
+        intent: f.intent.as_ref().map(|intent| {
+            match intent {
+                vettd_skill_scanner::Intent::Malicious => "malicious",
+                vettd_skill_scanner::Intent::Negligent => "negligent",
+            }
+            .to_string()
+        }),
+        chain_id: f.chain_id.clone(),
+        owasp_llm_category: f.owasp_llm_category.clone(),
+        source: (f.source != DEFAULT_SOURCE).then(|| f.source.clone()),
     }
 }
 
@@ -559,6 +569,10 @@ mod tests {
             label: "Test finding".to_string(),
             detail: Some("Detail text".to_string()),
             filepath,
+            intent: None,
+            chain_id: None,
+            owasp_llm_category: None,
+            source: None,
         }
     }
 
@@ -573,6 +587,31 @@ mod tests {
 
         let without = map_finding(&scanner_finding(None));
         assert_eq!(without.filepath, None);
+    }
+
+    #[test]
+    fn chain_escalation_context_survives_the_contract_boundary() {
+        // #318: chain detection raises severity and sets intent + chainId.
+        // Dropping them left a critical finding with no explanation in the
+        // CLI record. Every decision-relevant scanner field must survive.
+        let mut f = scanner_finding(Some("scripts/run.sh".to_string()));
+        f.severity = vettd_skill_scanner::Severity::Critical;
+        f.intent = Some(vettd_skill_scanner::Intent::Malicious);
+        f.chain_id = Some("chain-1".to_string());
+        f.owasp_llm_category = Some("LLM06".to_string());
+        f.source = "third-party".to_string();
+        let v = serde_json::to_value(map_finding(&f)).unwrap();
+        assert_eq!(v["severity"], "critical");
+        assert_eq!(v["intent"], "malicious");
+        assert_eq!(v["chainId"], "chain-1");
+        assert_eq!(v["owaspLlmCategory"], "LLM06");
+        assert_eq!(v["source"], "third-party");
+
+        // Absent context and the default source stay off the wire (additive).
+        let plain = serde_json::to_value(map_finding(&scanner_finding(None))).unwrap();
+        for key in ["intent", "chainId", "owaspLlmCategory", "source"] {
+            assert!(plain.get(key).is_none(), "{key} must be omitted: {plain}");
+        }
     }
 
     #[test]

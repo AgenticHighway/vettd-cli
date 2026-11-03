@@ -1027,6 +1027,10 @@ mod tests {
             label: "test".to_string(),
             detail: None,
             filepath: None,
+            intent: None,
+            chain_id: None,
+            owasp_llm_category: None,
+            source: None,
         };
 
         // A missing scanner result means nothing was analyzed. It must never
@@ -1135,6 +1139,10 @@ mod tests {
                 label: "test".to_string(),
                 detail: None,
                 filepath: None,
+                intent: None,
+                chain_id: None,
+                owasp_llm_category: None,
+                source: None,
             }]),
             ..clean
         };
