@@ -205,10 +205,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
     let detected_source = detect_skill_source(source_path);
     let frontmatter = read_skill_frontmatter(artifact);
 
-    let scan_output = artifact
-        .cached_skill_scan
-        .clone()
-        .or_else(|| super::skill_scan::run_skill_scanner(artifact));
+    let scan_output = super::skill_scan::output_for(artifact);
     let assessment = super::skill_scan::assess(scan_output.as_ref());
     let overall_grade = grade_from_scanner_result(
         scan_output.as_ref().map(|o| &o.external),
@@ -221,16 +218,12 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
     // Content identity (#274, #130): digest over the whole skill directory
     // (minus disclosed exclusions), the location this copy was found in with
     // its provenance, and git/declared lineage for relating copies downstream.
-    let identity_load = if source_path != "unknown" {
-        let root = std::path::Path::new(source_path)
-            .parent()
-            .unwrap_or(std::path::Path::new("."));
-        Some(identity::load_skill_files(root))
-    } else {
-        None
-    };
-    let content_hash = match &identity_load {
-        Some(load) => Some(identity::canonical_digest(&load.text_files)),
+    //
+    // Identity comes from the SAME load as the assessment (P2-10): a digest of
+    // other bytes must never be paired with this analysis.
+    let skill_identity = scan_output.as_ref().map(|output| &output.identity);
+    let content_hash = match skill_identity {
+        Some(identity) => Some(identity.content_hash.clone()),
         None => artifact_content_hash(artifact),
     };
     let locations = (source_path != "unknown").then(|| {
@@ -239,9 +232,8 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
             provenance: identity::provenance_for(source_path).to_string(),
         }]
     });
-    let identity_exclusions = identity_load
-        .as_ref()
-        .map(|load| load.excluded.clone())
+    let identity_exclusions = skill_identity
+        .map(|identity| identity.exclusions.clone())
         .filter(|excluded| !excluded.is_empty());
     let lineage = (source_path != "unknown")
         .then(|| {
@@ -297,14 +289,11 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         lineage,
         assessment_state: Some(assessment.state.to_string()),
         assessment_reasons: (!assessment.reasons.is_empty()).then_some(assessment.reasons),
-        bundle_digest: identity_load
-            .as_ref()
-            .and_then(|load| load.bundle_digest.clone()),
+        bundle_digest: skill_identity.and_then(|identity| identity.bundle_digest.clone()),
     };
-    // The digest is only a dedup key when it covers the whole skill directory.
-    let dedupable = identity_load
-        .as_ref()
-        .is_some_and(|load| !load.partial && load.skipped.is_empty());
+    // A digest is only a dedup key when it covers the whole skill directory and
+    // actually exists. Without it, identity stays location-specific (#315).
+    let dedupable = skill_identity.is_some_and(|identity| identity.complete);
     (skill, dedupable)
 }
 
@@ -1517,6 +1506,15 @@ mod tests {
             serde_json::json!([skill_md.to_string_lossy()]),
         );
         a.compute_hash();
+        // Identity must describe this directory, or the cache is (correctly)
+        // discarded as stale and the scan re-runs.
+        let load = crate::contract::identity::load_skill_files(dir.path());
+        let identity = crate::contract::skill_scan::SkillIdentity {
+            content_hash: crate::contract::identity::canonical_digest(&load.text_files),
+            complete: !load.partial && load.skipped.is_empty() && load.bundle_digest.is_some(),
+            bundle_digest: load.bundle_digest.clone(),
+            exclusions: load.excluded.clone(),
+        };
         a.cached_skill_scan = Some(SkillScanOutput {
             external: ExternalScannerResult {
                 source: "vettd".into(),
@@ -1537,6 +1535,8 @@ mod tests {
                 has_assets: false,
             }),
             incomplete_reasons: Vec::new(),
+            partial: false,
+            identity,
         });
         (dir, a)
     }
@@ -1739,5 +1739,125 @@ mod tests {
                 "MCP-derived skill must omit '{key}', got: {obj:?}"
             );
         }
+    }
+
+    // ── dedup vs. assessment / identity intent tests (#314/#315) ───────
+
+    #[cfg(unix)]
+    #[test]
+    fn dedup_never_upgrades_incomplete_location() {
+        // Why this matters: file modes are excluded from bundleDigest by
+        // design, so a clean copy and a copy with an executable payload share
+        // a digest. Merging used to keep the first copy's assessment, so the
+        // pair reported complete/A/Trusted while one location held an
+        // unanalyzed executable. The worst assessment must win, in either
+        // scan order.
+        use std::os::unix::fs::PermissionsExt;
+
+        for order in [[false, true], [true, false]] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut artifacts = Vec::new();
+            for (index, executable) in order.into_iter().enumerate() {
+                let root = dir.path().join(format!("copy-{index}/demo"));
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+                let helper = root.join("helper.data");
+                std::fs::write(&helper, "payload").unwrap();
+                let mode = if executable { 0o755 } else { 0o644 };
+                std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(mode)).unwrap();
+                artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+            }
+
+            let skills = build_skills(&artifacts, &[]);
+            assert_eq!(skills.len(), 1, "same bytes must merge into one record");
+            assert_eq!(skills[0].locations.as_ref().map(Vec::len), Some(2));
+            assert_eq!(
+                skills[0].assessment_state.as_deref(),
+                Some("partial"),
+                "order {order:?}"
+            );
+            assert_eq!(skills[0].overall_grade, "pending", "order {order:?}");
+            assert_eq!(skills[0].trust_level, "Conditional", "order {order:?}");
+            assert!(
+                skills[0]
+                    .assessment_reasons
+                    .as_deref()
+                    .is_some_and(|reasons| reasons.contains(&"unanalyzed-content".to_string())),
+                "order {order:?}: {:?}",
+                skills[0].assessment_reasons
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_bundle_digest_never_deduplicates() {
+        // Why this matters: without a full bundle digest there is no proof the
+        // two bundles are the same asset, so merging them would assert an
+        // equivalence nobody verified (and silently drop one result).
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifacts = Vec::new();
+        for (copy, pipe) in [("a", "pipe-a"), ("b", "pipe-b")] {
+            let root = dir.path().join(copy).join("demo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+            let made = std::process::Command::new("mkfifo")
+                .arg(root.join(pipe))
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !made {
+                eprintln!("SKIPPED missing_bundle_digest_never_deduplicates: mkfifo unavailable");
+                return;
+            }
+            artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+        }
+
+        let skills = build_skills(&artifacts, &[]);
+        assert_eq!(
+            skills.len(),
+            2,
+            "a missing bundle digest must never merge copies"
+        );
+        assert!(skills.iter().all(|s| s.bundle_digest.is_none()));
+    }
+
+    #[test]
+    fn changed_bundle_cannot_reuse_cached_complete_assessment() {
+        // Why this matters: identity used to be re-loaded after the cached
+        // scan, so a bundle that changed between the two loads paired the new
+        // digest with the old complete/A/Trusted assessment. A changed bundle
+        // must be re-scanned, never vouched for by a stale result.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("demo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+
+        let mut artifact = skill_artifact_at(&root.join("SKILL.md"));
+        artifact.cached_skill_scan = crate::contract::run_skill_scanner(&artifact);
+        let cached_digest = artifact
+            .cached_skill_scan
+            .as_ref()
+            .and_then(|output| output.identity.bundle_digest.clone())
+            .expect("a clean fixture must produce a bundle digest");
+        assert_eq!(
+            artifact.cached_skill_scan.as_ref().unwrap().external.status,
+            "success"
+        );
+
+        // The bytes change after the cache was taken: an executable the text
+        // scan cannot analyze joins the bundle.
+        std::fs::write(root.join("helper.exe"), [0x4d_u8, 0x5a]).unwrap();
+
+        let skills = build_skills(&[artifact], &[]);
+        let skill = &skills[0];
+        assert_ne!(
+            skill.bundle_digest.as_deref(),
+            Some(cached_digest.as_str()),
+            "the record must describe the bytes actually assessed"
+        );
+        assert_eq!(skill.assessment_state.as_deref(), Some("partial"));
+        assert_eq!(skill.overall_grade, "pending");
+        assert_ne!(skill.trust_level, "Trusted");
     }
 }

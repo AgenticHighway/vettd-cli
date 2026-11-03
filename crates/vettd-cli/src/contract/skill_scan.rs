@@ -34,6 +34,23 @@ pub(crate) struct SkillStructuralFacts {
     pub has_assets: bool,
 }
 
+/// Content identity derived from the same directory load that produced the
+/// scan, so an assessment can never be paired with a digest of other bytes
+/// (#315/P2-10).
+#[derive(Debug, Clone)]
+pub(crate) struct SkillIdentity {
+    /// Digest over the analyzed text files (hub `contentHash` parity).
+    pub content_hash: String,
+    /// Digest over every byte under the root; `None` when any entry could not
+    /// be read, was too large, or the walk hit its budget.
+    pub bundle_digest: Option<String>,
+    /// Paths dropped from identity by disclosure rules.
+    pub exclusions: Vec<String>,
+    /// True only when the load covered the whole bundle and produced a digest,
+    /// so the bundle digest is safe to use as an identity key.
+    pub complete: bool,
+}
+
 /// Full output of one skill scan: the contract-shaped `ExternalScannerResult`
 /// plus the raw structural facts the skill builder surfaces at the skill level.
 #[derive(Debug, Clone)]
@@ -45,6 +62,12 @@ pub(crate) struct SkillScanOutput {
     /// Stable reason codes for analysis that did not cover the whole skill
     /// (#314). Empty means the scanner saw every file it should have.
     pub incomplete_reasons: Vec<String>,
+    /// True when the directory load itself fell short (walk cap, unreadable
+    /// entry/directory, size cap). Distinct from `incomplete_reasons` so a
+    /// loader shortfall can never be mistaken for a complete analysis.
+    pub partial: bool,
+    /// Identity from the same load as this scan (#315/P2-10).
+    pub identity: SkillIdentity,
 }
 
 /// Whether analysis of one skill covered the whole skill (#314).
@@ -66,8 +89,9 @@ impl Assessment {
 }
 
 /// Derive the assessment state of a skill from its scanner output. A missing
-/// output or a run that did not succeed is `failed`; any recorded shortfall
-/// is `partial`.
+/// output or a run that did not succeed is `failed`; a loader shortfall or any
+/// recorded reason is `partial`. Any state but `complete` carries at least one
+/// reason, so "not analyzed" is never a silent "nothing found".
 pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
     let Some(output) = output else {
         return Assessment {
@@ -75,17 +99,59 @@ pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
             reasons: vec!["missing-result".to_string()],
         };
     };
+    let mut reasons = output.incomplete_reasons.clone();
+    if output.partial && reasons.is_empty() {
+        // The loader always names why it fell short; this keeps the invariant
+        // (partial ⇒ reasons) even if a future shortfall forgets to.
+        reasons.push("file-cap".to_string());
+    }
     let state = if output.external.status != "success" {
         "failed"
-    } else if !output.incomplete_reasons.is_empty() {
+    } else if output.partial || !reasons.is_empty() {
         "partial"
     } else {
         "complete"
     };
-    Assessment {
-        state,
-        reasons: output.incomplete_reasons.clone(),
+    Assessment { state, reasons }
+}
+
+/// The scan output for an artifact: the cached result only when it still
+/// describes the bytes on disk, otherwise a fresh scan. This is what makes a
+/// changed bundle incapable of reusing a cached complete assessment
+/// (#314/P2-10).
+pub(crate) fn output_for(artifact: &ArtifactReport) -> Option<SkillScanOutput> {
+    if let Some(cached) = &artifact.cached_skill_scan {
+        if cached.matches_disk(artifact) {
+            return Some(cached.clone());
+        }
     }
+    run_skill_scanner(artifact)
+}
+
+impl SkillScanOutput {
+    /// Whether this output's snapshot still matches the directory on disk.
+    /// Only a full bundle digest can prove that; without one the cache is
+    /// discarded rather than risk pairing an assessment with other bytes.
+    fn matches_disk(&self, artifact: &ArtifactReport) -> bool {
+        let Some(cached_digest) = self.identity.bundle_digest.as_deref() else {
+            return false;
+        };
+        let Some(root) = skill_root(artifact) else {
+            return false;
+        };
+        let load = identity::load_skill_files(root);
+        load.bundle_digest.as_deref() == Some(cached_digest)
+            && identity::canonical_digest(&load.text_files) == self.identity.content_hash
+    }
+}
+
+/// Directory containing the artifact's `SKILL.md`.
+fn skill_root(artifact: &ArtifactReport) -> Option<&Path> {
+    let path = first_path(artifact);
+    if path == "unknown" {
+        return None;
+    }
+    Some(Path::new(path).parent().unwrap_or(Path::new(".")))
 }
 
 /// Run the skill scanner against the artifact's source directory and return
@@ -95,31 +161,41 @@ pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
 /// Returns `None` if the artifact has no resolvable path or the source
 /// directory cannot be located.
 pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOutput> {
-    let skill_md_path = first_path(artifact);
-    if skill_md_path == "unknown" {
-        return None;
-    }
+    // The pinned scanner requires a caller-supplied RFC 3339 observation time;
+    // signals carry it unmodified. The pure scanner never reads a clock, so the
+    // CLI stamps "now" here.
+    let observed_at = chrono::Utc::now().to_rfc3339();
+    run_skill_scanner_with_observed_at(artifact, &observed_at)
+}
 
-    let skill_md = Path::new(skill_md_path);
-    let skill_root = skill_md.parent().unwrap_or(Path::new("."));
+/// [`run_skill_scanner`] with an explicit observation time. A malformed value
+/// is a real `scan_skill` error, which the error path below must disclose.
+fn run_skill_scanner_with_observed_at(
+    artifact: &ArtifactReport,
+    observed_at: &str,
+) -> Option<SkillScanOutput> {
+    let skill_md_path = first_path(artifact);
+    let skill_root = skill_root(artifact)?;
 
     let load = identity::load_skill_files(skill_root);
     let SkillFileLoad {
         text_files,
         all_paths,
         skipped,
-        excluded: _,
+        excluded,
         partial,
         incomplete_reasons,
-        bundle_digest: _,
+        bundle_digest,
     } = load;
+    let identity = SkillIdentity {
+        content_hash: identity::canonical_digest(&text_files),
+        complete: !partial && skipped.is_empty() && bundle_digest.is_some(),
+        bundle_digest,
+        exclusions: excluded,
+    };
     let mut incomplete_reasons: Vec<String> =
         incomplete_reasons.iter().map(|r| r.to_string()).collect();
-    // The pinned scanner requires a caller-supplied RFC 3339
-    // observation time; signals carry it unmodified. The pure scanner never
-    // reads a clock, so the CLI stamps "now" here.
-    let observed_at = chrono::Utc::now().to_rfc3339();
-    let scan_result = match scan_skill(&text_files, &all_paths, &observed_at) {
+    let scan_result = match scan_skill(&text_files, &all_paths, observed_at) {
         Ok(result) => result,
         Err(e) => {
             // Report the failed run instead of dropping it: a dropped result
@@ -139,6 +215,8 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
                 },
                 structural: None,
                 incomplete_reasons,
+                partial,
+                identity,
             });
         }
     };
@@ -206,7 +284,8 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
             rule_id: "scan/size-limit".to_string(),
             label: "Skill scan partial".to_string(),
             detail: format!(
-                "load capped at {} text files / {} MB of text content",
+                "analysis walk stopped at the {} entry budget or at the {} text-file / {} MB caps",
+                identity::WALK_SAFETY_LIMIT,
                 identity::MAX_SKILL_FILES,
                 identity::MAX_SKILL_TOTAL_BYTES / (1024 * 1024)
             ),
@@ -246,6 +325,8 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
             has_assets: scan_result.has_assets,
         }),
         incomplete_reasons,
+        partial,
+        identity,
     })
 }
 
@@ -724,6 +805,59 @@ mod tests {
                 .iter()
                 .any(|c| c.kind == "partial" && c.rule_id == "scan/size-limit"),
             "cap hit must be disclosed as partial: {coverage:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scanner_error_is_disclosed_without_fabricated_structural_facts() {
+        // Why this matters: a failed scan used to be dropped, which graded the
+        // skill A/Trusted. A real `scan_skill` error must now produce an
+        // explicit errored result, the `scanner-error` reason, and no
+        // structural facts it never computed.
+        let dir = temp_skill_dir("scanner-error");
+        std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
+        let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+
+        // `scan_skill` rejects a malformed observation time; this is the real
+        // error path, not a stubbed one.
+        let output = run_skill_scanner_with_observed_at(&a, "not-a-timestamp").unwrap();
+        assert_eq!(output.external.status, "errored");
+        assert_eq!(output.external.source, "vettd");
+        assert!(
+            output
+                .incomplete_reasons
+                .contains(&"scanner-error".to_string()),
+            "{:?}",
+            output.incomplete_reasons
+        );
+        assert!(
+            output.structural.is_none(),
+            "no fabricated structural facts"
+        );
+        assert!(output.external.findings.is_none());
+        assert_eq!(assess(Some(&output)).state, "failed");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn loader_partial_always_makes_the_assessment_partial() {
+        // Why this matters: `assess` used to derive state from the reason list
+        // alone and ignore the loader's `partial` flag, so a truncated walk
+        // could report a complete assessment.
+        let dir = temp_skill_dir("partial-flag");
+        std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
+        let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+        let mut output = run_skill_scanner(&a).unwrap();
+        output.partial = true;
+        output.incomplete_reasons.clear();
+
+        let assessment = assess(Some(&output));
+        assert_eq!(assessment.state, "partial");
+        assert!(
+            !assessment.reasons.is_empty(),
+            "partial must always carry a reason"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
