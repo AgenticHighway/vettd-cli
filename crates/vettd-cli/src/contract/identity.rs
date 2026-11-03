@@ -439,21 +439,51 @@ pub(crate) fn lineage_for(path: &Path) -> AssetLineage {
 
 /// Whether `path` (a file, or a directory containing tracked files) is in
 /// the index of the repository rooted at `work_root`.
+///
+/// The comparison is component-wise on the path as the filesystem reports it,
+/// so a literal backslash in a Unix file name never compares equal to a `/`
+/// separator (#1216). A path that cannot be represented losslessly (invalid
+/// UTF-8) is not matched: the caller fails closed rather than guessing.
 pub(super) fn is_tracked(work_root: &Path, git_dir: &Path, path: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(work_root) else {
         return false;
     };
-    let rel = rel.to_string_lossy().replace('\\', "/");
+    let Some(rel) = native_git_relative_path(rel) else {
+        return false;
+    };
+    if rel.is_empty() {
+        return true;
+    }
     let dir_prefix = format!("{rel}/");
     index_paths(git_dir).is_some_and(|paths| {
         paths
             .iter()
-            .any(|p| rel.is_empty() || p == &rel || p.starts_with(&dir_prefix))
+            .any(|p| p == &rel || p.starts_with(&dir_prefix))
     })
 }
 
+/// Render a path relative to a work tree the way a Git index does.
+///
+/// On Unix this is the bytes the filesystem reports, with no separator
+/// rewriting; `None` when the name is not valid UTF-8, because a lossy
+/// conversion could alias two different names.
+fn native_git_relative_path(rel: &Path) -> Option<String> {
+    let rel = rel.to_str()?;
+    #[cfg(windows)]
+    {
+        // Windows uses `\` natively; the index always uses `/`.
+        Some(rel.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(rel.to_string())
+    }
+}
+
 /// Entry paths from a git index (`DIRC`, versions 2 and 3). Version 4
-/// (prefix-compressed paths) and anything malformed return `None`.
+/// (prefix-compressed paths) and anything structurally invalid return `None`:
+/// entry padding, the extension section, and the trailing SHA-1 checksum are
+/// all validated before any path is trusted.
 fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
     let data = fs::read(git_dir.join("index")).ok()?;
     if data.get(0..4)? != b"DIRC" {
@@ -464,11 +494,16 @@ fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
         return None;
     }
     let count = u32::from_be_bytes(data.get(8..12)?.try_into().ok()?);
+    // The trailer is a SHA-1 over everything before it.
+    let body_end = data.len().checked_sub(20)?;
+    if body_end < 12 {
+        return None;
+    }
     let mut paths = Vec::new();
     let mut pos = 12usize;
     for _ in 0..count {
         // 40 bytes of stat data + 20-byte object id, then 16-bit flags.
-        let flags_at = pos + 60;
+        let flags_at = pos.checked_add(60)?;
         let flags = u16::from_be_bytes(data.get(flags_at..flags_at + 2)?.try_into().ok()?);
         let mut name_at = flags_at + 2;
         if flags & 0x4000 != 0 {
@@ -477,16 +512,50 @@ fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
             }
             name_at += 2;
         }
-        let nul = data.get(name_at..)?.iter().position(|&b| b == 0)?;
-        paths.push(String::from_utf8_lossy(&data[name_at..name_at + nul]).into_owned());
+        let nul = data.get(name_at..body_end)?.iter().position(|&b| b == 0)?;
+        let name_end = name_at + nul;
+        // A path the index cannot represent losslessly is not trusted.
+        let name = String::from_utf8(data.get(name_at..name_end)?.to_vec()).ok()?;
         // Entries are NUL-padded (at least one NUL) to a multiple of 8 bytes.
-        pos += (name_at - pos + nul + 1).div_ceil(8) * 8;
+        let entry_len = (name_end - pos + 1).div_ceil(8) * 8;
+        let entry_end = pos.checked_add(entry_len)?;
+        if entry_end > body_end || entry_len % 8 != 0 {
+            return None;
+        }
+        // Every padding byte between the name and the next entry is NUL.
+        if data.get(name_end..entry_end)?.iter().any(|&b| b != 0) {
+            return None;
+        }
+        paths.push(name);
+        pos = entry_end;
+    }
+    // Optional extension headers must tile the gap up to the trailer exactly.
+    while pos < body_end {
+        let header = data.get(pos..pos + 8)?;
+        let size = u32::from_be_bytes(header[4..8].try_into().ok()?) as usize;
+        pos = pos.checked_add(8)?.checked_add(size)?;
+        if pos > body_end {
+            return None;
+        }
+    }
+    if pos != body_end {
+        return None;
+    }
+    // The checksum must match, or the entry data cannot be trusted.
+    if data.get(body_end..)? != sha1_digest(data.get(..body_end)?).as_slice() {
+        return None;
     }
     Some(paths)
 }
 
-/// Test fixture: a minimal git index (version 2) listing `paths`, laid out
-/// as git writes it.
+fn sha1_digest(bytes: &[u8]) -> [u8; 20] {
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+/// Test fixture: a minimal git index (version 2) listing `paths`, laid out as
+/// git writes it, trailer checksum included.
 #[cfg(test)]
 pub(crate) fn write_test_index(git_dir: &Path, paths: &[&str]) {
     let mut sorted = paths.to_vec();
@@ -501,11 +570,13 @@ pub(crate) fn write_test_index(git_dir: &Path, paths: &[&str]) {
         entry.resize((62 + path.len() + 8) & !7, 0);
         out.extend(entry);
     }
+    let checksum = sha1_digest(&out);
+    out.extend(checksum);
     fs::write(git_dir.join("index"), out).unwrap();
 }
 
 /// The nearest enclosing work tree root and its git directory.
-fn find_git_dir(path: &Path) -> Option<(PathBuf, PathBuf)> {
+pub(super) fn find_git_dir(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = if path.is_dir() {
         path.to_path_buf()
     } else {
@@ -554,7 +625,8 @@ fn commdir(git_dir: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-fn read_git_remote(git_dir: &Path) -> Option<String> {
+/// `<gitdir>/config` (or the worktree's common dir), sanitized.
+pub(super) fn read_git_remote(git_dir: &Path) -> Option<String> {
     read_remote_from_config(git_dir)
         .or_else(|| commdir(git_dir).and_then(|c| read_remote_from_config(&c)))
 }

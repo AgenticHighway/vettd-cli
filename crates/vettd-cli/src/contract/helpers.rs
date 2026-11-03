@@ -102,41 +102,38 @@ pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
         raw_path
     };
 
-    let mut dir = Some(start);
-    while let Some(d) = dir {
-        let git_dir = d.join(".git");
-        if git_dir.is_dir() {
-            // Same rule as lineage (vettd#1216): a bundle the enclosing repo
-            // does not track (archive export, copy) is not that repo's skill.
-            if !super::identity::is_tracked(d, &git_dir, raw_path) {
-                return None;
-            }
-            let raw_remote = read_remote_url(&git_dir.join("config"))?;
-            let sanitized = sanitize_git_remote_url(&raw_remote);
-            if sanitized == "unknown" {
-                return None;
-            }
-
-            let relative_path = start
-                .strip_prefix(d)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-
-            return Some(if is_github_remote(&sanitized) {
-                DetectedSkillSource::GitHub {
-                    repo_url: sanitized,
-                    branch: read_current_branch(&git_dir).unwrap_or_else(|| "main".to_string()),
-                    path: relative_path,
-                }
-            } else {
-                DetectedSkillSource::UnsupportedRemote {
-                    remote_url: sanitized,
-                }
-            });
-        }
-        dir = d.parent();
+    // Resolve the enclosing work tree exactly like lineage does, so a
+    // worktree/submodule `.git` file is recognised on both provenance
+    // surfaces (vettd#1216).
+    let (work_root, git_dir) = super::identity::find_git_dir(start)?;
+    // A bundle the enclosing repo does not track (archive export, copy) is not
+    // that repo's skill.
+    if !super::identity::is_tracked(&work_root, &git_dir, raw_path) {
+        return None;
     }
-    None
+    // Read the remote the same way lineage does: worktrees keep shared config
+    // in the common git dir named by `commondir`.
+    let sanitized = super::identity::read_git_remote(&git_dir)?;
+    if sanitized == "unknown" {
+        return None;
+    }
+
+    let relative_path = start
+        .strip_prefix(&work_root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    Some(if is_github_remote(&sanitized) {
+        DetectedSkillSource::GitHub {
+            repo_url: sanitized,
+            branch: read_current_branch(&git_dir).unwrap_or_else(|| "main".to_string()),
+            path: relative_path,
+        }
+    } else {
+        DetectedSkillSource::UnsupportedRemote {
+            remote_url: sanitized,
+        }
+    })
 }
 
 /// Extract the raw (unsanitized) `url = ` line from a `.git/config` file.
@@ -806,5 +803,48 @@ mod tests {
         assert!(detect_skill_source(moved.to_str().unwrap()).is_none());
         let lineage = crate::contract::identity::lineage_for(&moved);
         assert!(lineage.git_remote_url.is_none() && lineage.git_commit.is_none());
+    }
+
+    #[test]
+    fn detect_skill_source_resolves_a_worktree_git_file() {
+        // Why this matters: a worktree's `.git` is a *file* (`gitdir: ...`).
+        // lineage handled it, detectedSource did not, so worktree skills got
+        // one provenance surface and not the other (vettd#1216).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let common = root.join("real-git");
+        std::fs::create_dir_all(common.join("refs/heads")).unwrap();
+        std::fs::write(
+            common.join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+        )
+        .unwrap();
+        let worktree_git = common.join("worktrees/feat");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+        std::fs::write(worktree_git.join("HEAD"), "ref: refs/heads/feat\n").unwrap();
+        std::fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+        crate::contract::identity::write_test_index(&worktree_git, &["skills/foo/SKILL.md"]);
+
+        std::fs::create_dir_all(root.join("repo/skills/foo")).unwrap();
+        std::fs::write(
+            root.join("repo/.git"),
+            "gitdir: ../real-git/worktrees/feat\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("repo/skills/foo/SKILL.md"), "# skill").unwrap();
+
+        let result = detect_skill_source(root.join("repo/skills/foo").to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub {
+                repo_url,
+                branch,
+                path,
+            }) => {
+                assert_eq!(repo_url, "https://github.com/acme/skills.git");
+                assert_eq!(branch, "feat");
+                assert_eq!(path, "skills/foo");
+            }
+            other => panic!("worktree skill must resolve via the .git file, got {other:?}"),
+        }
     }
 }
