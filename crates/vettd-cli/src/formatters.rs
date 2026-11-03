@@ -448,23 +448,24 @@ fn is_incomplete(a: &ArtifactReport) -> bool {
         && !crate::contract::assess(a.cached_skill_scan.as_ref()).is_complete()
 }
 
-/// The status label for an artifact. An incomplete skill is never `CLEAR`:
-/// nothing was found because nothing was fully looked at (#314).
+/// The status label for an artifact. Completeness and detected risk are
+/// independent: a skill that is not fully analyzed still carries whatever risk
+/// the analysis did find, and only a skill with nothing found becomes
+/// `NOT ANALYZED` instead of `CLEAR` (#314/N6).
 fn status_label(a: &ArtifactReport) -> &'static str {
-    if is_incomplete(a) {
-        return "NOT ANALYZED";
-    }
     match a.verification_status.as_str() {
         SEVERITY_CRITICAL => "CRITICAL",
         SEVERITY_HIGH => "FLAGGED",
         SEVERITY_MEDIUM => "REVIEW",
+        _ if is_incomplete(a) => "NOT ANALYZED",
         _ => "CLEAR",
     }
 }
 
-/// Posture counts for a set of artifacts. Incomplete skills are counted
-/// separately and never as `clear`, so the human view cannot report "passed all
-/// checks" for a skill nobody fully analyzed.
+/// Posture counts for a set of artifacts. An incomplete skill is always counted
+/// as `incomplete`, and is never counted as `clear`, so the human view cannot
+/// report "passed all checks" for a skill nobody fully analyzed. Risk it did
+/// find is still counted (#314/N6).
 struct PostureCounts {
     flagged: usize,
     review: usize,
@@ -480,14 +481,15 @@ fn posture_counts(artifacts: &[&ArtifactReport]) -> PostureCounts {
         incomplete: 0,
     };
     for a in artifacts {
-        if is_incomplete(a) {
-            counts.incomplete += 1;
-            continue;
-        }
         match a.verification_status.as_str() {
             SEVERITY_CRITICAL | SEVERITY_HIGH => counts.flagged += 1,
             SEVERITY_MEDIUM => counts.review += 1,
+            // Nothing found *and* nothing missed: the only affirmative result.
+            _ if is_incomplete(a) => {}
             _ => counts.clear += 1,
+        }
+        if is_incomplete(a) {
+            counts.incomplete += 1;
         }
     }
     counts
@@ -1255,5 +1257,37 @@ mod tests {
             clear_section_line(counts.clear).as_deref(),
             Some("1 artifact(s) passed all checks")
         );
+    }
+
+    #[test]
+    fn incomplete_skills_keep_the_risk_they_did_find() {
+        // Why this matters: the first fix labeled every incomplete skill
+        // NOT ANALYZED and dropped it from the flagged/review counts, so a
+        // partial skill with critical findings was reported as ordinary
+        // "not analyzed" and disappeared from the risk totals. Completeness and
+        // detected risk are independent.
+        let (_dir, mut a) = incomplete_skill_artifact();
+
+        a.verification_status = SEVERITY_CRITICAL.to_string();
+        let all: Vec<&ArtifactReport> = vec![&a];
+        let counts = posture_counts(&all);
+        assert_eq!(counts.flagged, 1, "detected risk must still be counted");
+        assert_eq!(counts.incomplete, 1, "and the gap must still be counted");
+        assert_eq!(counts.clear, 0);
+        assert_eq!(status_label(&a), "CRITICAL");
+        assert!(
+            incomplete_summary(&all).is_some(),
+            "the incomplete reason must still be disclosed"
+        );
+
+        a.verification_status = SEVERITY_MEDIUM.to_string();
+        let counts = posture_counts(&[&a]);
+        assert_eq!(counts.review, 1);
+        assert_eq!(status_label(&a), "REVIEW");
+
+        // Nothing found and nothing missed is still the only affirmative label.
+        a.verification_status = SEVERITY_INFO.to_string();
+        assert_eq!(status_label(&a), "NOT ANALYZED");
+        assert_eq!(posture_counts(&[&a]).clear, 0);
     }
 }
