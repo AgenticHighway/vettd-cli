@@ -393,9 +393,13 @@ fn read_skill_frontmatter(artifact: &ArtifactReport) -> SkillFrontmatter {
     if path == "unknown" {
         return SkillFrontmatter::default();
     }
-    std::fs::read_to_string(path)
-        .map(|content| parse_skill_frontmatter(&content))
-        .unwrap_or_default()
+    // The same hardened, bounded reader the analysis uses (#315/P0): a FIFO or
+    // an oversized SKILL.md can neither block nor spike memory here, and the
+    // read is bounded by the analysis byte cap.
+    match identity::read_text_file(std::path::Path::new(path), identity::MAX_SKILL_TOTAL_BYTES) {
+        identity::TextRead::Text(content) => parse_skill_frontmatter(&content),
+        _ => SkillFrontmatter::default(),
+    }
 }
 
 /// Extract `description`, `version`, and `license` from SKILL.md YAML
@@ -505,6 +509,11 @@ fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
 /// (double quotes: `\n` `\r` `\t` `\"` `\\`; single quotes: `\'` `\\`).
 fn unquote_yaml_scalar(value: &str) -> String {
     let trimmed = value.trim();
+    // A lone `"` or `'` has the same first and last byte and would slice
+    // `[1..0]` below; a quote pair needs at least two characters (#314/P0).
+    if trimmed.len() < 2 {
+        return trimmed.to_string();
+    }
     let bytes = trimmed.as_bytes();
     let double = bytes.first() == Some(&b'"') && bytes.last() == Some(&b'"');
     let single = bytes.first() == Some(&b'\'') && bytes.last() == Some(&b'\'');
@@ -820,6 +829,77 @@ mod tests {
     use super::*;
     use crate::contract::types::AgentTool;
     use crate::models::ArtifactReport;
+
+    #[test]
+    fn lone_quote_scalars_do_not_panic() {
+        // Why this matters: a lone `"` has the same first and last byte, so the
+        // quote-stripping slice was `[1..0]` and a SKILL.md containing
+        // `description: "` aborted report construction with a panic (#314/P0).
+        assert_eq!(unquote_yaml_scalar("\""), "\"");
+        assert_eq!(unquote_yaml_scalar("'"), "'");
+        assert_eq!(
+            parse_skill_frontmatter("---\ndescription: \"\n---\n").description,
+            Some("\"".to_string())
+        );
+        assert_eq!(
+            parse_skill_frontmatter("---\nname: '\n---\n").name,
+            Some("'".to_string())
+        );
+    }
+
+    fn artifact_for(path: &std::path::Path) -> ArtifactReport {
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.metadata.insert(
+            "paths".to_string(),
+            serde_json::json!([path.to_string_lossy()]),
+        );
+        a
+    }
+
+    #[test]
+    fn oversized_skill_md_yields_no_frontmatter() {
+        // Why this matters: the frontmatter used an unbounded path-based read
+        // that ran before the analysis caps, so a SKILL.md past the 10 MiB
+        // analysis bound still forced a full read and parse (#315/P1).
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        let mut content = String::from("---\ndescription: huge\n---\n");
+        content.push_str(&"x".repeat(identity::MAX_SKILL_TOTAL_BYTES as usize + 1));
+        std::fs::write(&skill_md, content).unwrap();
+        assert_eq!(
+            read_skill_frontmatter(&artifact_for(&skill_md)).description,
+            None,
+            "frontmatter must respect the analysis byte bound"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frontmatter_read_never_blocks_on_a_fifo() {
+        // Why this matters: `read_skill_frontmatter` opened SKILL.md by path
+        // with no descriptor check, so a FIFO there blocked report
+        // construction until a writer appeared (#315/P0).
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&skill_md)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("SKIPPED frontmatter_read_never_blocks_on_a_fifo: mkfifo unavailable");
+            return;
+        }
+        let artifact = artifact_for(&skill_md);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_skill_frontmatter(&artifact).description);
+        });
+        let description = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO at SKILL.md must never block the frontmatter read");
+        assert_eq!(description, None);
+    }
 
     #[test]
     fn extract_frontmatter_description_inline() {
