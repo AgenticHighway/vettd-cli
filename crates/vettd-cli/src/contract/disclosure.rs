@@ -137,7 +137,7 @@ impl DisclosureCategory {
                 "file paths, classification, capability signals, content hashes, secret references, injection surfaces, dependencies, and risk scores"
             }
             DisclosureCategory::SkillRecords => {
-                "skill name, type, trust grade, execution environment, description, version, license, structural facts (file count, presence of SKILL.md/scripts/references/evals/assets), permissions, dependencies, consumers, and external scanner results"
+                "skill name, type, trust grade, execution environment, description, version, license, structural facts (file count, presence of SKILL.md/scripts/references/evals/assets), assessment completeness state and reasons, permissions, dependencies, consumers, and external scanner results"
             }
             DisclosureCategory::AgentRecords => {
                 "source paths, classification, execution model, trust score, version, author, source repo, capabilities, tool bindings, and trust breakdown"
@@ -358,6 +358,9 @@ const SKILL_FIELDS: &[&str] = &[
     "gitCommit",
     "declaredName",
     "declaredVersion",
+    // Assessment completeness (v2.9.0, #314)
+    "assessmentState",
+    "assessmentReasons",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -766,6 +769,8 @@ pub(crate) fn max_payload() -> ContractPayload {
                 declared_name: Some("test-skill".into()),
                 declared_version: Some("1.0".into()),
             }),
+            assessment_state: Some("partial".into()),
+            assessment_reasons: Some(vec!["size-cap".into()]),
         }],
         mcp_servers: vec![McpServer {
             id: "s1".into(),

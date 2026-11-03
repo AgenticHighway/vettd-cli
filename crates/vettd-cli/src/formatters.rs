@@ -427,11 +427,32 @@ fn print_artifact_details(report: &ScanReport) {
             println!("    {DIM}Signals:{RESET} {}", a.signals.join(", "));
         }
 
+        if let Some(line) = assessment_line(a) {
+            println!("    {line}");
+        }
         for line in scanner_signal_lines(a) {
             println!("    {line}");
         }
         println!();
     }
+}
+
+/// One line naming an incomplete skill assessment and why (#314), so the
+/// human view never presents "not analyzed" as "nothing found". `None` for
+/// non-skill artifacts and complete assessments.
+fn assessment_line(a: &ArtifactReport) -> Option<String> {
+    if a.artifact_type != "skill" {
+        return None;
+    }
+    let assessment = crate::contract::assess(a.cached_skill_scan.as_ref());
+    if assessment.is_complete() {
+        return None;
+    }
+    Some(format!(
+        "{BOLD}Assessment: {}{RESET} ({}), not graded as trusted",
+        assessment.state,
+        assessment.reasons.join(", ")
+    ))
 }
 
 /// Compact display lines for a skill artifact's scanner-emitted `signals` and
@@ -998,6 +1019,16 @@ mod tests {
         let mut a = make_artifact("skill", 10, SEVERITY_INFO);
         a.cached_scan_result = result;
         a
+    }
+
+    #[test]
+    fn assessment_line_flags_skill_without_scanner_result() {
+        // #314: the human surface must say a skill was not analyzed and why.
+        let a = artifact_with_scanner_result(None);
+        let line = assessment_line(&a).expect("missing result must be shown");
+        assert!(line.contains("failed"), "{line}");
+        assert!(line.contains("missing-result"), "{line}");
+        assert!(assessment_line(&make_artifact("agents_md", 10, SEVERITY_INFO)).is_none());
     }
 
     #[test]

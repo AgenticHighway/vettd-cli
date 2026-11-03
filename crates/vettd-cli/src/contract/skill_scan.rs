@@ -39,7 +39,53 @@ pub(crate) struct SkillStructuralFacts {
 #[derive(Debug, Clone)]
 pub(crate) struct SkillScanOutput {
     pub external: ExternalScannerResult,
-    pub structural: SkillStructuralFacts,
+    /// `None` when the scanner errored: facts it never computed are not
+    /// fabricated as `false`/`0`.
+    pub structural: Option<SkillStructuralFacts>,
+    /// Stable reason codes for analysis that did not cover the whole skill
+    /// (#314). Empty means the scanner saw every file it should have.
+    pub incomplete_reasons: Vec<String>,
+}
+
+/// Whether analysis of one skill covered the whole skill (#314).
+///
+/// Anything but `complete` must never yield an affirmative trust decision: a
+/// reader has to be able to tell "analyzed, nothing found" from "not analyzed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Assessment {
+    /// `complete` | `partial` | `failed` (`unsupported` is reserved in the
+    /// contract and not emitted by this build).
+    pub state: &'static str,
+    pub reasons: Vec<String>,
+}
+
+impl Assessment {
+    pub fn is_complete(&self) -> bool {
+        self.state == "complete"
+    }
+}
+
+/// Derive the assessment state of a skill from its scanner output. A missing
+/// output or a run that did not succeed is `failed`; any recorded shortfall
+/// is `partial`.
+pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
+    let Some(output) = output else {
+        return Assessment {
+            state: "failed",
+            reasons: vec!["missing-result".to_string()],
+        };
+    };
+    let state = if output.external.status != "success" {
+        "failed"
+    } else if !output.incomplete_reasons.is_empty() {
+        "partial"
+    } else {
+        "complete"
+    };
+    Assessment {
+        state,
+        reasons: output.incomplete_reasons.clone(),
+    }
 }
 
 /// Run the skill scanner against the artifact's source directory and return
@@ -64,7 +110,10 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
         skipped,
         excluded: _,
         partial,
+        incomplete_reasons,
     } = load;
+    let mut incomplete_reasons: Vec<String> =
+        incomplete_reasons.iter().map(|r| r.to_string()).collect();
     // The pinned scanner requires a caller-supplied RFC 3339
     // observation time; signals carry it unmodified. The pure scanner never
     // reads a clock, so the CLI stamps "now" here.
@@ -72,8 +121,24 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
     let scan_result = match scan_skill(&text_files, &all_paths, &observed_at) {
         Ok(result) => result,
         Err(e) => {
+            // Report the failed run instead of dropping it: a dropped result
+            // used to grade as a clean A/Trusted (#314).
             eprintln!("Warning: skill scanner error for {skill_md_path}: {e}");
-            return None;
+            incomplete_reasons.insert(0, "scanner-error".to_string());
+            return Some(SkillScanOutput {
+                external: ExternalScannerResult {
+                    source: "vettd".to_string(),
+                    version: Some(CURRENT_SCANNER_VERSION.to_string()),
+                    status: "errored".to_string(),
+                    verdict: None,
+                    raw_report: None,
+                    findings: None,
+                    signals: None,
+                    coverage: None,
+                },
+                structural: None,
+                incomplete_reasons,
+            });
         }
     };
 
@@ -171,14 +236,15 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
                 Some(coverage)
             },
         },
-        structural: SkillStructuralFacts {
+        structural: Some(SkillStructuralFacts {
             file_count: scan_result.file_count,
             has_skill_md: scan_result.has_skill_md,
             has_scripts: scan_result.has_scripts,
             has_references: scan_result.has_references,
             has_evals: scan_result.has_evals,
             has_assets: scan_result.has_assets,
-        },
+        }),
+        incomplete_reasons,
     })
 }
 
@@ -296,12 +362,13 @@ mod tests {
         // all "absent" — but they must still be present, not swallowed.
         let a = skill_artifact_with_path("/nonexistent/SKILL.md");
         let output = run_skill_scanner(&a).unwrap();
-        assert_eq!(output.structural.file_count, 0);
-        assert!(!output.structural.has_skill_md);
-        assert!(!output.structural.has_scripts);
-        assert!(!output.structural.has_references);
-        assert!(!output.structural.has_evals);
-        assert!(!output.structural.has_assets);
+        let structural = output.structural.unwrap();
+        assert_eq!(structural.file_count, 0);
+        assert!(!structural.has_skill_md);
+        assert!(!structural.has_scripts);
+        assert!(!structural.has_references);
+        assert!(!structural.has_evals);
+        assert!(!structural.has_assets);
     }
 
     // ── signals / coverage wire-shape tests ─────────────────────────────

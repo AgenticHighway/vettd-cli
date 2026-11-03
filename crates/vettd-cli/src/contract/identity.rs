@@ -44,6 +44,10 @@ pub(crate) struct SkillFileLoad {
     pub excluded: Vec<String>,
     /// True when a size/count cap cut the scan short.
     pub partial: bool,
+    /// Stable reason codes for every way this load fell short of the whole
+    /// skill (#314): `file-cap`, `size-cap`, `file-unreadable`,
+    /// `unreadable-directory`. Sorted, deduplicated; empty when complete.
+    pub incomplete_reasons: Vec<&'static str>,
 }
 
 /// Walk a skill directory deterministically, apply disclosed exclusions, and
@@ -74,6 +78,8 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         files.truncate(WALK_SAFETY_LIMIT);
     }
 
+    let mut file_cap = files.len() > WALK_SAFETY_LIMIT;
+    let mut size_cap = false;
     let mut text_files: HashMap<String, String> = HashMap::new();
     let mut total_bytes: u64 = 0;
     for rel in &files {
@@ -82,6 +88,7 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         }
         if text_files.len() >= MAX_SKILL_FILES {
             partial = true;
+            file_cap = true;
             continue;
         }
         // Check the size before reading so a pathological file cannot blow up
@@ -89,6 +96,7 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         if let Ok(meta) = fs::metadata(root.join(rel)) {
             if total_bytes + meta.len() > MAX_SKILL_TOTAL_BYTES {
                 partial = true;
+                size_cap = true;
                 continue;
             }
         }
@@ -96,6 +104,7 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
             Ok(content) => {
                 if total_bytes + content.len() as u64 > MAX_SKILL_TOTAL_BYTES {
                     partial = true;
+                    size_cap = true;
                     continue;
                 }
                 total_bytes += content.len() as u64;
@@ -105,14 +114,34 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         }
     }
 
+    let mut incomplete_reasons: Vec<&'static str> = Vec::new();
+    if file_cap {
+        incomplete_reasons.push("file-cap");
+    }
+    if size_cap {
+        incomplete_reasons.push("size-cap");
+    }
+    for entry in &skipped {
+        incomplete_reasons.push(if entry.ends_with(UNREADABLE_DIR_SUFFIX) {
+            "unreadable-directory"
+        } else {
+            "file-unreadable"
+        });
+    }
+    incomplete_reasons.sort_unstable();
+    incomplete_reasons.dedup();
+
     SkillFileLoad {
         text_files,
         all_paths: files,
         skipped,
         excluded,
         partial,
+        incomplete_reasons,
     }
 }
+
+const UNREADABLE_DIR_SUFFIX: &str = "(unreadable directory)";
 
 /// Canonical content digest over a text-file map, matching the hub's
 /// `computeCanonicalSkillHash`: entries sorted bytewise by path, serialized as
@@ -466,7 +495,7 @@ fn collect_files(
         } else {
             rel_prefix
         };
-        skipped.push(format!("{dir_rel}/ (unreadable directory)"));
+        skipped.push(format!("{dir_rel}/ {UNREADABLE_DIR_SUFFIX}"));
         *partial = true;
         return;
     };
@@ -638,6 +667,8 @@ mod tests {
 
         let load = load_skill_files(&root);
         assert!(load.partial);
+        // #314: the cap must be named so the record says why it is partial.
+        assert_eq!(load.incomplete_reasons, vec!["file-cap"]);
         // Deterministic: the 250 lowest sorted paths survive, never a random
         // read_dir-order subset.
         assert_eq!(load.text_files.len(), MAX_SKILL_FILES);
@@ -655,6 +686,7 @@ mod tests {
 
         let load = load_skill_files(&root);
         assert_eq!(load.skipped, vec!["payload.sh".to_string()]);
+        assert_eq!(load.incomplete_reasons, vec!["file-unreadable"]);
         assert!(!load.text_files.contains_key("payload.sh"));
         assert!(load.all_paths.contains(&"payload.sh".to_string()));
         fs::remove_dir_all(&root).unwrap();

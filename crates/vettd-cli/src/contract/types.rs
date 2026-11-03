@@ -147,6 +147,13 @@ pub struct Skill {
     pub identity_exclusions: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lineage: Option<SkillLineage>,
+    // v2.9.0 (#314): whether analysis covered the whole skill, and why not.
+    // Omitted for records that were never scanned (declared tools, MCP
+    // commands); assessmentReasons is omitted when the state is complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assessment_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assessment_reasons: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

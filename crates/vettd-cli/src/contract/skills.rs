@@ -111,10 +111,14 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         .cached_skill_scan
         .clone()
         .or_else(|| super::skill_scan::run_skill_scanner(artifact));
-    let overall_grade =
-        grade_from_scanner_result(scan_output.as_ref().map(|o| &o.external)).to_string();
+    let assessment = super::skill_scan::assess(scan_output.as_ref());
+    let overall_grade = grade_from_scanner_result(
+        scan_output.as_ref().map(|o| &o.external),
+        assessment.is_complete(),
+    )
+    .to_string();
     let trust_level = trust_level_from_grade(&overall_grade).to_string();
-    let structural = scan_output.as_ref().map(|o| &o.structural);
+    let structural = scan_output.as_ref().and_then(|o| o.structural.as_ref());
 
     // Content identity (#274, #130): digest over the whole skill directory
     // (minus disclosed exclusions), the location this copy was found in with
@@ -193,6 +197,8 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         locations,
         identity_exclusions,
         lineage,
+        assessment_state: Some(assessment.state.to_string()),
+        assessment_reasons: (!assessment.reasons.is_empty()).then_some(assessment.reasons),
     };
     // The digest is only a dedup key when it covers the whole skill directory.
     let dedupable = identity_load
@@ -208,7 +214,24 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
 /// - C: any high (< 3), OR ≥ 3 mediums
 /// - B: any medium (< 3), OR ≥ 4 lows
 /// - A: < 4 lows, no mediums/highs/criticals
-fn grade_from_scanner_result(result: Option<&ExternalScannerResult>) -> &'static str {
+///
+/// "A" asserts that the whole skill was analyzed and nothing was found, so it
+/// requires a complete assessment (#314). An incomplete one (missing result,
+/// scanner error, caps, unreadable files) grades "pending" unless the findings
+/// it did produce already prove risk (B/C/F), which stays visible.
+fn grade_from_scanner_result(
+    result: Option<&ExternalScannerResult>,
+    assessment_complete: bool,
+) -> &'static str {
+    let grade = grade_from_findings(result);
+    if grade == "A" && !assessment_complete {
+        "pending"
+    } else {
+        grade
+    }
+}
+
+fn grade_from_findings(result: Option<&ExternalScannerResult>) -> &'static str {
     let findings = match result.and_then(|r| r.findings.as_deref()) {
         Some(f) if !f.is_empty() => f,
         _ => return "A",
@@ -560,6 +583,8 @@ fn extract_mcp_command_skills(
             locations: None,
             identity_exclusions: None,
             lineage: None,
+            assessment_state: None,
+            assessment_reasons: None,
         });
     }
 }
@@ -614,6 +639,8 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         locations: None,
         identity_exclusions: None,
         lineage: None,
+        assessment_state: None,
+        assessment_reasons: None,
     }
 }
 
@@ -993,8 +1020,13 @@ mod tests {
             filepath: None,
         };
 
-        // No findings → A
-        assert_eq!(grade_from_scanner_result(None), "A");
+        // A missing scanner result means nothing was analyzed. It must never
+        // grade A (→ Trusted): that is the #314 trust bug.
+        assert_eq!(grade_from_scanner_result(None, false), "pending");
+        assert_eq!(
+            trust_level_from_grade(grade_from_scanner_result(None, false)),
+            "Conditional"
+        );
 
         // Any critical → F
         let r = ExternalScannerResult {
@@ -1007,21 +1039,21 @@ mod tests {
             signals: None,
             coverage: None,
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "F");
 
         // 3 highs → F
         let r = ExternalScannerResult {
             findings: Some(vec![finding("high"), finding("high"), finding("high")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "F");
 
         // 2 highs → C
         let r = ExternalScannerResult {
             findings: Some(vec![finding("high"), finding("high")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "C");
 
         // 3 mediums → C
         let r = ExternalScannerResult {
@@ -1032,14 +1064,14 @@ mod tests {
             ]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "C");
 
         // 2 mediums → B
         let r = ExternalScannerResult {
             findings: Some(vec![finding("medium"), finding("medium")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "B");
 
         // 4 lows → B
         let r = ExternalScannerResult {
@@ -1051,21 +1083,53 @@ mod tests {
             ]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "B");
 
         // 3 lows → A
         let r = ExternalScannerResult {
             findings: Some(vec![finding("low"), finding("low"), finding("low")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "A");
 
         // info only → A
         let r = ExternalScannerResult {
             findings: Some(vec![finding("info"), finding("info")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "A");
+    }
+
+    #[test]
+    fn incomplete_assessment_never_grades_a_but_keeps_proven_risk() {
+        // #314: "no findings" from a partial or failed analysis is not
+        // evidence of safety, so it must not become A/Trusted. Findings it did
+        // produce are real evidence of risk and must stay visible.
+        let clean = ExternalScannerResult {
+            source: "vettd".to_string(),
+            version: None,
+            status: "success".to_string(),
+            verdict: None,
+            raw_report: None,
+            findings: None,
+            signals: None,
+            coverage: None,
+        };
+        assert_eq!(grade_from_scanner_result(Some(&clean), true), "A");
+        assert_eq!(grade_from_scanner_result(Some(&clean), false), "pending");
+
+        let critical = ExternalScannerResult {
+            findings: Some(vec![crate::contract::types::ExternalScannerFinding {
+                rule_id: String::new(),
+                category: "security".to_string(),
+                severity: "critical".to_string(),
+                label: "test".to_string(),
+                detail: None,
+                filepath: None,
+            }]),
+            ..clean
+        };
+        assert_eq!(grade_from_scanner_result(Some(&critical), false), "F");
     }
 
     #[test]
@@ -1353,14 +1417,15 @@ mod tests {
                 signals: None,
                 coverage: None,
             },
-            structural: SkillStructuralFacts {
+            structural: Some(SkillStructuralFacts {
                 file_count: 7,
                 has_skill_md: true,
                 has_scripts: true,
                 has_references: true,
                 has_evals: false,
                 has_assets: false,
-            },
+            }),
+            incomplete_reasons: Vec::new(),
         });
         (dir, a)
     }
@@ -1429,6 +1494,62 @@ mod tests {
                 "field '{key}' must be omitted when the skill was not scanned"
             );
         }
+    }
+
+    #[test]
+    fn skill_without_scanner_result_is_failed_not_trusted() {
+        // #314: a skill the scanner never produced a result for was not
+        // analyzed. It used to grade A/Trusted; it must instead carry an
+        // explicit failed state with the reason, and no affirmative trust.
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.compute_hash();
+        let s = &build_skills(&[a], &[])[0];
+        assert_eq!(s.overall_grade, "pending");
+        assert_eq!(s.trust_level, "Conditional");
+        assert_eq!(s.assessment_state.as_deref(), Some("failed"));
+        assert_eq!(
+            s.assessment_reasons.as_deref(),
+            Some(&["missing-result".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn errored_or_partial_scan_is_not_trusted_and_keeps_reason() {
+        // #314: a scanner error or a capped/unreadable load produced no
+        // findings because analysis stopped short, not because the skill is
+        // clean. Neither may grade A, and the reason must reach the record.
+        for (status, reason, state) in [
+            ("errored", "scanner-error", "failed"),
+            ("success", "size-cap", "partial"),
+            ("success", "file-unreadable", "partial"),
+        ] {
+            let (_dir, mut a) = artifact_with_scan_output();
+            let out = a.cached_skill_scan.as_mut().unwrap();
+            out.external.status = status.to_string();
+            out.incomplete_reasons = vec![reason.to_string()];
+            let s = &build_skills(&[a], &[])[0];
+            assert_eq!(s.overall_grade, "pending", "{reason}");
+            assert_ne!(s.trust_level, "Trusted", "{reason}");
+            assert_eq!(s.assessment_state.as_deref(), Some(state), "{reason}");
+            assert_eq!(
+                s.assessment_reasons.as_deref(),
+                Some(&[reason.to_string()][..])
+            );
+        }
+    }
+
+    #[test]
+    fn complete_clean_scan_stays_distinguishable_from_incomplete() {
+        // #314: "fully analyzed, nothing found" must still read as A/Trusted
+        // with an explicit complete state, and no reasons.
+        let (_dir, a) = artifact_with_scan_output();
+        let s = &build_skills(&[a], &[])[0];
+        assert_eq!(s.overall_grade, "A");
+        assert_eq!(s.trust_level, "Trusted");
+        assert_eq!(s.assessment_state.as_deref(), Some("complete"));
+        let obj = serde_json::to_value(s).unwrap();
+        assert_eq!(obj["assessmentState"], "complete");
+        assert!(obj.get("assessmentReasons").is_none());
     }
 
     #[test]
