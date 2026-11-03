@@ -31,7 +31,8 @@ const NON_FORENSIC_EXCLUDED_DIRS: &[&str] = &[
     "venv",
     "node_modules",
     "dist",
-    "build",
+    // `build` is deliberately not pruned: skills ship under build/ and were
+    // silently missing from inventory (#316).
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -722,6 +723,26 @@ mod tests {
         let candidates = walk_bounded(tmp.path(), "test", None);
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].path.ends_with("src/main.rs"));
+    }
+
+    #[test]
+    fn walk_bounded_finds_skill_under_build_dir() {
+        // #316: discovery pruned build/, so skills there vanished from the
+        // inventory without a reason. They must be discovered.
+        let tmp = TempDir::new().unwrap();
+        let skill = tmp.path().join("build").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "# demo\n").unwrap();
+
+        let candidates = walk_bounded(tmp.path(), "test", None);
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.path.ends_with("build/demo/SKILL.md")),
+            "{candidates:?}"
+        );
+        let deep = walk_deep_workdir(tmp.path(), "test", None);
+        assert!(deep.iter().any(|c| c.path.ends_with("build/demo/SKILL.md")));
     }
 
     #[test]
