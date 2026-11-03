@@ -36,6 +36,65 @@ const OS_JUNK: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
 const INSTALLED_MARKERS: [&str; 6] = [
     ".claude/", ".codex/", ".cursor/", ".vscode/", ".config/", ".agents/",
 ];
+/// Upper bound on a `.gitignore` this loader will read. Rules from a larger
+/// file would only ever exclude more, so a truncated read stays conservative.
+const MAX_IGNORE_FILE_BYTES: u64 = 1024 * 1024;
+/// Maximum directory nesting either walk follows. No skill bundle is nested
+/// this deeply, and unbounded recursion risks exhausting the stack (#315/N5).
+const MAX_WALK_DEPTH: usize = 64;
+
+/// Open a file for reading without blocking and without following a final
+/// symlink.
+///
+/// The returned descriptor is only handed out for a regular file: the check
+/// runs on the *opened* descriptor, so a regular file swapped for a FIFO
+/// between the `file_type()` check and this open cannot block the scan
+/// waiting for a writer (#315/N2).
+fn open_regular_file(path: &Path) -> Option<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    Some(file)
+}
+
+/// Outcome of one bounded text read.
+enum TextRead {
+    Text(String),
+    /// The file holds more bytes than the caller allows.
+    TooLarge,
+    /// Not a regular file, not valid UTF-8, or not readable.
+    Unreadable,
+}
+
+/// Read at most `limit` bytes from a regular file, through a bounded reader.
+///
+/// Reads one byte past the bound to tell "exactly at the limit" from "over it",
+/// so a caller never silently analyzes a truncated prefix.
+fn read_text_file(path: &Path, limit: u64) -> TextRead {
+    let Some(file) = open_regular_file(path) else {
+        return TextRead::Unreadable;
+    };
+    let mut bytes = Vec::new();
+    let mut limited = file.take(limit.saturating_add(1));
+    if limited.read_to_end(&mut bytes).is_err() {
+        return TextRead::Unreadable;
+    }
+    if bytes.len() as u64 > limit {
+        return TextRead::TooLarge;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => TextRead::Text(text),
+        Err(_) => TextRead::Unreadable,
+    }
+}
 
 /// Result of loading a skill directory for scanning and identity.
 pub(crate) struct SkillFileLoad {
@@ -59,6 +118,12 @@ pub(crate) struct SkillFileLoad {
     /// when some entry could not be read, so it can never vouch for bytes it
     /// did not see (#315).
     pub bundle_digest: Option<String>,
+    /// Digest of the loader state that shapes the assessment but not the
+    /// content hashes: every entry's path, kind and exec bit, plus how the load
+    /// fell short. A cached assessment is only reusable when this matches too,
+    /// because a chmod alone can turn inert content into unanalyzed risk
+    /// (#314/N1).
+    pub assessment_fingerprint: String,
 }
 
 /// Walk a skill directory deterministically, apply disclosed exclusions, and
@@ -70,15 +135,28 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
 /// [`load_skill_files`] with an injectable walk budget, so the cap behaviour is
 /// testable without building a ten-thousand-entry tree.
 fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFileLoad {
+    load_skill_files_with(root, walk_limit, &|| {})
+}
+
+/// [`load_skill_files_with_walk_limit`] with a seam between the analysis read
+/// and the bundle walk. Production passes a no-op; a test uses it to mutate the
+/// tree at exactly the point where the two passes used to read independently
+/// (#315/N3).
+fn load_skill_files_with(
+    root: &Path,
+    walk_limit: usize,
+    between_phases: &dyn Fn(),
+) -> SkillFileLoad {
     let mut walk = AnalysisWalk {
         files: Vec::new(),
         excluded: Vec::new(),
         skipped: Vec::new(),
         rules: Vec::new(),
         partial: false,
+        depth_capped: false,
         budget: WalkBudget::new(walk_limit),
     };
-    collect_files(root, "", &mut walk);
+    collect_files(root, "", 0, &mut walk);
     let mut files = walk.files;
     let mut excluded = walk.excluded;
     let mut skipped = walk.skipped;
@@ -89,7 +167,7 @@ fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFile
     skipped.sort();
 
     // Record the cap before truncating: checking afterwards is always false.
-    let mut file_cap = budget.capped;
+    let mut file_cap = budget.capped || walk.depth_capped;
     if files.len() > walk_limit {
         partial = true;
         file_cap = true;
@@ -98,6 +176,10 @@ fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFile
 
     let mut size_cap = false;
     let mut text_files: HashMap<String, String> = HashMap::new();
+    // SHA-256 of the bytes actually analyzed, per path. The bundle walk reuses
+    // it instead of reopening the file, so the identity and the scan can never
+    // describe two different versions of the same file (#315/N3).
+    let mut analyzed_hashes: HashMap<String, String> = HashMap::new();
     let mut total_bytes: u64 = 0;
     for rel in &files {
         if !is_likely_text(Path::new(rel)) {
@@ -108,26 +190,23 @@ fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFile
             file_cap = true;
             continue;
         }
-        // Check the size before reading so a pathological file cannot blow up
+        // One bounded, non-blocking read: the cap is enforced on the bytes read
+        // rather than on a separate stat, so a file that grows cannot blow up
         // memory before the cap is noticed.
-        if let Ok(meta) = fs::metadata(root.join(rel)) {
-            if total_bytes + meta.len() > MAX_SKILL_TOTAL_BYTES {
-                partial = true;
-                size_cap = true;
-                continue;
-            }
-        }
-        match fs::read_to_string(root.join(rel)) {
-            Ok(content) => {
-                if total_bytes + content.len() as u64 > MAX_SKILL_TOTAL_BYTES {
-                    partial = true;
-                    size_cap = true;
-                    continue;
-                }
+        let remaining = MAX_SKILL_TOTAL_BYTES.saturating_sub(total_bytes);
+        match read_text_file(&root.join(rel), remaining) {
+            TextRead::Text(content) => {
+                let mut hasher = Sha256::new();
+                hasher.update(content.as_bytes());
+                analyzed_hashes.insert(rel.clone(), format!("{:x}", hasher.finalize()));
                 total_bytes += content.len() as u64;
                 text_files.insert(rel.clone(), content);
             }
-            Err(_) => skipped.push(rel.clone()),
+            TextRead::TooLarge => {
+                partial = true;
+                size_cap = true;
+            }
+            TextRead::Unreadable => skipped.push(rel.clone()),
         }
     }
 
@@ -145,7 +224,8 @@ fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFile
             "file-unreadable"
         });
     }
-    let bundle = walk_bundle(root, walk_limit);
+    between_phases();
+    let bundle = walk_bundle(root, walk_limit, &analyzed_hashes);
     // The bundle walk stopping short means the digest could not cover every
     // byte, which is itself an incomplete analysis on top of any scan cap.
     if bundle.capped {
@@ -203,8 +283,52 @@ fn load_skill_files_with_walk_limit(root: &Path, walk_limit: usize) -> SkillFile
         skipped,
         excluded,
         partial,
-        incomplete_reasons,
+        incomplete_reasons: incomplete_reasons.clone(),
         bundle_digest: bundle.digest,
+        assessment_fingerprint: assessment_fingerprint(
+            &bundle.entries,
+            &incomplete_reasons,
+            partial,
+        ),
+    }
+}
+
+/// Digest of everything that shapes an assessment without moving a content
+/// hash: each bundle entry's path, kind and exec bit, plus the reason list.
+///
+/// Two loads with equal content hashes but a different fingerprint assess
+/// differently, so a cached assessment must not be reused across them
+/// (#314/N1).
+fn assessment_fingerprint(
+    entries: &[BundleEntry],
+    reasons: &[&'static str],
+    partial: bool,
+) -> String {
+    let mut rows: Vec<(&str, &'static str, bool)> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.as_str(),
+                entry_kind_name(entry.kind),
+                entry.executable,
+            )
+        })
+        .collect();
+    rows.sort_unstable();
+    let state = serde_json::json!({
+        "entries": rows,
+        "reasons": reasons,
+        "partial": partial,
+    });
+    format!("{:x}", Sha256::digest(state.to_string().as_bytes()))
+}
+
+fn entry_kind_name(kind: BundleEntryKind) -> &'static str {
+    match kind {
+        BundleEntryKind::File => "file",
+        BundleEntryKind::Symlink => "symlink",
+        BundleEntryKind::Special => "special",
+        BundleEntryKind::Unreadable => "unreadable",
     }
 }
 
@@ -275,7 +399,7 @@ struct BundleWalk {
 /// separators are normalized), so a literal backslash never aliases a
 /// separator. `None` when any entry was unreadable, too large, or the walk hit
 /// the entry budget: the digest must never vouch for bytes it did not see.
-fn walk_bundle(root: &Path, walk_limit: usize) -> BundleWalk {
+fn walk_bundle(root: &Path, walk_limit: usize, analyzed: &HashMap<String, String>) -> BundleWalk {
     let mut walk = BundleWalk {
         entries: Vec::new(),
         digest: None,
@@ -285,8 +409,8 @@ fn walk_bundle(root: &Path, walk_limit: usize) -> BundleWalk {
     };
     let mut records: Vec<(String, &'static str, String)> = Vec::new();
     let mut budget = WalkBudget::new(walk_limit);
-    walk_bundle_dir(root, "", &mut walk, &mut records, &mut budget);
-    walk.capped = budget.capped;
+    walk_bundle_dir(root, "", 0, &mut walk, &mut records, &mut budget, analyzed);
+    walk.capped |= budget.capped;
     if walk.unreadable || walk.oversize || walk.capped {
         return walk;
     }
@@ -299,10 +423,18 @@ fn walk_bundle(root: &Path, walk_limit: usize) -> BundleWalk {
 fn walk_bundle_dir(
     dir: &Path,
     rel_prefix: &str,
+    depth: usize,
     walk: &mut BundleWalk,
     records: &mut Vec<(String, &'static str, String)>,
     budget: &mut WalkBudget,
+    analyzed: &HashMap<String, String>,
 ) {
+    if depth > MAX_WALK_DEPTH {
+        // Reported as `file-cap`: the contract's reason vocabulary is frozen at
+        // 2.9.0, and this is a structural walk bound, not a content shortfall.
+        walk.capped = true;
+        return;
+    }
     let Ok(read_dir) = fs::read_dir(dir) else {
         walk.unreadable = true;
         return;
@@ -336,9 +468,22 @@ fn walk_bundle_dir(
         };
         if file_type.is_dir() {
             if !VCS_DIRS.contains(&name.as_str()) {
-                walk_bundle_dir(&entry.path(), &rel, walk, records, budget);
+                walk_bundle_dir(
+                    &entry.path(),
+                    &rel,
+                    depth + 1,
+                    walk,
+                    records,
+                    budget,
+                    analyzed,
+                );
             }
         } else if file_type.is_symlink() {
+            // Analyzed bytes were read from what used to be a regular file; a
+            // symlink standing there now cannot be vouched for.
+            if analyzed.contains_key(&rel) {
+                walk.unreadable = true;
+            }
             match symlink_target(&entry.path()) {
                 Some(target) => {
                     records.push((rel.clone(), "symlink", target));
@@ -358,7 +503,14 @@ fn walk_bundle_dir(
                 }
             }
         } else if file_type.is_file() {
-            match hash_bundle_file(&entry.path()) {
+            // An analyzed file's hash comes from the bytes the scan actually
+            // saw, never from a second read (#315/N3).
+            let known = analyzed.get(&rel).cloned();
+            let outcome = match known {
+                Some(hash) => HashOutcome::Hashed(hash),
+                None => hash_bundle_file(&entry.path()),
+            };
+            match outcome {
                 HashOutcome::Hashed(hash) => {
                     records.push((rel.clone(), "file", hash));
                     walk.entries.push(BundleEntry {
@@ -415,23 +567,18 @@ enum HashOutcome {
     Unreadable,
 }
 
-/// SHA-256 of a regular file's bytes, bounded. Never opens a non-regular file;
-/// re-checks the type after opening to guard against a replacement race.
+/// SHA-256 of a regular file's bytes, bounded. Opens without blocking and
+/// without following a symlink, and checks the *opened* descriptor's type, so a
+/// regular file swapped for a FIFO cannot hang the scan (#315/N2).
 fn hash_bundle_file(path: &Path) -> HashOutcome {
-    let Ok(metadata) = fs::metadata(path) else {
+    let Some(file) = open_regular_file(path) else {
         return HashOutcome::Unreadable;
     };
-    if !metadata.is_file() {
-        return HashOutcome::Unreadable;
-    }
-    if metadata.len() > MAX_BUNDLE_ENTRY_BYTES {
+    if file
+        .metadata()
+        .is_ok_and(|m| m.len() > MAX_BUNDLE_ENTRY_BYTES)
+    {
         return HashOutcome::TooLarge;
-    }
-    let Ok(file) = fs::File::open(path) else {
-        return HashOutcome::Unreadable;
-    };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return HashOutcome::Unreadable;
     }
     let mut hasher = Sha256::new();
     let mut limited = file.take(MAX_BUNDLE_ENTRY_BYTES + 1);
@@ -628,6 +775,13 @@ fn native_git_relative_path(rel: &Path) -> Option<String> {
     }
 }
 
+/// Index extensions this reader understands well enough to skip. Any other
+/// *required* extension (one whose signature does not start with an uppercase
+/// byte) means the index is not safe to trust.
+const KNOWN_INDEX_EXTENSIONS: [&[u8; 4]; 8] = [
+    b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT", b"link", b"sdir",
+];
+
 /// Entry paths from a git index (`DIRC`, versions 2 and 3). Version 4
 /// (prefix-compressed paths) and anything structurally invalid return `None`:
 /// entry padding, the extension section, and the trailing SHA-1 checksum are
@@ -664,6 +818,19 @@ fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
         let name_end = name_at + nul;
         // A path the index cannot represent losslessly is not trusted.
         let name = String::from_utf8(data.get(name_at..name_end)?.to_vec()).ok()?;
+        // The low 12 bits declare the path length (vettd#1216/N4). Git writes
+        // `0xfff` for any name at least that long; every other entry must agree
+        // with the length actually delimited by the NUL, or the entry boundaries
+        // this reader derives are not the ones git wrote.
+        let declared_len = usize::from(flags & 0x0fff);
+        let length_ok = if declared_len == 0x0fff {
+            name.len() >= 0x0fff
+        } else {
+            declared_len == name.len()
+        };
+        if !length_ok {
+            return None;
+        }
         // Entries are NUL-padded (at least one NUL) to a multiple of 8 bytes.
         let entry_len = (name_end - pos + 1).div_ceil(8) * 8;
         let entry_end = pos.checked_add(entry_len)?;
@@ -680,9 +847,17 @@ fn index_paths(git_dir: &Path) -> Option<Vec<String>> {
     // Optional extension headers must tile the gap up to the trailer exactly.
     while pos < body_end {
         let header = data.get(pos..pos + 8)?;
+        let signature: [u8; 4] = header[0..4].try_into().ok()?;
         let size = u32::from_be_bytes(header[4..8].try_into().ok()?) as usize;
         pos = pos.checked_add(8)?.checked_add(size)?;
         if pos > body_end {
+            return None;
+        }
+        // Extensions named with a leading uppercase byte are optional and may be
+        // skipped. Anything else is a required extension this reader does not
+        // understand, so the entry data it would rely on is not trustworthy
+        // (vettd#1216/N4).
+        if !KNOWN_INDEX_EXTENSIONS.contains(&&signature) && !signature[0].is_ascii_uppercase() {
             return None;
         }
     }
@@ -983,10 +1158,34 @@ struct AnalysisWalk {
     skipped: Vec<String>,
     rules: Vec<IgnoreRule>,
     partial: bool,
+    /// The tree was deeper than [`MAX_WALK_DEPTH`]. A walk bound, reported as
+    /// `file-cap` because the reason vocabulary is frozen at contract 2.9.0.
+    depth_capped: bool,
     budget: WalkBudget,
 }
 
-fn collect_files(dir: &Path, rel_prefix: &str, walk: &mut AnalysisWalk) {
+/// Enumerate one directory, stopping as soon as the entry budget is spent, so a
+/// hostile flat directory cannot be materialised in full before the bound is
+/// consulted (#315/N5).
+fn read_dir_bounded(read_dir: fs::ReadDir, budget: &mut WalkBudget) -> Vec<fs::DirEntry> {
+    let mut entries = Vec::new();
+    for entry in read_dir {
+        if !budget.claim() {
+            break;
+        }
+        if let Ok(entry) = entry {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn collect_files(dir: &Path, rel_prefix: &str, depth: usize, walk: &mut AnalysisWalk) {
+    if depth > MAX_WALK_DEPTH {
+        walk.depth_capped = true;
+        walk.partial = true;
+        return;
+    }
     let Ok(read_dir) = fs::read_dir(dir) else {
         // An unreadable directory truncates the scan — report it, never silent.
         let dir_rel = if rel_prefix.is_empty() {
@@ -999,7 +1198,12 @@ fn collect_files(dir: &Path, rel_prefix: &str, walk: &mut AnalysisWalk) {
         walk.partial = true;
         return;
     };
-    let mut entries: Vec<fs::DirEntry> = read_dir.flatten().collect();
+    // The budget is spent while enumerating, so a directory with millions of
+    // entries cannot be collected before the cap is consulted.
+    let mut entries = read_dir_bounded(read_dir, &mut walk.budget);
+    if walk.budget.capped {
+        walk.partial = true;
+    }
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
     // Load this directory's own .gitignore before walking its entries: they are
     // sorted by name, so `.env` would otherwise be read before its rule exists.
@@ -1013,18 +1217,13 @@ fn collect_files(dir: &Path, rel_prefix: &str, walk: &mut AnalysisWalk) {
     });
     if let Some(entry) = gitignore {
         if !matches_ignore(&gitignore_rel, &walk.rules) {
-            if let Ok(content) = fs::read_to_string(entry.path()) {
+            if let TextRead::Text(content) = read_text_file(&entry.path(), MAX_IGNORE_FILE_BYTES) {
                 walk.rules.extend(parse_gitignore(&content, rel_prefix));
             }
         }
     }
     for entry in entries {
-        // The budget counts every entry, directories included, and is checked
-        // inside the loop: a flat tree cannot overshoot it in one pass.
-        if !walk.budget.claim() {
-            walk.partial = true;
-            return;
-        }
+        // Every entry was already claimed from the budget during enumeration.
         let name = entry.file_name().to_string_lossy().to_string();
         let rel = if rel_prefix.is_empty() {
             name.clone()
@@ -1041,7 +1240,7 @@ fn collect_files(dir: &Path, rel_prefix: &str, walk: &mut AnalysisWalk) {
                 walk.excluded.push(format!("{rel}/"));
                 continue;
             }
-            collect_files(&entry.path(), &rel, walk);
+            collect_files(&entry.path(), &rel, depth + 1, walk);
         } else if file_type.is_file() {
             if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(&name)) {
                 walk.excluded.push(rel);
@@ -1772,6 +1971,197 @@ mod tests {
         fs::write(&index_file, &bad_padding).unwrap();
         assert_eq!(both_surfaces(&skill), (false, false), "bad padding");
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── second-round review: snapshot, bounds, index flags (#315/#1216) ──
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_replacement_never_blocks_a_read() {
+        // Why this matters: `File::open` ran *before* the descriptor type check,
+        // so a regular file swapped for a FIFO blocked the scan until a writer
+        // appeared — the guard was never reached.
+        let root = fixture_root("fifo-open");
+        let fifo = root.join("SKILL.md");
+        if !make_fifo(&fifo) {
+            eprintln!("SKIPPED fifo_replacement_never_blocks_a_read: mkfifo unavailable");
+            return;
+        }
+        let path = fifo.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let text_refused = matches!(read_text_file(&path, 1024), TextRead::Unreadable);
+            let hash_refused = matches!(hash_bundle_file(&path), HashOutcome::Unreadable);
+            let _ = tx.send((text_refused, hash_refused));
+        });
+        let outcome = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("opening a FIFO must never block");
+        assert_eq!(outcome, (true, true), "a FIFO is never readable text");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bundle_digest_covers_the_bytes_that_were_analyzed() {
+        // Why this matters: text was read for the scan, then the bundle walk
+        // reopened and hashed every file. A change in between paired the old
+        // analyzed text with a digest of the new bytes, so "one snapshot" was
+        // not true even without cache reuse.
+        let root = fixture_root("phase-change");
+        fs::write(root.join("SKILL.md"), "# old\n").unwrap();
+        let hook_root = root.clone();
+        let load = load_skill_files_with(&root, WALK_SAFETY_LIMIT, &move || {
+            fs::write(hook_root.join("SKILL.md"), "# new\n").unwrap();
+        });
+        assert_eq!(
+            load.text_files.get("SKILL.md").map(String::as_str),
+            Some("# old\n")
+        );
+        let expected = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_string(&vec![(
+                    "SKILL.md".to_string(),
+                    "file",
+                    format!("{:x}", Sha256::digest(b"# old\n")),
+                )])
+                .unwrap()
+                .as_bytes()
+            )
+        );
+        assert_eq!(
+            load.bundle_digest.as_deref(),
+            Some(expected.as_str()),
+            "the digest must describe the analyzed bytes, not a later read"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn directory_enumeration_stops_at_the_budget() {
+        // Why this matters: `read_dir.flatten().collect()` materialised a whole
+        // directory before the budget was consulted, so a hostile flat tree
+        // could exhaust memory without ever reaching the cap.
+        let root = fixture_root("bounded-readdir");
+        for i in 0..40 {
+            fs::write(root.join(format!("f{i:02}.md")), "x").unwrap();
+        }
+        let mut budget = WalkBudget::new(10);
+        let entries = read_dir_bounded(fs::read_dir(&root).unwrap(), &mut budget);
+        assert_eq!(entries.len(), 10);
+        assert!(budget.capped);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deep_tree_is_incomplete_instead_of_recursing() {
+        // Why this matters: recursion had no depth guard, so a pathologically
+        // deep tree was walked to the end (and could exhaust the stack) while
+        // the analysis still reported complete.
+        let root = fixture_root("deep-tree");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        let mut dir = root.clone();
+        for _ in 0..(MAX_WALK_DEPTH + 4) {
+            dir.push("d");
+            fs::create_dir(&dir).unwrap();
+        }
+        let load = load_skill_files(&root);
+        assert!(load.partial, "a depth-bound walk must be partial");
+        assert!(
+            load.incomplete_reasons.contains(&"file-cap"),
+            "{:?}",
+            load.incomplete_reasons
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Rewrite the 16-bit flags of one entry and re-seal the checksum, so the
+    /// only thing wrong with the index is what the test wants it to be.
+    #[cfg(test)]
+    fn patch_index_flags(git_dir: &Path, target: &str, flags: u16) {
+        let index = git_dir.join("index");
+        let mut data = fs::read(&index).unwrap();
+        let body_end = data.len() - 20;
+        let at = data[..body_end]
+            .windows(target.len())
+            .position(|window| window == target.as_bytes())
+            .expect("fixture index must contain the path");
+        let flags_at = at - 2;
+        data[flags_at..flags_at + 2].copy_from_slice(&flags.to_be_bytes());
+        let checksum = sha1_digest(&data[..body_end]);
+        let len = data.len();
+        data[len - 20..].copy_from_slice(&checksum);
+        fs::write(&index, data).unwrap();
+    }
+
+    /// Append one extension header and re-seal the checksum.
+    #[cfg(test)]
+    fn append_index_extension(git_dir: &Path, signature: &[u8; 4], body: &[u8]) {
+        let index = git_dir.join("index");
+        let mut data = fs::read(&index).unwrap();
+        let body_end = data.len() - 20;
+        data.truncate(body_end);
+        data.extend_from_slice(signature);
+        data.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        data.extend_from_slice(body);
+        let checksum = sha1_digest(&data);
+        let len = data.len();
+        data.extend_from_slice(&checksum);
+        assert_eq!(data.len(), len + 20);
+        fs::write(&index, data).unwrap();
+    }
+
+    #[test]
+    fn checksum_valid_index_with_a_lying_path_length_is_rejected() {
+        // Why this matters: the reader parsed the flags but never compared the
+        // declared pathname length to the NUL-terminated name, so an index that
+        // real git rejects (checksum valid, length wrong) still granted
+        // provenance to a bundle.
+        let root = fixture_repo("index-flags");
+        fs::create_dir_all(root.join("skills/own")).unwrap();
+        let skill = root.join("skills/own/SKILL.md");
+        fs::write(&skill, "# own\n").unwrap();
+        let git_dir = root.join(".git");
+        write_test_index(&git_dir, &["skills/own/SKILL.md"]);
+        assert_eq!(both_surfaces(&skill), (true, true));
+
+        // The name is 19 bytes long; the flags claim 1.
+        patch_index_flags(&git_dir, "skills/own/SKILL.md", 1);
+        assert_eq!(
+            both_surfaces(&skill),
+            (false, false),
+            "declared name length disagrees with the name"
+        );
+
+        // A required extension this reader does not understand.
+        write_test_index(&git_dir, &["skills/own/SKILL.md"]);
+        assert_eq!(both_surfaces(&skill), (true, true));
+        append_index_extension(&git_dir, b"abcd", b"payload");
+        assert_eq!(
+            both_surfaces(&skill),
+            (false, false),
+            "an unknown required extension must fail closed"
+        );
+
+        // An optional extension may be skipped.
+        write_test_index(&git_dir, &["skills/own/SKILL.md"]);
+        append_index_extension(&git_dir, b"Abcd", b"payload");
+        assert_eq!(
+            both_surfaces(&skill),
+            (true, true),
+            "an unknown optional extension is skippable"
+        );
+
+        // `0xfff` is a lower bound, so a 19-byte name declared as 0xfff is
+        // malformed too.
+        write_test_index(&git_dir, &["skills/own/SKILL.md"]);
+        patch_index_flags(&git_dir, "skills/own/SKILL.md", 0x0fff);
+        assert_eq!(
+            both_surfaces(&skill),
+            (false, false),
+            "0xfff claims a name at least that long"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

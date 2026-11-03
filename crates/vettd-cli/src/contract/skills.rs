@@ -1514,6 +1514,7 @@ mod tests {
             complete: !load.partial && load.skipped.is_empty() && load.bundle_digest.is_some(),
             bundle_digest: load.bundle_digest.clone(),
             exclusions: load.excluded.clone(),
+            assessment_fingerprint: load.assessment_fingerprint.clone(),
         };
         a.cached_skill_scan = Some(SkillScanOutput {
             external: ExternalScannerResult {

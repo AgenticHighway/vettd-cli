@@ -49,6 +49,11 @@ pub(crate) struct SkillIdentity {
     /// True only when the load covered the whole bundle and produced a digest,
     /// so the bundle digest is safe to use as an identity key.
     pub complete: bool,
+    /// Fingerprint of the loader state that shapes the assessment — entry kinds,
+    /// exec bits and the shortfall reasons. Content hashes are mode-independent
+    /// by agreement, so a cached assessment is only valid when this matches too
+    /// (#314/N1).
+    pub assessment_fingerprint: String,
 }
 
 /// Full output of one skill scan: the contract-shaped `ExternalScannerResult`
@@ -142,6 +147,7 @@ impl SkillScanOutput {
         let load = identity::load_skill_files(root);
         load.bundle_digest.as_deref() == Some(cached_digest)
             && identity::canonical_digest(&load.text_files) == self.identity.content_hash
+            && load.assessment_fingerprint == self.identity.assessment_fingerprint
     }
 }
 
@@ -186,12 +192,14 @@ fn run_skill_scanner_with_observed_at(
         partial,
         incomplete_reasons,
         bundle_digest,
+        assessment_fingerprint,
     } = load;
     let identity = SkillIdentity {
         content_hash: identity::canonical_digest(&text_files),
         complete: !partial && skipped.is_empty() && bundle_digest.is_some(),
         bundle_digest,
         exclusions: excluded,
+        assessment_fingerprint,
     };
     let mut incomplete_reasons: Vec<String> =
         incomplete_reasons.iter().map(|r| r.to_string()).collect();
@@ -858,6 +866,45 @@ mod tests {
         assert!(
             !assessment.reasons.is_empty(),
             "partial must always carry a reason"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chmod_only_change_invalidates_a_cached_complete_assessment() {
+        // Why this matters: cache validation compared only the mode-independent
+        // content hashes, so a chmod that turned an inert helper into an
+        // unanalyzed executable still reused the cached complete assessment —
+        // a live path from currently-incomplete content to a trusted result.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_skill_dir("chmod-cache");
+        std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
+        let helper = dir.join("helper.data");
+        std::fs::write(&helper, "payload").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let artifact = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
+        let cached = run_skill_scanner(&artifact).unwrap();
+        assert_eq!(assess(Some(&cached)).state, "complete");
+
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut stale = artifact.clone();
+        stale.cached_skill_scan = Some(cached);
+
+        let fresh = output_for(&stale).expect("the skill is still loadable");
+        assert_eq!(
+            assess(Some(&fresh)).state,
+            "partial",
+            "a chmod-only change to risky content must not reuse the cache"
+        );
+        assert!(
+            fresh
+                .incomplete_reasons
+                .contains(&"unanalyzed-content".to_string()),
+            "{:?}",
+            fresh.incomplete_reasons
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
