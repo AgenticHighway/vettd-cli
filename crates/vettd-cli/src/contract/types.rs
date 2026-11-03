@@ -154,6 +154,11 @@ pub struct Skill {
     pub assessment_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assessment_reasons: Option<Vec<String>>,
+    // v2.9.0 (#315): digest over every byte under the skill root (ignored
+    // files, binaries, symlink targets included; modes excluded). Omitted when
+    // an entry could not be read. contentHash is unchanged (hub parity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,10 +31,14 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
             // A digest only proves identity when it covers the whole skill.
             // Partial or lossy loads must never merge with another copy whose
             // digest happens to match on the subset that was read (#204/#274).
+            // Key on the bundle digest when present: copies whose analyzed
+            // text matches but whose other bytes (ignored scripts, binaries,
+            // symlinks) differ are different assets (#315).
             let key = if dedupable {
                 skill
-                    .content_hash
+                    .bundle_digest
                     .clone()
+                    .or_else(|| skill.content_hash.clone())
                     .unwrap_or_else(|| skill.id.clone())
             } else {
                 format!(
@@ -199,6 +203,9 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         lineage,
         assessment_state: Some(assessment.state.to_string()),
         assessment_reasons: (!assessment.reasons.is_empty()).then_some(assessment.reasons),
+        bundle_digest: identity_load
+            .as_ref()
+            .and_then(|load| load.bundle_digest.clone()),
     };
     // The digest is only a dedup key when it covers the whole skill directory.
     let dedupable = identity_load
@@ -585,6 +592,7 @@ fn extract_mcp_command_skills(
             lineage: None,
             assessment_state: None,
             assessment_reasons: None,
+            bundle_digest: None,
         });
     }
 }
@@ -641,6 +649,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         lineage: None,
         assessment_state: None,
         assessment_reasons: None,
+        bundle_digest: None,
     }
 }
 
@@ -1494,6 +1503,27 @@ mod tests {
                 "field '{key}' must be omitted when the skill was not scanned"
             );
         }
+    }
+
+    #[test]
+    fn copies_differing_only_in_ignored_bytes_are_not_merged() {
+        // #315: two copies with the same analyzed text but a different
+        // gitignored script are different installable bundles. Merging them
+        // would let one inherit the other's identity and result.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifacts = Vec::new();
+        for (copy, hook) in [("a", "echo one\n"), ("b", "echo two\n")] {
+            let root = dir.path().join(copy).join("demo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+            std::fs::write(root.join(".gitignore"), "hook.sh\n").unwrap();
+            std::fs::write(root.join("hook.sh"), hook).unwrap();
+            artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+        }
+        let skills = build_skills(&artifacts, &[]);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].content_hash, skills[1].content_hash);
+        assert_ne!(skills[0].bundle_digest, skills[1].bundle_digest);
     }
 
     #[test]

@@ -111,6 +111,7 @@ pub(crate) fn run_skill_scanner(artifact: &ArtifactReport) -> Option<SkillScanOu
         excluded: _,
         partial,
         incomplete_reasons,
+        bundle_digest: _,
     } = load;
     let mut incomplete_reasons: Vec<String> =
         incomplete_reasons.iter().map(|r| r.to_string()).collect();

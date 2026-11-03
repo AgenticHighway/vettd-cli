@@ -635,6 +635,10 @@
 						"type": "array",
 						"description": "Stable reason codes for an incomplete assessment (v2.9.0): scanner-error, missing-result, file-unreadable, unreadable-directory, file-cap, size-cap, unanalyzed-content. Omitted when complete.",
 						"items": {"type": "string"}
+					},
+					"bundleDigest": {
+						"type": "string",
+						"description": "Digest of every byte under the skill root except VCS metadata, including files the analysis excluded (.gitignore-ignored, binaries, non-text extensions) (v2.9.0): SHA-256 hex of the JSON array of [path, kind, value] sorted bytewise by '/'-separated path, where kind is 'file' (value: SHA-256 hex of raw bytes) or 'symlink' (value: link target, not followed). File modes are excluded so the digest is identical across platforms. Omitted when any entry could not be read. Any change to the installable bytes changes it; contentHash covers only analyzed text."
 					}
 			}
 			}

@@ -361,6 +361,8 @@ const SKILL_FIELDS: &[&str] = &[
     // Assessment completeness (v2.9.0, #314)
     "assessmentState",
     "assessmentReasons",
+    // Whole-bundle identity (v2.9.0, #315)
+    "bundleDigest",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -771,6 +773,7 @@ pub(crate) fn max_payload() -> ContractPayload {
             }),
             assessment_state: Some("partial".into()),
             assessment_reasons: Some(vec!["size-cap".into()]),
+            bundle_digest: Some("fed987".into()),
         }],
         mcp_servers: vec![McpServer {
             id: "s1".into(),
