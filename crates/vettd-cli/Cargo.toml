@@ -45,5 +45,5 @@ base64 = "0.22"
 libc = "0.2"
 
 [dev-dependencies]
-httpmock = "=0.8.2"
+httpmock = "=0.9.0"
 tempfile = "3"
