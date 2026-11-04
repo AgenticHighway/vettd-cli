@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "description": "Shared grade and trust-level definition (vettd#1213). Kept byte-identical in vettd (packages/api/src/scan/trust-definitions.json) and vettd-cli (trust-definitions.json); both test suites assert every case.",
+  "rules": {
+    "grade": "The findings grade (A/B/C/F), except that an incomplete assessment (any state but complete) never grades A: A becomes pending. B/C/F are kept so a dangerous result stays visible.",
+    "trustLevel": "A or B is Trusted, C or pending is Conditional, F is Untrusted. An incomplete assessment caps Trusted at Conditional."
+  },
+  "cases": [
+    {
+      "findingsGrade": "A",
+      "assessmentState": "complete",
+      "grade": "A",
+      "trustLevel": "Trusted"
+    },
+    {
+      "findingsGrade": "B",
+      "assessmentState": "complete",
+      "grade": "B",
+      "trustLevel": "Trusted"
+    },
+    {
+      "findingsGrade": "C",
+      "assessmentState": "complete",
+      "grade": "C",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "F",
+      "assessmentState": "complete",
+      "grade": "F",
+      "trustLevel": "Untrusted"
+    },
+    {
+      "findingsGrade": "A",
+      "assessmentState": "partial",
+      "grade": "pending",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "B",
+      "assessmentState": "partial",
+      "grade": "B",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "C",
+      "assessmentState": "partial",
+      "grade": "C",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "F",
+      "assessmentState": "partial",
+      "grade": "F",
+      "trustLevel": "Untrusted"
+    },
+    {
+      "findingsGrade": "A",
+      "assessmentState": "failed",
+      "grade": "pending",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "B",
+      "assessmentState": "failed",
+      "grade": "B",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "C",
+      "assessmentState": "failed",
+      "grade": "C",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "F",
+      "assessmentState": "failed",
+      "grade": "F",
+      "trustLevel": "Untrusted"
+    },
+    {
+      "findingsGrade": "A",
+      "assessmentState": "unsupported",
+      "grade": "pending",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "B",
+      "assessmentState": "unsupported",
+      "grade": "B",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "C",
+      "assessmentState": "unsupported",
+      "grade": "C",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "F",
+      "assessmentState": "unsupported",
+      "grade": "F",
+      "trustLevel": "Untrusted"
+    }
+  ]
+}

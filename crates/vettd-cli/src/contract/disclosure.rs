@@ -137,7 +137,7 @@ impl DisclosureCategory {
                 "file paths, classification, capability signals, content hashes, secret references, injection surfaces, dependencies, and risk scores"
             }
             DisclosureCategory::SkillRecords => {
-                "skill name, type, trust grade, execution environment, description, version, license, structural facts (file count, presence of SKILL.md/scripts/references/evals/assets), permissions, dependencies, consumers, and external scanner results"
+                "skill name, type, trust grade, execution environment, description, version, license, structural facts (file count, presence of SKILL.md/scripts/references/evals/assets), assessment completeness state and reasons, permissions, dependencies, consumers, and external scanner results"
             }
             DisclosureCategory::AgentRecords => {
                 "source paths, classification, execution model, trust score, version, author, source repo, capabilities, tool bindings, and trust breakdown"
@@ -319,6 +319,10 @@ const SKILL_FIELDS: &[&str] = &[
     "label",
     "detail",
     "filepath",
+    // ExternalScannerFinding context (v2.9.0, #318); `source` is listed above
+    "intent",
+    "chainId",
+    "owaspLlmCategory",
     // ScannerSignal (v2.5.0, display-only) — surfaced additively in
     // `externalScannerResults[].signals`.
     "signals",
@@ -358,6 +362,11 @@ const SKILL_FIELDS: &[&str] = &[
     "gitCommit",
     "declaredName",
     "declaredVersion",
+    // Assessment completeness (v2.9.0, #314)
+    "assessmentState",
+    "assessmentReasons",
+    // Whole-bundle identity (v2.9.0, #315)
+    "bundleDigest",
 ];
 
 const AGENT_FIELDS: &[&str] = &[
@@ -716,6 +725,10 @@ pub(crate) fn max_payload() -> ContractPayload {
                     label: "l".into(),
                     detail: Some("d".into()),
                     filepath: Some("SKILL.md".into()),
+                    intent: Some("malicious".into()),
+                    chain_id: Some("chain-1".into()),
+                    owasp_llm_category: Some("LLM01".into()),
+                    source: Some("third-party".into()),
                 }]),
                 signals: Some(vec![ScannerSignal {
                     data_category: "characteristics".into(),
@@ -766,6 +779,9 @@ pub(crate) fn max_payload() -> ContractPayload {
                 declared_name: Some("test-skill".into()),
                 declared_version: Some("1.0".into()),
             }),
+            assessment_state: Some("partial".into()),
+            assessment_reasons: Some(vec!["size-cap".into()]),
+            bundle_digest: Some("fed987".into()),
         }],
         mcp_servers: vec![McpServer {
             id: "s1".into(),

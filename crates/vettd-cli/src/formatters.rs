@@ -171,43 +171,34 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
     }
 
     // ── Posture headline ────────────────────────────────────────────
-    let flagged_count = report
-        .artifacts
-        .iter()
-        .filter(|a| {
-            matches!(
-                a.verification_status.as_str(),
-                SEVERITY_CRITICAL | SEVERITY_HIGH
-            )
-        })
-        .count();
-    let review_count = report
-        .artifacts
-        .iter()
-        .filter(|a| a.verification_status == SEVERITY_MEDIUM)
-        .count();
-    let clear_count = report
-        .artifacts
-        .iter()
-        .filter(|a| matches!(a.verification_status.as_str(), SEVERITY_LOW | SEVERITY_INFO))
-        .count();
+    let all: Vec<&ArtifactReport> = report.artifacts.iter().collect();
+    let counts = posture_counts(&all);
 
     println!();
     let mut status_parts: Vec<String> = Vec::new();
-    if flagged_count > 0 {
-        status_parts.push(format!("\x1b[31m{flagged_count} flagged\x1b[0m"));
+    if counts.flagged > 0 {
+        status_parts.push(format!("\x1b[31m{} flagged\x1b[0m", counts.flagged));
     }
-    if review_count > 0 {
-        status_parts.push(format!("\x1b[33m{review_count} review\x1b[0m"));
+    if counts.review > 0 {
+        status_parts.push(format!("\x1b[33m{} review\x1b[0m", counts.review));
     }
-    if clear_count > 0 {
-        status_parts.push(format!("\x1b[32m{clear_count} clear\x1b[0m"));
+    if counts.clear > 0 {
+        status_parts.push(format!("\x1b[32m{} clear\x1b[0m", counts.clear));
+    }
+    if counts.incomplete > 0 {
+        status_parts.push(format!(
+            "\x1b[33m{} not fully analyzed\x1b[0m",
+            counts.incomplete
+        ));
     }
     println!(
         "  {BOLD}RISK{RESET}  {}  {DIM}({}){RESET}",
         status_parts.join(&format!(" {DIM}·{RESET} ")),
         artifact_count_label(report.artifacts.len(), identical_skill_copies(report))
     );
+    if let Some(line) = incomplete_summary(&all) {
+        println!("  \x1b[33m{line}{RESET}");
+    }
     println!("  {DIM}{}{RESET}", "─".repeat(w - 2));
 
     // ── Top 3 riskiest findings ─────────────────────────────────────
@@ -247,12 +238,7 @@ pub fn print_overview(report: &ScanReport, cmd_name: &str) {
 fn print_risk_card(a: &ArtifactReport) {
     let loc = shorten_path(artifact_location(a));
     let (icon, color) = status_icon(&a.verification_status);
-    let label = match a.verification_status.as_str() {
-        SEVERITY_CRITICAL => "CRITICAL",
-        SEVERITY_HIGH => "FLAGGED",
-        SEVERITY_MEDIUM => "REVIEW",
-        _ => "CLEAR",
-    };
+    let label = status_label(a);
     let kind = pretty_type(&a.artifact_type);
 
     println!();
@@ -271,6 +257,11 @@ fn print_risk_card(a: &ArtifactReport) {
     let caps = derive_capabilities(a);
     if !caps.is_empty() {
         println!("    {CYAN}{}{RESET}", caps.join(", "));
+    }
+
+    // The overview must name an incomplete analysis, not just omit a verdict.
+    if let Some(line) = assessment_line(a) {
+        println!("    {line}");
     }
 
     // Compact scanner signal/coverage count (overview risk cards stay terse —
@@ -389,12 +380,7 @@ fn print_artifact_details(report: &ScanReport) {
         } else {
             &a.artifact_hash
         };
-        let status_label = match a.verification_status.as_str() {
-            SEVERITY_CRITICAL => "CRITICAL",
-            SEVERITY_HIGH => "FLAGGED",
-            SEVERITY_MEDIUM => "REVIEW",
-            _ => "CLEAR",
-        };
+        let status_label = status_label(a);
 
         println!(
             "  {icon} {color}{BOLD}{}{RESET}. {BOLD}{kind}{RESET}  {color}{status_label}{RESET}  risk {}{RESET}",
@@ -427,11 +413,116 @@ fn print_artifact_details(report: &ScanReport) {
             println!("    {DIM}Signals:{RESET} {}", a.signals.join(", "));
         }
 
+        if let Some(line) = assessment_line(a) {
+            println!("    {line}");
+        }
         for line in scanner_signal_lines(a) {
             println!("    {line}");
         }
         println!();
     }
+}
+
+/// One line naming an incomplete skill assessment and why (#314), so the
+/// human view never presents "not analyzed" as "nothing found". `None` for
+/// non-skill artifacts and complete assessments.
+fn assessment_line(a: &ArtifactReport) -> Option<String> {
+    if a.artifact_type != "skill" {
+        return None;
+    }
+    let assessment = crate::contract::assess(a.cached_skill_scan.as_ref());
+    if assessment.is_complete() {
+        return None;
+    }
+    Some(format!(
+        "{BOLD}Assessment: {}{RESET} ({}), not graded as trusted",
+        assessment.state,
+        assessment.reasons.join(", ")
+    ))
+}
+
+/// Whether this artifact's analysis stopped short. Only skills carry an
+/// assessment; other artifact types have nothing to be incomplete about.
+fn is_incomplete(a: &ArtifactReport) -> bool {
+    a.artifact_type == "skill"
+        && !crate::contract::assess(a.cached_skill_scan.as_ref()).is_complete()
+}
+
+/// The status label for an artifact. Completeness and detected risk are
+/// independent: a skill that is not fully analyzed still carries whatever risk
+/// the analysis did find, and only a skill with nothing found becomes
+/// `NOT ANALYZED` instead of `CLEAR` (#314/N6).
+fn status_label(a: &ArtifactReport) -> &'static str {
+    match a.verification_status.as_str() {
+        SEVERITY_CRITICAL => "CRITICAL",
+        SEVERITY_HIGH => "FLAGGED",
+        SEVERITY_MEDIUM => "REVIEW",
+        _ if is_incomplete(a) => "NOT ANALYZED",
+        _ => "CLEAR",
+    }
+}
+
+/// Posture counts for a set of artifacts. An incomplete skill is always counted
+/// as `incomplete`, and is never counted as `clear`, so the human view cannot
+/// report "passed all checks" for a skill nobody fully analyzed. Risk it did
+/// find is still counted (#314/N6).
+struct PostureCounts {
+    flagged: usize,
+    review: usize,
+    clear: usize,
+    incomplete: usize,
+}
+
+fn posture_counts(artifacts: &[&ArtifactReport]) -> PostureCounts {
+    let mut counts = PostureCounts {
+        flagged: 0,
+        review: 0,
+        clear: 0,
+        incomplete: 0,
+    };
+    for a in artifacts {
+        match a.verification_status.as_str() {
+            SEVERITY_CRITICAL | SEVERITY_HIGH => counts.flagged += 1,
+            SEVERITY_MEDIUM => counts.review += 1,
+            // Nothing found *and* nothing missed: the only affirmative result.
+            _ if is_incomplete(a) => {}
+            _ => counts.clear += 1,
+        }
+        if is_incomplete(a) {
+            counts.incomplete += 1;
+        }
+    }
+    counts
+}
+
+/// One line disclosing how many skills were not fully analyzed and why (#314).
+/// `None` when every artifact got a complete assessment.
+fn incomplete_summary(artifacts: &[&ArtifactReport]) -> Option<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    for a in artifacts {
+        if !is_incomplete(a) {
+            continue;
+        }
+        count += 1;
+        reasons.extend(crate::contract::assess(a.cached_skill_scan.as_ref()).reasons);
+    }
+    if count == 0 {
+        return None;
+    }
+    reasons.sort();
+    reasons.dedup();
+    Some(format!(
+        "{count} skill(s) not fully analyzed: {}",
+        reasons.join(", ")
+    ))
+}
+
+/// The affirmative "nothing found" line, or `None` when no artifact qualifies.
+/// Incomplete skills are excluded from `clear_n` by [`posture_counts`], so this
+/// never speaks for them.
+fn clear_section_line(clear_n: usize) -> Option<String> {
+    (clear_n > 0).then(|| format!("{clear_n} artifact(s) passed all checks"))
 }
 
 /// Compact display lines for a skill artifact's scanner-emitted `signals` and
@@ -590,12 +681,10 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
         .iter()
         .filter(|a| a.registry_eligible)
         .collect();
-    let counts = count_by_status(&eligible);
-    let flagged_n = counts.get(SEVERITY_CRITICAL).copied().unwrap_or(0)
-        + counts.get(SEVERITY_HIGH).copied().unwrap_or(0);
-    let review_n = counts.get(SEVERITY_MEDIUM).copied().unwrap_or(0);
-    let clear_n = counts.get(SEVERITY_LOW).copied().unwrap_or(0)
-        + counts.get(SEVERITY_INFO).copied().unwrap_or(0);
+    let counts = posture_counts(&eligible);
+    let flagged_n = counts.flagged;
+    let review_n = counts.review;
+    let clear_n = counts.clear;
 
     // ── Posture headline ────────────────────────────────────────────
     println!();
@@ -608,6 +697,12 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
     }
     if clear_n > 0 {
         parts.push(format!("\x1b[32m{clear_n} clear\x1b[0m"));
+    }
+    if counts.incomplete > 0 {
+        parts.push(format!(
+            "\x1b[33m{} not fully analyzed\x1b[0m",
+            counts.incomplete
+        ));
     }
     println!("  {}", parts.join(&format!("  {DIM}·{RESET}  ")));
 
@@ -651,12 +746,25 @@ pub fn print_summary(report: &ScanReport, _cmd_name: &str) {
         print_review_groups(&review, w);
     }
 
-    // ── Clear items (compact one-liner) ─────────────────────────────
-    if clear_n > 0 {
+    // ── Not fully analyzed (never folded into CLEAR) ────────────────
+    if let Some(line) = incomplete_summary(&eligible) {
         println!();
-        println!(
-            "  \x1b[32m{BOLD}CLEAR{RESET} {DIM}── {clear_n} artifact(s) passed all checks{RESET}"
-        );
+        println!("  \x1b[33m{BOLD}NOT FULLY ANALYZED{RESET} {DIM}── {line}{RESET}");
+        for a in eligible.iter().filter(|a| is_incomplete(a)) {
+            let loc = shorten_path(artifact_location(a));
+            let assessment = crate::contract::assess(a.cached_skill_scan.as_ref());
+            println!(
+                "     {DIM}{loc}{RESET}  \x1b[33m{}{RESET} {DIM}({}){RESET}",
+                assessment.state,
+                assessment.reasons.join(", ")
+            );
+        }
+    }
+
+    // ── Clear items (compact one-liner) ─────────────────────────────
+    if let Some(text) = clear_section_line(clear_n) {
+        println!();
+        println!("  \x1b[32m{BOLD}CLEAR{RESET} {DIM}── {text}{RESET}");
     }
 
     // ── Compact inventory ───────────────────────────────────────────
@@ -689,6 +797,9 @@ fn print_summary_card(a: &ArtifactReport) {
     if !reasons.is_empty() {
         let human: Vec<&str> = reasons.iter().map(|r| humanize_reason(r)).collect();
         println!("     {CYAN}{}{RESET}", human.join(", "));
+    }
+    if let Some(line) = assessment_line(a) {
+        println!("     {line}");
     }
 }
 
@@ -733,14 +844,6 @@ fn print_review_groups(items: &[&&ArtifactReport], _w: usize) {
             println!("     {DIM}… and {} more{RESET}", n - MAX_EXAMPLES);
         }
     }
-}
-
-fn count_by_status(artifacts: &[&ArtifactReport]) -> HashMap<String, usize> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for a in artifacts {
-        *counts.entry(a.verification_status.clone()).or_default() += 1;
-    }
-    counts
 }
 
 #[cfg(test)]
@@ -897,20 +1000,6 @@ mod tests {
     }
 
     #[test]
-    fn count_by_status_counts_correctly() {
-        let a1 = make_artifact("prompt_config", 10, SEVERITY_INFO);
-        let a2 = make_artifact("prompt_config", 50, SEVERITY_HIGH);
-        let a3 = make_artifact("prompt_config", 30, SEVERITY_MEDIUM);
-        let a4 = make_artifact("prompt_config", 15, SEVERITY_LOW);
-        let refs: Vec<&ArtifactReport> = vec![&a1, &a2, &a3, &a4];
-        let counts = count_by_status(&refs);
-        assert_eq!(counts.get(SEVERITY_INFO).copied().unwrap_or(0), 1);
-        assert_eq!(counts.get(SEVERITY_HIGH).copied().unwrap_or(0), 1);
-        assert_eq!(counts.get(SEVERITY_MEDIUM).copied().unwrap_or(0), 1);
-        assert_eq!(counts.get(SEVERITY_LOW).copied().unwrap_or(0), 1);
-    }
-
-    #[test]
     fn artifact_location_from_paths() {
         let a = make_artifact("prompt_config", 10, SEVERITY_INFO);
         assert_eq!(artifact_location(&a), "/tmp/test");
@@ -998,6 +1087,16 @@ mod tests {
         let mut a = make_artifact("skill", 10, SEVERITY_INFO);
         a.cached_scan_result = result;
         a
+    }
+
+    #[test]
+    fn assessment_line_flags_skill_without_scanner_result() {
+        // #314: the human surface must say a skill was not analyzed and why.
+        let a = artifact_with_scanner_result(None);
+        let line = assessment_line(&a).expect("missing result must be shown");
+        assert!(line.contains("failed"), "{line}");
+        assert!(line.contains("missing-result"), "{line}");
+        assert!(assessment_line(&make_artifact("agents_md", 10, SEVERITY_INFO)).is_none());
     }
 
     #[test]
@@ -1092,5 +1191,103 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.contains("VTD-0001: Checked (structure) — Rule ran")));
+    }
+
+    // ── incomplete analysis on the human surfaces (#314) ────────────────
+
+    /// A real skill artifact whose assessment is partial because the bundle
+    /// holds an executable the text scan cannot read.
+    fn incomplete_skill_artifact() -> (tempfile::TempDir, ArtifactReport) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("demo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+        std::fs::write(root.join("helper.exe"), [0x4d_u8, 0x5a]).unwrap();
+
+        let mut a = make_artifact("skill", 10, SEVERITY_INFO);
+        a.metadata.insert(
+            "paths".to_string(),
+            json!([root.join("SKILL.md").to_string_lossy()]),
+        );
+        a.cached_skill_scan = crate::contract::run_skill_scanner(&a);
+        a.cached_scan_result = a
+            .cached_skill_scan
+            .as_ref()
+            .map(|output| output.external.clone());
+        (dir, a)
+    }
+
+    #[test]
+    fn overview_and_summary_never_report_incomplete_skills_as_clear() {
+        // Why this matters: the default overview and --summary used to count a
+        // partial/pending skill in "artifact(s) passed all checks" and label it
+        // CLEAR, presenting "not analyzed" as "nothing found".
+        let (_dir, incomplete) = incomplete_skill_artifact();
+        let clean = make_artifact("prompt_config", 10, SEVERITY_INFO);
+        let all: Vec<&ArtifactReport> = vec![&incomplete, &clean];
+
+        let counts = posture_counts(&all);
+        assert_eq!(counts.incomplete, 1);
+        assert_eq!(counts.clear, 1, "only the fully analyzed artifact is clear");
+
+        let line = incomplete_summary(&all).expect("incomplete analysis must be disclosed");
+        assert!(line.contains("1 skill(s) not fully analyzed"), "{line}");
+        assert!(line.contains("unanalyzed-content"), "{line}");
+
+        // With only the incomplete skill, nothing "passed all checks".
+        let only: Vec<&ArtifactReport> = vec![&incomplete];
+        let only_counts = posture_counts(&only);
+        assert_eq!(only_counts.clear, 0);
+        assert!(clear_section_line(only_counts.clear).is_none());
+        assert_eq!(status_label(&incomplete), "NOT ANALYZED");
+        assert_eq!(status_label(&clean), "CLEAR");
+    }
+
+    #[test]
+    fn complete_artifacts_keep_the_affirmative_wording() {
+        // The disclosure must not swallow the positive result when everything
+        // really was analyzed.
+        let clean = make_artifact("prompt_config", 10, SEVERITY_INFO);
+        let all: Vec<&ArtifactReport> = vec![&clean];
+        assert!(incomplete_summary(&all).is_none());
+        assert!(assessment_line(&clean).is_none());
+        let counts = posture_counts(&all);
+        assert_eq!(counts.clear, 1);
+        assert_eq!(
+            clear_section_line(counts.clear).as_deref(),
+            Some("1 artifact(s) passed all checks")
+        );
+    }
+
+    #[test]
+    fn incomplete_skills_keep_the_risk_they_did_find() {
+        // Why this matters: the first fix labeled every incomplete skill
+        // NOT ANALYZED and dropped it from the flagged/review counts, so a
+        // partial skill with critical findings was reported as ordinary
+        // "not analyzed" and disappeared from the risk totals. Completeness and
+        // detected risk are independent.
+        let (_dir, mut a) = incomplete_skill_artifact();
+
+        a.verification_status = SEVERITY_CRITICAL.to_string();
+        let all: Vec<&ArtifactReport> = vec![&a];
+        let counts = posture_counts(&all);
+        assert_eq!(counts.flagged, 1, "detected risk must still be counted");
+        assert_eq!(counts.incomplete, 1, "and the gap must still be counted");
+        assert_eq!(counts.clear, 0);
+        assert_eq!(status_label(&a), "CRITICAL");
+        assert!(
+            incomplete_summary(&all).is_some(),
+            "the incomplete reason must still be disclosed"
+        );
+
+        a.verification_status = SEVERITY_MEDIUM.to_string();
+        let counts = posture_counts(&[&a]);
+        assert_eq!(counts.review, 1);
+        assert_eq!(status_label(&a), "REVIEW");
+
+        // Nothing found and nothing missed is still the only affirmative label.
+        a.verification_status = SEVERITY_INFO.to_string();
+        assert_eq!(status_label(&a), "NOT ANALYZED");
+        assert_eq!(posture_counts(&[&a]).clear, 0);
     }
 }

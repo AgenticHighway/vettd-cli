@@ -14,7 +14,7 @@ mod mcp;
 mod parity;
 mod prompts;
 mod skill_scan;
-pub(crate) use skill_scan::{run_skill_scanner, SkillScanOutput};
+pub(crate) use skill_scan::{assess, run_skill_scanner, SkillScanOutput};
 pub(crate) use skills::build_skills;
 mod skills;
 pub mod types;

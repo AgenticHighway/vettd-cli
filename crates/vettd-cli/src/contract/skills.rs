@@ -29,11 +29,14 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
         if artifact.artifact_type == "skill" {
             let (skill, dedupable) = artifact_to_skill(artifact, agents);
             // A digest only proves identity when it covers the whole skill.
-            // Partial or lossy loads must never merge with another copy whose
-            // digest happens to match on the subset that was read (#204/#274).
+            // Partial or lossy loads, or a bundle whose digest could not be
+            // computed, must never merge with another copy (#204/#274/#315).
+            // Key on the bundle digest when present: copies whose analyzed
+            // text matches but whose other bytes (ignored scripts, binaries,
+            // symlinks) differ are different assets.
             let key = if dedupable {
                 skill
-                    .content_hash
+                    .bundle_digest
                     .clone()
                     .unwrap_or_else(|| skill.id.clone())
             } else {
@@ -44,24 +47,7 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
                 )
             };
             match digest_index.get(&key) {
-                Some(&index) => {
-                    let existing = &mut skills[index];
-                    if let Some(locations) = skill.locations {
-                        let locs = existing.locations.get_or_insert_with(Vec::new);
-                        for location in locations {
-                            if !locs.iter().any(|l| l.path == location.path) {
-                                locs.push(location);
-                            }
-                        }
-                    }
-                    // Identical copies consumed by different agents must record
-                    // every consumer, not just the first copy's.
-                    for consumer in skill.consumers {
-                        if !existing.consumers.iter().any(|c| c.id == consumer.id) {
-                            existing.consumers.push(consumer);
-                        }
-                    }
-                }
+                Some(&index) => merge_skill(&mut skills[index], skill),
                 None => {
                     digest_index.insert(key, skills.len());
                     skills.push(skill);
@@ -98,6 +84,118 @@ pub fn build_skills(artifacts: &[ArtifactReport], agents: &[Agent]) -> Vec<Skill
     skills
 }
 
+/// Merge a later copy of the same bundle into the record already kept.
+///
+/// Two copies can share a `bundleDigest` (file modes are excluded) while one
+/// of them carries risky unanalyzed content the other does not. Keeping the
+/// first copy's assessment would let the reassuring copy speak for a bundle
+/// that was only partly analyzed (#314/#315), so the combine is conservative:
+/// the worst assessment state, the union of reasons and the union of findings
+/// win, whichever order the copies were scanned in.
+fn merge_skill(existing: &mut Skill, later: Skill) {
+    // Every location a merged copy was found in, and every consumer, must
+    // survive the merge.
+    if let Some(locations) = later.locations {
+        let locs = existing.locations.get_or_insert_with(Vec::new);
+        for location in locations {
+            if !locs.iter().any(|l| l.path == location.path) {
+                locs.push(location);
+            }
+        }
+    }
+    for consumer in later.consumers {
+        if !existing.consumers.iter().any(|c| c.id == consumer.id) {
+            existing.consumers.push(consumer);
+        }
+    }
+
+    existing.assessment_state = worst_assessment_state(
+        existing.assessment_state.as_deref(),
+        later.assessment_state.as_deref(),
+    )
+    .map(str::to_string);
+    let mut reasons: Vec<String> = existing.assessment_reasons.clone().unwrap_or_default();
+    reasons.extend(later.assessment_reasons.clone().unwrap_or_default());
+    reasons.sort();
+    reasons.dedup();
+    existing.assessment_reasons = (!reasons.is_empty()).then_some(reasons);
+
+    let mut results = existing.external_scanner_results.take().unwrap_or_default();
+    if let Some(later_results) = later.external_scanner_results {
+        match results.first_mut() {
+            Some(first) => {
+                for later_result in later_results {
+                    merge_scanner_result(first, later_result);
+                }
+            }
+            None => results = later_results,
+        }
+    }
+    existing.external_scanner_results = (!results.is_empty()).then_some(results);
+
+    // Re-derive the grade from the combined evidence: a merged record that is
+    // no longer complete must not keep an affirmative A.
+    let complete = existing.assessment_state.as_deref() == Some("complete");
+    existing.overall_grade = grade_from_scanner_result(
+        existing
+            .external_scanner_results
+            .as_ref()
+            .and_then(|r| r.first()),
+        complete,
+    )
+    .to_string();
+    existing.trust_level = trust_level(&existing.overall_grade, complete).to_string();
+}
+
+fn merge_scanner_result(into: &mut ExternalScannerResult, later: ExternalScannerResult) {
+    let mut findings = into.findings.take().unwrap_or_default();
+    findings.extend(later.findings.unwrap_or_default());
+    findings.sort_by(|a, b| {
+        (
+            &a.rule_id,
+            &a.filepath,
+            &a.label,
+            &a.detail,
+            &a.severity,
+            &a.intent,
+            &a.chain_id,
+        )
+            .cmp(&(
+                &b.rule_id,
+                &b.filepath,
+                &b.label,
+                &b.detail,
+                &b.severity,
+                &b.intent,
+                &b.chain_id,
+            ))
+    });
+    findings.dedup_by(|a, b| {
+        a.rule_id == b.rule_id
+            && a.filepath == b.filepath
+            && a.label == b.label
+            && a.detail == b.detail
+    });
+    into.findings = (!findings.is_empty()).then_some(findings);
+}
+
+fn assessment_rank(state: Option<&str>) -> u8 {
+    match state {
+        Some("failed") => 3,
+        Some("partial") | Some("unsupported") => 2,
+        Some(_) => 0,
+        None => 0,
+    }
+}
+
+fn worst_assessment_state<'a>(a: Option<&'a str>, b: Option<&'a str>) -> Option<&'a str> {
+    if assessment_rank(a) >= assessment_rank(b) {
+        a.or(b)
+    } else {
+        b
+    }
+}
+
 fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, bool) {
     let source_path = first_path(artifact);
     let name = qualified_name(source_path);
@@ -105,30 +203,29 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
     let capabilities = crate::capabilities::derive_capabilities(artifact);
     let permissions = infer_permissions_from_capabilities(&capabilities);
     let detected_source = detect_skill_source(source_path);
-    let frontmatter = read_skill_frontmatter(artifact);
 
-    let scan_output = artifact
-        .cached_skill_scan
-        .clone()
-        .or_else(|| super::skill_scan::run_skill_scanner(artifact));
-    let overall_grade =
-        grade_from_scanner_result(scan_output.as_ref().map(|o| &o.external)).to_string();
-    let trust_level = trust_level_from_grade(&overall_grade).to_string();
-    let structural = scan_output.as_ref().map(|o| &o.structural);
+    let scan_output = super::skill_scan::output_for(artifact);
+    // The frontmatter must describe the same bytes as `contentHash` and
+    // `bundleDigest`, so it comes from the analysed SKILL.md text (#314/P2).
+    let frontmatter = read_skill_frontmatter(artifact, scan_output.as_ref());
+    let assessment = super::skill_scan::assess(scan_output.as_ref());
+    let overall_grade = grade_from_scanner_result(
+        scan_output.as_ref().map(|o| &o.external),
+        assessment.is_complete(),
+    )
+    .to_string();
+    let trust_level = trust_level(&overall_grade, assessment.is_complete()).to_string();
+    let structural = scan_output.as_ref().and_then(|o| o.structural.as_ref());
 
     // Content identity (#274, #130): digest over the whole skill directory
     // (minus disclosed exclusions), the location this copy was found in with
     // its provenance, and git/declared lineage for relating copies downstream.
-    let identity_load = if source_path != "unknown" {
-        let root = std::path::Path::new(source_path)
-            .parent()
-            .unwrap_or(std::path::Path::new("."));
-        Some(identity::load_skill_files(root))
-    } else {
-        None
-    };
-    let content_hash = match &identity_load {
-        Some(load) => Some(identity::canonical_digest(&load.text_files)),
+    //
+    // Identity comes from the SAME load as the assessment (P2-10): a digest of
+    // other bytes must never be paired with this analysis.
+    let skill_identity = scan_output.as_ref().map(|output| &output.identity);
+    let content_hash = match skill_identity {
+        Some(identity) => Some(identity.content_hash.clone()),
         None => artifact_content_hash(artifact),
     };
     let locations = (source_path != "unknown").then(|| {
@@ -137,9 +234,8 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
             provenance: identity::provenance_for(source_path).to_string(),
         }]
     });
-    let identity_exclusions = identity_load
-        .as_ref()
-        .map(|load| load.excluded.clone())
+    let identity_exclusions = skill_identity
+        .map(|identity| identity.exclusions.clone())
         .filter(|excluded| !excluded.is_empty());
     let lineage = (source_path != "unknown")
         .then(|| {
@@ -193,11 +289,13 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         locations,
         identity_exclusions,
         lineage,
+        assessment_state: Some(assessment.state.to_string()),
+        assessment_reasons: (!assessment.reasons.is_empty()).then_some(assessment.reasons),
+        bundle_digest: skill_identity.and_then(|identity| identity.bundle_digest.clone()),
     };
-    // The digest is only a dedup key when it covers the whole skill directory.
-    let dedupable = identity_load
-        .as_ref()
-        .is_some_and(|load| !load.partial && load.skipped.is_empty());
+    // A digest is only a dedup key when it covers the whole skill directory and
+    // actually exists. Without it, identity stays location-specific (#315).
+    let dedupable = skill_identity.is_some_and(|identity| identity.complete);
     (skill, dedupable)
 }
 
@@ -208,7 +306,29 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
 /// - C: any high (< 3), OR ≥ 3 mediums
 /// - B: any medium (< 3), OR ≥ 4 lows
 /// - A: < 4 lows, no mediums/highs/criticals
-fn grade_from_scanner_result(result: Option<&ExternalScannerResult>) -> &'static str {
+///
+/// "A" asserts that the whole skill was analyzed and nothing was found, so it
+/// requires a complete assessment (#314). An incomplete one (missing result,
+/// scanner error, caps, unreadable files) grades "pending" unless the findings
+/// it did produce already prove risk (B/C/F), which stays visible.
+fn grade_from_scanner_result(
+    result: Option<&ExternalScannerResult>,
+    assessment_complete: bool,
+) -> &'static str {
+    effective_grade(grade_from_findings(result), assessment_complete)
+}
+
+/// The shared grade rule (`trust-definitions.json`, vettd#1213): an
+/// incomplete assessment never grades A; B/C/F are kept.
+fn effective_grade(findings_grade: &'static str, assessment_complete: bool) -> &'static str {
+    if findings_grade == "A" && !assessment_complete {
+        "pending"
+    } else {
+        findings_grade
+    }
+}
+
+fn grade_from_findings(result: Option<&ExternalScannerResult>) -> &'static str {
     let findings = match result.and_then(|r| r.findings.as_deref()) {
         Some(f) if !f.is_empty() => f,
         _ => return "A",
@@ -240,12 +360,20 @@ fn grade_from_scanner_result(result: Option<&ExternalScannerResult>) -> &'static
     }
 }
 
-fn trust_level_from_grade(grade: &str) -> &'static str {
-    match grade {
-        "A" => "Trusted",
-        "B" => "Conditional",
-        "C" | "F" => "Untrusted",
-        _ => "Conditional", // "pending" or unknown
+/// The shared trust-level rule (`trust-definitions.json`, vettd#1213), the
+/// same mapping the server uses for imported skills: A/B Trusted, C or
+/// pending Conditional, F Untrusted. An incomplete assessment is never
+/// Trusted.
+fn trust_level(grade: &str, assessment_complete: bool) -> &'static str {
+    let level = match grade {
+        "A" | "B" => "Trusted",
+        "F" => "Untrusted",
+        _ => "Conditional", // "C", "pending" or unknown
+    };
+    if level == "Trusted" && !assessment_complete {
+        "Conditional"
+    } else {
+        level
     }
 }
 
@@ -275,14 +403,26 @@ enum Collecting {
 /// Read and parse the SKILL.md frontmatter for an artifact, if the file is
 /// readable. Never fails the skill build — unreadable/missing files yield an
 /// empty frontmatter.
-fn read_skill_frontmatter(artifact: &ArtifactReport) -> SkillFrontmatter {
+fn read_skill_frontmatter(
+    artifact: &ArtifactReport,
+    scan_output: Option<&super::skill_scan::SkillScanOutput>,
+) -> SkillFrontmatter {
+    // Prefer the SKILL.md text the scan analysed: a second read could pair an
+    // old description with a digest of newer bytes (#314/P2).
+    if let Some(text) = scan_output.and_then(|output| output.skill_md_text.as_deref()) {
+        return parse_skill_frontmatter(text);
+    }
     let path = first_path(artifact);
     if path == "unknown" {
         return SkillFrontmatter::default();
     }
-    std::fs::read_to_string(path)
-        .map(|content| parse_skill_frontmatter(&content))
-        .unwrap_or_default()
+    // No scan output to share bytes with, so read through the same hardened,
+    // bounded reader the analysis uses (#315/P0): a FIFO or an oversized
+    // SKILL.md can neither block nor spike memory here.
+    match identity::read_text_file(std::path::Path::new(path), identity::MAX_SKILL_TOTAL_BYTES) {
+        identity::TextRead::Text(content) => parse_skill_frontmatter(&content),
+        _ => SkillFrontmatter::default(),
+    }
 }
 
 /// Extract `description`, `version`, and `license` from SKILL.md YAML
@@ -392,6 +532,11 @@ fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
 /// (double quotes: `\n` `\r` `\t` `\"` `\\`; single quotes: `\'` `\\`).
 fn unquote_yaml_scalar(value: &str) -> String {
     let trimmed = value.trim();
+    // A lone `"` or `'` has the same first and last byte and would slice
+    // `[1..0]` below; a quote pair needs at least two characters (#314/P0).
+    if trimmed.len() < 2 {
+        return trimmed.to_string();
+    }
     let bytes = trimmed.as_bytes();
     let double = bytes.first() == Some(&b'"') && bytes.last() == Some(&b'"');
     let single = bytes.first() == Some(&b'\'') && bytes.last() == Some(&b'\'');
@@ -560,6 +705,9 @@ fn extract_mcp_command_skills(
             locations: None,
             identity_exclusions: None,
             lineage: None,
+            assessment_state: None,
+            assessment_reasons: None,
+            bundle_digest: None,
         });
     }
 }
@@ -589,7 +737,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         id: tool_name.to_string(),
         name: tool_name.to_string(),
         skill_type: skill_type.to_string(),
-        trust_level: trust_level_from_grade("pending").to_string(),
+        trust_level: trust_level("pending", false).to_string(),
         overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
@@ -614,6 +762,9 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         locations: None,
         identity_exclusions: None,
         lineage: None,
+        assessment_state: None,
+        assessment_reasons: None,
+        bundle_digest: None,
     }
 }
 
@@ -701,6 +852,98 @@ mod tests {
     use super::*;
     use crate::contract::types::AgentTool;
     use crate::models::ArtifactReport;
+
+    #[test]
+    fn lone_quote_scalars_do_not_panic() {
+        // Why this matters: a lone `"` has the same first and last byte, so the
+        // quote-stripping slice was `[1..0]` and a SKILL.md containing
+        // `description: "` aborted report construction with a panic (#314/P0).
+        assert_eq!(unquote_yaml_scalar("\""), "\"");
+        assert_eq!(unquote_yaml_scalar("'"), "'");
+        assert_eq!(
+            parse_skill_frontmatter("---\ndescription: \"\n---\n").description,
+            Some("\"".to_string())
+        );
+        assert_eq!(
+            parse_skill_frontmatter("---\nname: '\n---\n").name,
+            Some("'".to_string())
+        );
+    }
+
+    fn artifact_for(path: &std::path::Path) -> ArtifactReport {
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.metadata.insert(
+            "paths".to_string(),
+            serde_json::json!([path.to_string_lossy()]),
+        );
+        a
+    }
+
+    #[test]
+    fn oversized_skill_md_yields_no_frontmatter() {
+        // Why this matters: the frontmatter used an unbounded path-based read
+        // that ran before the analysis caps, so a SKILL.md past the 10 MiB
+        // analysis bound still forced a full read and parse (#315/P1).
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        let mut content = String::from("---\ndescription: huge\n---\n");
+        content.push_str(&"x".repeat(identity::MAX_SKILL_TOTAL_BYTES as usize + 1));
+        std::fs::write(&skill_md, content).unwrap();
+        assert_eq!(
+            read_skill_frontmatter(&artifact_for(&skill_md), None).description,
+            None,
+            "frontmatter must respect the analysis byte bound"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frontmatter_read_never_blocks_on_a_fifo() {
+        // Why this matters: `read_skill_frontmatter` opened SKILL.md by path
+        // with no descriptor check, so a FIFO there blocked report
+        // construction until a writer appeared (#315/P0).
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&skill_md)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("SKIPPED frontmatter_read_never_blocks_on_a_fifo: mkfifo unavailable");
+            return;
+        }
+        let artifact = artifact_for(&skill_md);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_skill_frontmatter(&artifact, None).description);
+        });
+        let description = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO at SKILL.md must never block the frontmatter read");
+        assert_eq!(description, None);
+    }
+
+    #[test]
+    fn frontmatter_comes_from_the_analysed_bytes() {
+        // Why this matters: the frontmatter used a second, unsynchronised read,
+        // so a SKILL.md change between the scan and the build paired an old
+        // description/version with a `contentHash`/`bundleDigest` of newer
+        // bytes (#314/P2). The metadata must travel with the analysed text.
+        let (dir, mut a) = artifact_with_scan_output();
+        {
+            let cached = a.cached_skill_scan.as_mut().unwrap();
+            cached.skill_md_text =
+                Some("---\nname: scanned\ndescription: From the scan\n---\nBody\n".to_string());
+        }
+        let skills = build_skills(&[a], &[]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].description, "From the scan",
+            "the description must come from the analysed SKILL.md bytes"
+        );
+        std::fs::remove_dir_all(dir.path()).unwrap();
+    }
 
     #[test]
     fn extract_frontmatter_description_inline() {
@@ -991,10 +1234,19 @@ mod tests {
             label: "test".to_string(),
             detail: None,
             filepath: None,
+            intent: None,
+            chain_id: None,
+            owasp_llm_category: None,
+            source: None,
         };
 
-        // No findings → A
-        assert_eq!(grade_from_scanner_result(None), "A");
+        // A missing scanner result means nothing was analyzed. It must never
+        // grade A (→ Trusted): that is the #314 trust bug.
+        assert_eq!(grade_from_scanner_result(None, false), "pending");
+        assert_eq!(
+            trust_level(grade_from_scanner_result(None, false), false),
+            "Conditional"
+        );
 
         // Any critical → F
         let r = ExternalScannerResult {
@@ -1007,21 +1259,21 @@ mod tests {
             signals: None,
             coverage: None,
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "F");
 
         // 3 highs → F
         let r = ExternalScannerResult {
             findings: Some(vec![finding("high"), finding("high"), finding("high")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "F");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "F");
 
         // 2 highs → C
         let r = ExternalScannerResult {
             findings: Some(vec![finding("high"), finding("high")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "C");
 
         // 3 mediums → C
         let r = ExternalScannerResult {
@@ -1032,14 +1284,14 @@ mod tests {
             ]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "C");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "C");
 
         // 2 mediums → B
         let r = ExternalScannerResult {
             findings: Some(vec![finding("medium"), finding("medium")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "B");
 
         // 4 lows → B
         let r = ExternalScannerResult {
@@ -1051,30 +1303,83 @@ mod tests {
             ]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "B");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "B");
 
         // 3 lows → A
         let r = ExternalScannerResult {
             findings: Some(vec![finding("low"), finding("low"), finding("low")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "A");
 
         // info only → A
         let r = ExternalScannerResult {
             findings: Some(vec![finding("info"), finding("info")]),
             ..r.clone()
         };
-        assert_eq!(grade_from_scanner_result(Some(&r)), "A");
+        assert_eq!(grade_from_scanner_result(Some(&r), true), "A");
     }
 
     #[test]
-    fn trust_level_from_grade_mapping() {
-        assert_eq!(trust_level_from_grade("A"), "Trusted");
-        assert_eq!(trust_level_from_grade("B"), "Conditional");
-        assert_eq!(trust_level_from_grade("C"), "Untrusted");
-        assert_eq!(trust_level_from_grade("F"), "Untrusted");
-        assert_eq!(trust_level_from_grade("pending"), "Conditional");
+    fn incomplete_assessment_never_grades_a_but_keeps_proven_risk() {
+        // #314: "no findings" from a partial or failed analysis is not
+        // evidence of safety, so it must not become A/Trusted. Findings it did
+        // produce are real evidence of risk and must stay visible.
+        let clean = ExternalScannerResult {
+            source: "vettd".to_string(),
+            version: None,
+            status: "success".to_string(),
+            verdict: None,
+            raw_report: None,
+            findings: None,
+            signals: None,
+            coverage: None,
+        };
+        assert_eq!(grade_from_scanner_result(Some(&clean), true), "A");
+        assert_eq!(grade_from_scanner_result(Some(&clean), false), "pending");
+
+        let critical = ExternalScannerResult {
+            findings: Some(vec![crate::contract::types::ExternalScannerFinding {
+                rule_id: String::new(),
+                category: "security".to_string(),
+                severity: "critical".to_string(),
+                label: "test".to_string(),
+                detail: None,
+                filepath: None,
+                intent: None,
+                chain_id: None,
+                owasp_llm_category: None,
+                source: None,
+            }]),
+            ..clean
+        };
+        assert_eq!(grade_from_scanner_result(Some(&critical), false), "F");
+    }
+
+    #[test]
+    fn grade_and_trust_level_match_the_shared_definition() {
+        // vettd#1213: the CLI and the server must grade and trust a skill the
+        // same way. Both suites assert every case of the same byte-identical
+        // file, so a change on one side alone fails here or there.
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../trust-definitions.json"))
+                .expect("trust-definitions.json must be valid JSON");
+        let cases = doc["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let findings_grade: &'static str =
+                match case["findingsGrade"].as_str().expect("findingsGrade") {
+                    "A" => "A",
+                    "B" => "B",
+                    "C" => "C",
+                    "F" => "F",
+                    other => panic!("unexpected findingsGrade {other}"),
+                };
+            let complete = case["assessmentState"] == "complete";
+            let grade = effective_grade(findings_grade, complete);
+            assert_eq!(grade, case["grade"], "{case}");
+            assert_eq!(trust_level(grade, complete), case["trustLevel"], "{case}");
+        }
     }
 
     #[test]
@@ -1342,6 +1647,16 @@ mod tests {
             serde_json::json!([skill_md.to_string_lossy()]),
         );
         a.compute_hash();
+        // Identity must describe this directory, or the cache is (correctly)
+        // discarded as stale and the scan re-runs.
+        let load = crate::contract::identity::load_skill_files(dir.path());
+        let identity = crate::contract::skill_scan::SkillIdentity {
+            content_hash: crate::contract::identity::canonical_digest(&load.text_files),
+            complete: !load.partial && load.skipped.is_empty() && load.bundle_digest.is_some(),
+            bundle_digest: load.bundle_digest.clone(),
+            exclusions: load.excluded.clone(),
+            assessment_fingerprint: load.assessment_fingerprint.clone(),
+        };
         a.cached_skill_scan = Some(SkillScanOutput {
             external: ExternalScannerResult {
                 source: "vettd".into(),
@@ -1353,14 +1668,18 @@ mod tests {
                 signals: None,
                 coverage: None,
             },
-            structural: SkillStructuralFacts {
+            structural: Some(SkillStructuralFacts {
                 file_count: 7,
                 has_skill_md: true,
                 has_scripts: true,
                 has_references: true,
                 has_evals: false,
                 has_assets: false,
-            },
+            }),
+            incomplete_reasons: Vec::new(),
+            partial: false,
+            identity,
+            skill_md_text: load.text_files.get("SKILL.md").cloned(),
         });
         (dir, a)
     }
@@ -1432,6 +1751,83 @@ mod tests {
     }
 
     #[test]
+    fn copies_differing_only_in_ignored_bytes_are_not_merged() {
+        // #315: two copies with the same analyzed text but a different
+        // gitignored script are different installable bundles. Merging them
+        // would let one inherit the other's identity and result.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifacts = Vec::new();
+        for (copy, hook) in [("a", "echo one\n"), ("b", "echo two\n")] {
+            let root = dir.path().join(copy).join("demo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+            std::fs::write(root.join(".gitignore"), "hook.sh\n").unwrap();
+            std::fs::write(root.join("hook.sh"), hook).unwrap();
+            artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+        }
+        let skills = build_skills(&artifacts, &[]);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].content_hash, skills[1].content_hash);
+        assert_ne!(skills[0].bundle_digest, skills[1].bundle_digest);
+    }
+
+    #[test]
+    fn skill_without_scanner_result_is_failed_not_trusted() {
+        // #314: a skill the scanner never produced a result for was not
+        // analyzed. It used to grade A/Trusted; it must instead carry an
+        // explicit failed state with the reason, and no affirmative trust.
+        let mut a = ArtifactReport::new("skill", 0.9);
+        a.compute_hash();
+        let s = &build_skills(&[a], &[])[0];
+        assert_eq!(s.overall_grade, "pending");
+        assert_eq!(s.trust_level, "Conditional");
+        assert_eq!(s.assessment_state.as_deref(), Some("failed"));
+        assert_eq!(
+            s.assessment_reasons.as_deref(),
+            Some(&["missing-result".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn errored_or_partial_scan_is_not_trusted_and_keeps_reason() {
+        // #314: a scanner error or a capped/unreadable load produced no
+        // findings because analysis stopped short, not because the skill is
+        // clean. Neither may grade A, and the reason must reach the record.
+        for (status, reason, state) in [
+            ("errored", "scanner-error", "failed"),
+            ("success", "size-cap", "partial"),
+            ("success", "file-unreadable", "partial"),
+        ] {
+            let (_dir, mut a) = artifact_with_scan_output();
+            let out = a.cached_skill_scan.as_mut().unwrap();
+            out.external.status = status.to_string();
+            out.incomplete_reasons = vec![reason.to_string()];
+            let s = &build_skills(&[a], &[])[0];
+            assert_eq!(s.overall_grade, "pending", "{reason}");
+            assert_ne!(s.trust_level, "Trusted", "{reason}");
+            assert_eq!(s.assessment_state.as_deref(), Some(state), "{reason}");
+            assert_eq!(
+                s.assessment_reasons.as_deref(),
+                Some(&[reason.to_string()][..])
+            );
+        }
+    }
+
+    #[test]
+    fn complete_clean_scan_stays_distinguishable_from_incomplete() {
+        // #314: "fully analyzed, nothing found" must still read as A/Trusted
+        // with an explicit complete state, and no reasons.
+        let (_dir, a) = artifact_with_scan_output();
+        let s = &build_skills(&[a], &[])[0];
+        assert_eq!(s.overall_grade, "A");
+        assert_eq!(s.trust_level, "Trusted");
+        assert_eq!(s.assessment_state.as_deref(), Some("complete"));
+        let obj = serde_json::to_value(s).unwrap();
+        assert_eq!(obj["assessmentState"], "complete");
+        assert!(obj.get("assessmentReasons").is_none());
+    }
+
+    #[test]
     fn tool_derived_skill_omits_all_eight_fields() {
         let a = ArtifactReport::new("agents_md", 0.8);
         let skill = tool_to_skill("shell", &a, &[]);
@@ -1486,5 +1882,125 @@ mod tests {
                 "MCP-derived skill must omit '{key}', got: {obj:?}"
             );
         }
+    }
+
+    // ── dedup vs. assessment / identity intent tests (#314/#315) ───────
+
+    #[cfg(unix)]
+    #[test]
+    fn dedup_never_upgrades_incomplete_location() {
+        // Why this matters: file modes are excluded from bundleDigest by
+        // design, so a clean copy and a copy with an executable payload share
+        // a digest. Merging used to keep the first copy's assessment, so the
+        // pair reported complete/A/Trusted while one location held an
+        // unanalyzed executable. The worst assessment must win, in either
+        // scan order.
+        use std::os::unix::fs::PermissionsExt;
+
+        for order in [[false, true], [true, false]] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut artifacts = Vec::new();
+            for (index, executable) in order.into_iter().enumerate() {
+                let root = dir.path().join(format!("copy-{index}/demo"));
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+                let helper = root.join("helper.data");
+                std::fs::write(&helper, "payload").unwrap();
+                let mode = if executable { 0o755 } else { 0o644 };
+                std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(mode)).unwrap();
+                artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+            }
+
+            let skills = build_skills(&artifacts, &[]);
+            assert_eq!(skills.len(), 1, "same bytes must merge into one record");
+            assert_eq!(skills[0].locations.as_ref().map(Vec::len), Some(2));
+            assert_eq!(
+                skills[0].assessment_state.as_deref(),
+                Some("partial"),
+                "order {order:?}"
+            );
+            assert_eq!(skills[0].overall_grade, "pending", "order {order:?}");
+            assert_eq!(skills[0].trust_level, "Conditional", "order {order:?}");
+            assert!(
+                skills[0]
+                    .assessment_reasons
+                    .as_deref()
+                    .is_some_and(|reasons| reasons.contains(&"unanalyzed-content".to_string())),
+                "order {order:?}: {:?}",
+                skills[0].assessment_reasons
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_bundle_digest_never_deduplicates() {
+        // Why this matters: without a full bundle digest there is no proof the
+        // two bundles are the same asset, so merging them would assert an
+        // equivalence nobody verified (and silently drop one result).
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifacts = Vec::new();
+        for (copy, pipe) in [("a", "pipe-a"), ("b", "pipe-b")] {
+            let root = dir.path().join(copy).join("demo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+            let made = std::process::Command::new("mkfifo")
+                .arg(root.join(pipe))
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !made {
+                eprintln!("SKIPPED missing_bundle_digest_never_deduplicates: mkfifo unavailable");
+                return;
+            }
+            artifacts.push(skill_artifact_at(&root.join("SKILL.md")));
+        }
+
+        let skills = build_skills(&artifacts, &[]);
+        assert_eq!(
+            skills.len(),
+            2,
+            "a missing bundle digest must never merge copies"
+        );
+        assert!(skills.iter().all(|s| s.bundle_digest.is_none()));
+    }
+
+    #[test]
+    fn changed_bundle_cannot_reuse_cached_complete_assessment() {
+        // Why this matters: identity used to be re-loaded after the cached
+        // scan, so a bundle that changed between the two loads paired the new
+        // digest with the old complete/A/Trusted assessment. A changed bundle
+        // must be re-scanned, never vouched for by a stale result.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("demo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+
+        let mut artifact = skill_artifact_at(&root.join("SKILL.md"));
+        artifact.cached_skill_scan = crate::contract::run_skill_scanner(&artifact);
+        let cached_digest = artifact
+            .cached_skill_scan
+            .as_ref()
+            .and_then(|output| output.identity.bundle_digest.clone())
+            .expect("a clean fixture must produce a bundle digest");
+        assert_eq!(
+            artifact.cached_skill_scan.as_ref().unwrap().external.status,
+            "success"
+        );
+
+        // The bytes change after the cache was taken: an executable the text
+        // scan cannot analyze joins the bundle.
+        std::fs::write(root.join("helper.exe"), [0x4d_u8, 0x5a]).unwrap();
+
+        let skills = build_skills(&[artifact], &[]);
+        let skill = &skills[0];
+        assert_ne!(
+            skill.bundle_digest.as_deref(),
+            Some(cached_digest.as_str()),
+            "the record must describe the bytes actually assessed"
+        );
+        assert_eq!(skill.assessment_state.as_deref(), Some("partial"));
+        assert_eq!(skill.overall_grade, "pending");
+        assert_ne!(skill.trust_level, "Trusted");
     }
 }

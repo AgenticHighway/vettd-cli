@@ -400,6 +400,84 @@ print('\n'.join(manifest.get('fields', {}).keys()))
 ")"
         fi
     fi
+
+    # ── 6. Nested Finding fields (vettd-cli#318) ─────────────────────
+    # Every field on the pinned crate's `Finding` must be classified in the
+    # manifest's `findingFields`: `surface` fields must exist at
+    # skills[].externalScannerResults[].findings[].<camelCase leaf> in the
+    # contract JSON and be read (`.field`) in the adapter's real code;
+    # `gate` fields must be absent from that location. A scanner bump that
+    # adds a decision-relevant finding field can no longer be dropped
+    # silently at the contract boundary.
+    crate_finding_rs="$(dirname "$crate_manifest_path")/src/finding.rs"
+    finding_fields="$(
+        awk '/pub struct Finding \{/,/^\}/' "$crate_finding_rs" 2>/dev/null \
+            | grep -oP '^\s+pub \K[a-z_]+(?=:)' || true
+    )"
+    if [ -z "$finding_fields" ]; then
+        fail "no fields extracted from Finding at $crate_finding_rs — the parser may be stale"
+    else
+        finding_output="$(
+            python3 - "$MANIFEST" "$CONTRACT_JSON" "$ADAPTER" "$finding_fields" <<'PY' 2>&1
+import json
+import re
+import sys
+
+manifest_path, contract_path, adapter_path, fields_arg = sys.argv[1:5]
+fields = [f for f in fields_arg.split("\n") if f]
+manifest = json.load(open(manifest_path, encoding="utf-8"))
+contract = json.load(open(contract_path, encoding="utf-8"))
+classified = manifest.get("findingFields", {})
+props = (
+    contract.get("properties", {}).get("skills", {}).get("items", {})
+    .get("properties", {}).get("externalScannerResults", {}).get("items", {})
+    .get("properties", {}).get("findings", {}).get("items", {}).get("properties", {})
+)
+src = open(adapter_path, encoding="utf-8").read()
+src = src.split("#[cfg(test)]")[0]
+src = "\n".join(line.split("//")[0] for line in src.splitlines())
+
+
+def camel(name):
+    head, *rest = name.split("_")
+    return head + "".join(p.capitalize() for p in rest)
+
+
+errors = []
+for field in fields:
+    entry = classified.get(field)
+    if entry is None:
+        errors.append("unclassified Finding field '{}': add it to findingFields in scanner-field-gate.json".format(field))
+        continue
+    decision = entry.get("decision")
+    leaf = camel(field)
+    read = re.search(r"\bf\." + re.escape(field) + r"\b", src) is not None
+    if decision == "surface":
+        if leaf not in props:
+            errors.append("Finding field '{}' is surface but '{}' is missing from findings[] in the contract JSON".format(field, leaf))
+        if not read:
+            errors.append("Finding field '{}' is surface but the adapter never reads f.{}".format(field, field))
+    elif decision == "gate":
+        if leaf in props:
+            errors.append("Finding field '{}' is gate but '{}' exists in findings[] in the contract JSON".format(field, leaf))
+    else:
+        errors.append("Finding field '{}' has unknown decision '{}'".format(field, decision))
+for stale in sorted(set(classified) - set(fields)):
+    print("::warning::scanner-field-gate: findingFields classifies '{}' but it is not on Finding".format(stale))
+for message in errors:
+    print("::error::scanner-field-gate: " + message)
+sys.exit(1 if errors else 0)
+PY
+        )" || true
+        if [ -n "$finding_output" ]; then
+            printf '%s\n' "$finding_output"
+            failures=$((failures + $(grep -c '^::error::' <<<"$finding_output" || true)))
+            warnings=$((warnings + $(grep -c '^::warning::' <<<"$finding_output" || true)))
+            if ! grep -q '^::' <<<"$finding_output"; then
+                fail "internal error in the Finding field check — see output above."
+            fi
+        fi
+    fi
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────

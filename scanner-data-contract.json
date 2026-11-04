@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "Vettd Scanner Data Contract",
 	"description": "Defines the exact payload shape the Endpoint Scanner must send to the Vettd ingestion endpoint. Every field listed here is required unless explicitly marked otherwise. If a field is not requested in this contract, it will not be accepted.",
-	"version": "2.8.0",
+	"version": "2.9.0",
 	"type": "object",
 	"required": [
 		"scanMeta",
@@ -506,6 +506,22 @@
 										"filepath": {
 											"type": "string",
 											"description": "Relative path from the skill root to the file that produced this finding. Omitted when the finding is package-level."
+										},
+										"intent": {
+											"type": "string",
+											"description": "Scanner-assigned intent (v2.9.0), e.g. 'malicious' or 'negligent'. Chain detection sets it when it groups findings and may raise severity. Omitted when unset."
+										},
+										"chainId": {
+											"type": "string",
+											"description": "Groups co-occurring findings that form an attack chain (v2.9.0). Findings sharing a chainId were escalated together. Omitted when not part of a chain."
+										},
+										"owaspLlmCategory": {
+											"type": "string",
+											"description": "OWASP Top 10 for LLM Applications category assigned by the scanner (v2.9.0). Omitted when not applicable."
+										},
+										"source": {
+											"type": "string",
+											"description": "Scanner that produced this finding (v2.9.0). Omitted for the default first-party scanner."
 										}
 									}
 								}
@@ -625,6 +641,20 @@
 							"declaredName": {"type": "string"},
 							"declaredVersion": {"type": "string"}
 						}
+					},
+					"assessmentState": {
+						"type": "string",
+						"enum": ["complete", "partial", "failed", "unsupported"],
+						"description": "Whether analysis covered the whole skill (v2.9.0). Only 'complete' may carry grade A / Trusted; an incomplete assessment grades 'pending' (trust Conditional) unless its findings already yield B/C/F. Omitted for records that were never scanned (declared tools, MCP commands)."
+					},
+					"assessmentReasons": {
+						"type": "array",
+						"description": "Stable reason codes for an incomplete assessment (v2.9.0): scanner-error, missing-result, file-unreadable, unreadable-directory, file-cap, size-cap, unanalyzed-content. Omitted when complete.",
+						"items": {"type": "string"}
+					},
+					"bundleDigest": {
+						"type": "string",
+						"description": "Digest of every byte under the skill root except VCS metadata, including files the analysis excluded (.gitignore-ignored, binaries, non-text extensions) (v2.9.0): SHA-256 hex of the JSON array of [path, kind, value] sorted bytewise by '/'-separated path, where kind is 'file' (value: SHA-256 hex of raw bytes) or 'symlink' (value: link target, not followed). File modes are excluded so the digest is identical across platforms. Omitted when any entry could not be read. Any change to the installable bytes changes it; contentHash covers only analyzed text."
 					}
 			}
 			}

@@ -1,7 +1,9 @@
 //! Shared helpers used across contract submodules.
 
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
+use super::identity::{self, read_git_text};
 use super::types::{DetectedSkillSource, ScannerCoverage};
 use crate::models::ArtifactReport;
 pub fn first_path(a: &ArtifactReport) -> &str {
@@ -57,14 +59,22 @@ pub fn short_hash(input: &str) -> String {
 }
 
 pub fn compute_file_hash(path: &str) -> String {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            format!("{:x}", hasher.finalize())
+    // Streamed and hardeded at the open: a FIFO or device at an artifact path
+    // must not block discovery, and the hash cannot be computed from one.
+    let Some(file) = identity::open_readable_file(std::path::Path::new(path)) else {
+        return String::new();
+    };
+    let mut hasher = Sha256::new();
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return String::new(),
         }
-        Err(_) => String::new(),
     }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Try to find the git remote origin URL for a file path.
@@ -102,41 +112,64 @@ pub fn detect_skill_source(skill_path: &str) -> Option<DetectedSkillSource> {
         raw_path
     };
 
-    let mut dir = Some(start);
-    while let Some(d) = dir {
-        let git_dir = d.join(".git");
-        if git_dir.is_dir() {
-            let raw_remote = read_remote_url(&git_dir.join("config"))?;
-            let sanitized = sanitize_git_remote_url(&raw_remote);
-            if sanitized == "unknown" {
-                return None;
-            }
-
-            let relative_path = start
-                .strip_prefix(d)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-
-            return Some(if is_github_remote(&sanitized) {
-                DetectedSkillSource::GitHub {
-                    repo_url: sanitized,
-                    branch: read_current_branch(&git_dir).unwrap_or_else(|| "main".to_string()),
-                    path: relative_path,
-                }
-            } else {
-                DetectedSkillSource::UnsupportedRemote {
-                    remote_url: sanitized,
-                }
-            });
-        }
-        dir = d.parent();
+    // Resolve the enclosing work tree exactly like lineage does, so a
+    // worktree/submodule `.git` file is recognised on both provenance
+    // surfaces (vettd#1216).
+    let (work_root, git_dir) = super::identity::find_git_dir(start)?;
+    // A bundle the enclosing repo does not track (archive export, copy) is not
+    // that repo's skill.
+    if !super::identity::is_tracked(&work_root, &git_dir, raw_path) {
+        return None;
     }
-    None
+    // Read the remote the same way lineage does: worktrees keep shared config
+    // in the common git dir named by `commondir`.
+    let sanitized = super::identity::read_git_remote(&git_dir)?;
+    if sanitized == "unknown" {
+        return None;
+    }
+
+    let relative_path = start
+        .strip_prefix(&work_root)
+        .map(emitted_relative_path)
+        .unwrap_or_default();
+
+    Some(if is_github_remote(&sanitized) {
+        DetectedSkillSource::GitHub {
+            repo_url: sanitized,
+            branch: read_current_branch(&git_dir).unwrap_or_else(|| "main".to_string()),
+            path: relative_path,
+        }
+    } else {
+        DetectedSkillSource::UnsupportedRemote {
+            remote_url: sanitized,
+        }
+    })
+}
+
+/// Encode a work-tree-relative path for `detectedSource.path`.
+///
+/// On Unix the filesystem's own bytes are the path: a literal backslash in a
+/// file name is not a separator, so rewriting it would name a different
+/// location and could alias another tracked skill (vettd#1216/N7). Windows uses
+/// `\` natively while the emitted path must use `/`.
+fn emitted_relative_path(rel: &std::path::Path) -> String {
+    let text = rel.to_string_lossy();
+    #[cfg(windows)]
+    {
+        text.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        text.into_owned()
+    }
 }
 
 /// Extract the raw (unsanitized) `url = ` line from a `.git/config` file.
+///
+/// Through the hardened reader (#315/P0): a FIFO or oversized `config` yields
+/// no provenance instead of blocking the scan.
 fn read_remote_url(git_config: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(git_config).ok()?;
+    let content = read_git_text(git_config)?;
     for line in content.lines() {
         if let Some(raw) = line.trim().strip_prefix("url = ") {
             return Some(raw.to_string());
@@ -153,7 +186,7 @@ fn is_github_remote(sanitized_url: &str) -> bool {
 /// detached HEAD (bare commit SHA) rather than fabricating a branch name;
 /// callers fall back to a sensible default.
 fn read_current_branch(git_dir: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let content = read_git_text(&git_dir.join("HEAD"))?;
     content
         .trim()
         .strip_prefix("ref: refs/heads/")
@@ -294,10 +327,17 @@ fn load_artifact_text(a: &ArtifactReport) -> ArtifactText {
     if !crate::models::is_content_read_allowed(path) {
         return ArtifactText::Unavailable;
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) => return ArtifactText::Failed(format!("could not read: {e}")),
+    // Bounded and hardened at the open: a FIFO or device at the artifact path
+    // must not block the scan, and an oversized file must not be read whole
+    // before it is rejected (#315/P0).
+    let Some(file) = identity::open_readable_file(path) else {
+        return ArtifactText::Failed("not a regular readable file — skipped".to_string());
     };
+    let mut bytes = Vec::new();
+    let mut limited = file.take(MAX_READ_BYTES as u64 + 1);
+    if let Err(e) = limited.read_to_end(&mut bytes) {
+        return ArtifactText::Failed(format!("could not read: {e}"));
+    }
     if bytes.len() > MAX_READ_BYTES {
         return ArtifactText::Failed(format!(
             "larger than {MAX_READ_BYTES} bytes — skipped as too large to analyze"
@@ -672,6 +712,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        crate::contract::identity::write_test_index(&git_dir, &["skills/foo/SKILL.md"]);
     }
 
     #[test]
@@ -753,6 +794,7 @@ mod tests {
         .unwrap();
         // Detached HEAD: a bare SHA, no "ref:" prefix.
         std::fs::write(git_dir.join("HEAD"), "a1b2c3d4e5f6\n").unwrap();
+        crate::contract::identity::write_test_index(&git_dir, &["SKILL.md"]);
 
         let result = detect_skill_source(dir.path().to_str().unwrap());
         match result {
@@ -778,6 +820,103 @@ mod tests {
                 assert_eq!(repo_url, "https://github.com/acme/skills-repo.git");
             }
             other => panic!("expected GitHub variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bundle_under_unrelated_repo_gets_neither_detected_source_nor_lineage() {
+        // vettd#1216: a skill bundle moved or exported under some other
+        // repository's checkout must not be attributed to that repository on
+        // either surface. Only the tracked skill keeps its association.
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let tracked = dir.path().join("skills/foo/SKILL.md");
+        let moved = dir.path().join("exports/bar/SKILL.md");
+        for path in [&tracked, &moved] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "# skill").unwrap();
+        }
+
+        assert!(detect_skill_source(tracked.to_str().unwrap()).is_some());
+        assert!(detect_skill_source(moved.to_str().unwrap()).is_none());
+        let lineage = crate::contract::identity::lineage_for(&moved);
+        assert!(lineage.git_remote_url.is_none() && lineage.git_commit.is_none());
+    }
+
+    #[test]
+    fn detect_skill_source_resolves_a_worktree_git_file() {
+        // Why this matters: a worktree's `.git` is a *file* (`gitdir: ...`).
+        // lineage handled it, detectedSource did not, so worktree skills got
+        // one provenance surface and not the other (vettd#1216).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let common = root.join("real-git");
+        std::fs::create_dir_all(common.join("refs/heads")).unwrap();
+        std::fs::write(
+            common.join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/skills.git\n",
+        )
+        .unwrap();
+        let worktree_git = common.join("worktrees/feat");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+        std::fs::write(worktree_git.join("HEAD"), "ref: refs/heads/feat\n").unwrap();
+        std::fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+        crate::contract::identity::write_test_index(&worktree_git, &["skills/foo/SKILL.md"]);
+
+        std::fs::create_dir_all(root.join("repo/skills/foo")).unwrap();
+        std::fs::write(
+            root.join("repo/.git"),
+            "gitdir: ../real-git/worktrees/feat\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("repo/skills/foo/SKILL.md"), "# skill").unwrap();
+
+        let result = detect_skill_source(root.join("repo/skills/foo").to_str().unwrap());
+        match result {
+            Some(DetectedSkillSource::GitHub {
+                repo_url,
+                branch,
+                path,
+            }) => {
+                assert_eq!(repo_url, "https://github.com/acme/skills.git");
+                assert_eq!(branch, "feat");
+                assert_eq!(path, "skills/foo");
+            }
+            other => panic!("worktree skill must resolve via the .git file, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detected_source_path_keeps_a_literal_backslash() {
+        // Why this matters: the tracking gate stopped normalising backslashes,
+        // but the emitted `path` still rewrote `foo\bar` to `foo/bar`, naming a
+        // different location (and able to alias another tracked skill).
+        let dir = tempfile::tempdir().unwrap();
+        write_git_remote(dir.path(), "https://github.com/acme/skills-repo.git");
+        let literal = dir.path().join("foo\\bar/SKILL.md");
+        let separated = dir.path().join("baz/bar/SKILL.md");
+        for path in [&literal, &separated] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "# skill").unwrap();
+        }
+        let git_dir = dir.path().join(".git");
+        crate::contract::identity::write_test_index(
+            &git_dir,
+            &["foo\\bar/SKILL.md", "baz/bar/SKILL.md"],
+        );
+
+        match detect_skill_source(literal.to_str().unwrap()) {
+            Some(DetectedSkillSource::GitHub { path, .. }) => {
+                assert_eq!(path, "foo\\bar", "a literal backslash is not a separator")
+            }
+            other => panic!("tracked literal-backslash skill must resolve, got {other:?}"),
+        }
+        match detect_skill_source(separated.to_str().unwrap()) {
+            Some(DetectedSkillSource::GitHub { path, .. }) => {
+                assert_eq!(path, "baz/bar", "separators are emitted as `/`")
+            }
+            other => panic!("tracked skill must resolve, got {other:?}"),
         }
     }
 }

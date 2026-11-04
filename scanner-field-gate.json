@@ -1,7 +1,7 @@
 {
   "title": "vettd-cli scanner field gate manifest",
-  "description": "Records the surface-or-gate decision for every field on the pinned vettd-skill-scanner SkillScanResult. Governed by vettd-cli#243 (epic #879). The gate script scripts/check-scanner-field-gate.sh fails a tag bump unless every new crate output field is classified here. Surface fields carry a contractPath: `skills[].externalScannerResults[].*` for fields mapped into the scanner adapter (contract/skill_scan.rs), `skills[].<field>` for fields surfaced directly on the skill record (contract/skills.rs + scanner-data-contract.json skills.items.properties).",
-  "pinTag": "v0.3.0",
+  "description": "Records the surface-or-gate decision for every field on the pinned vettd-skill-scanner SkillScanResult. Governed by vettd-cli#243 (epic #879). The gate script scripts/check-scanner-field-gate.sh fails a tag bump unless every new crate output field is classified here. Surface fields carry a contractPath: `skills[].externalScannerResults[].*` for fields mapped into the scanner adapter (contract/skill_scan.rs), `skills[].<field>` for fields surfaced directly on the skill record (contract/skills.rs + scanner-data-contract.json skills.items.properties). `findingFields` classifies every field on the pinned crate's nested `Finding` the same way (vettd-cli#318): surface fields must exist at skills[].externalScannerResults[].findings[].<camelCase> and be read in the adapter; gate fields must be absent.",
+  "pinTag": "v0.4.0",
   "defaultLeaning": "surface-additive",
   "defaultLeaningNote": "Optional, additively-shaped fields (per the epic convention: additive, optional, open strings, no closed enums, required unchanged, byte-identical when empty) are surfaced additively into scanner-data-contract.json when the bump author explicitly classifies them. Anything unclassified fails the bump.",
   "fields": {
@@ -49,6 +49,48 @@
       "decision": "surface",
       "contractPath": "skills[].hasAssets",
       "reason": "Structural fact surfaced at the skill level (skills[].hasAssets) by contract/skills.rs from the scanner output; present in scanner-data-contract.json skills.items.properties (v2.6.0). Powers the dashboard STRUCTURE & METADATA grid."
+    }
+  },
+  "findingFields": {
+    "rule_id": {
+      "decision": "surface",
+      "reason": "Mapped by contract/skill_scan.rs map_finding into skills[].externalScannerResults[].findings[] (pre-2.9.0)."
+    },
+    "category": {
+      "decision": "surface",
+      "reason": "Mapped by contract/skill_scan.rs map_finding into skills[].externalScannerResults[].findings[] (pre-2.9.0)."
+    },
+    "severity": {
+      "decision": "surface",
+      "reason": "Mapped by contract/skill_scan.rs map_finding into skills[].externalScannerResults[].findings[] (pre-2.9.0). Chain detection may raise it; intent and chain_id explain the escalation."
+    },
+    "label": {
+      "decision": "surface",
+      "reason": "Mapped by contract/skill_scan.rs map_finding into skills[].externalScannerResults[].findings[] (pre-2.9.0)."
+    },
+    "detail": {
+      "decision": "surface",
+      "reason": "Mapped by contract/skill_scan.rs map_finding into skills[].externalScannerResults[].findings[] (pre-2.9.0)."
+    },
+    "filepath": {
+      "decision": "surface",
+      "reason": "Mapped as findings[].filepath (v2.7.0)."
+    },
+    "owasp_llm_category": {
+      "decision": "surface",
+      "reason": "Scanner-assigned category, decision context (v2.9.0, vettd-cli#318)."
+    },
+    "chain_id": {
+      "decision": "surface",
+      "reason": "Explains chain escalation of severity (v2.9.0, vettd-cli#318)."
+    },
+    "intent": {
+      "decision": "surface",
+      "reason": "Set with chain escalation; drives malicious classification (v2.9.0, vettd-cli#318)."
+    },
+    "source": {
+      "decision": "surface",
+      "reason": "Producing scanner; omitted when default (v2.9.0, vettd-cli#318)."
     }
   }
 }
