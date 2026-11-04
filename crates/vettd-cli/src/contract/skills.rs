@@ -144,7 +144,7 @@ fn merge_skill(existing: &mut Skill, later: Skill) {
         complete,
     )
     .to_string();
-    existing.trust_level = trust_level_from_grade(&existing.overall_grade).to_string();
+    existing.trust_level = trust_level(&existing.overall_grade, complete).to_string();
 }
 
 fn merge_scanner_result(into: &mut ExternalScannerResult, later: ExternalScannerResult) {
@@ -214,7 +214,7 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         assessment.is_complete(),
     )
     .to_string();
-    let trust_level = trust_level_from_grade(&overall_grade).to_string();
+    let trust_level = trust_level(&overall_grade, assessment.is_complete()).to_string();
     let structural = scan_output.as_ref().and_then(|o| o.structural.as_ref());
 
     // Content identity (#274, #130): digest over the whole skill directory
@@ -315,11 +315,16 @@ fn grade_from_scanner_result(
     result: Option<&ExternalScannerResult>,
     assessment_complete: bool,
 ) -> &'static str {
-    let grade = grade_from_findings(result);
-    if grade == "A" && !assessment_complete {
+    effective_grade(grade_from_findings(result), assessment_complete)
+}
+
+/// The shared grade rule (`trust-definitions.json`, vettd#1213): an
+/// incomplete assessment never grades A; B/C/F are kept.
+fn effective_grade(findings_grade: &'static str, assessment_complete: bool) -> &'static str {
+    if findings_grade == "A" && !assessment_complete {
         "pending"
     } else {
-        grade
+        findings_grade
     }
 }
 
@@ -355,12 +360,20 @@ fn grade_from_findings(result: Option<&ExternalScannerResult>) -> &'static str {
     }
 }
 
-fn trust_level_from_grade(grade: &str) -> &'static str {
-    match grade {
-        "A" => "Trusted",
-        "B" => "Conditional",
-        "C" | "F" => "Untrusted",
-        _ => "Conditional", // "pending" or unknown
+/// The shared trust-level rule (`trust-definitions.json`, vettd#1213), the
+/// same mapping the server uses for imported skills: A/B Trusted, C or
+/// pending Conditional, F Untrusted. An incomplete assessment is never
+/// Trusted.
+fn trust_level(grade: &str, assessment_complete: bool) -> &'static str {
+    let level = match grade {
+        "A" | "B" => "Trusted",
+        "F" => "Untrusted",
+        _ => "Conditional", // "C", "pending" or unknown
+    };
+    if level == "Trusted" && !assessment_complete {
+        "Conditional"
+    } else {
+        level
     }
 }
 
@@ -724,7 +737,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         id: tool_name.to_string(),
         name: tool_name.to_string(),
         skill_type: skill_type.to_string(),
-        trust_level: trust_level_from_grade("pending").to_string(),
+        trust_level: trust_level("pending", false).to_string(),
         overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
@@ -1231,7 +1244,7 @@ mod tests {
         // grade A (→ Trusted): that is the #314 trust bug.
         assert_eq!(grade_from_scanner_result(None, false), "pending");
         assert_eq!(
-            trust_level_from_grade(grade_from_scanner_result(None, false)),
+            trust_level(grade_from_scanner_result(None, false), false),
             "Conditional"
         );
 
@@ -1344,12 +1357,29 @@ mod tests {
     }
 
     #[test]
-    fn trust_level_from_grade_mapping() {
-        assert_eq!(trust_level_from_grade("A"), "Trusted");
-        assert_eq!(trust_level_from_grade("B"), "Conditional");
-        assert_eq!(trust_level_from_grade("C"), "Untrusted");
-        assert_eq!(trust_level_from_grade("F"), "Untrusted");
-        assert_eq!(trust_level_from_grade("pending"), "Conditional");
+    fn grade_and_trust_level_match_the_shared_definition() {
+        // vettd#1213: the CLI and the server must grade and trust a skill the
+        // same way. Both suites assert every case of the same byte-identical
+        // file, so a change on one side alone fails here or there.
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../trust-definitions.json"))
+                .expect("trust-definitions.json must be valid JSON");
+        let cases = doc["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let findings_grade: &'static str =
+                match case["findingsGrade"].as_str().expect("findingsGrade") {
+                    "A" => "A",
+                    "B" => "B",
+                    "C" => "C",
+                    "F" => "F",
+                    other => panic!("unexpected findingsGrade {other}"),
+                };
+            let complete = case["assessmentState"] == "complete";
+            let grade = effective_grade(findings_grade, complete);
+            assert_eq!(grade, case["grade"], "{case}");
+            assert_eq!(trust_level(grade, complete), case["trustLevel"], "{case}");
+        }
     }
 
     #[test]
