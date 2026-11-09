@@ -1905,7 +1905,7 @@ mod tests {
                 std::fs::create_dir_all(&root).unwrap();
                 std::fs::write(root.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
                 let helper = root.join("helper.data");
-                std::fs::write(&helper, "payload").unwrap();
+                std::fs::write(&helper, [0xff_u8, 0x00, 0x01]).unwrap();
                 let mode = if executable { 0o755 } else { 0o644 };
                 std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(mode)).unwrap();
                 artifacts.push(skill_artifact_at(&root.join("SKILL.md")));

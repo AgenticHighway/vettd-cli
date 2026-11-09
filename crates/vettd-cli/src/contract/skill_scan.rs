@@ -892,7 +892,7 @@ mod tests {
         let dir = temp_skill_dir("chmod-cache");
         std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
         let helper = dir.join("helper.data");
-        std::fs::write(&helper, "payload").unwrap();
+        std::fs::write(&helper, [0xff_u8, 0x00, 0x01]).unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let artifact = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());

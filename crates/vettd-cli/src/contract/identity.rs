@@ -11,6 +11,7 @@
 //! canonical asset identity. Escaping is identical for ASCII content; non-ASCII
 //! text may serialize differently (JS escapes U+2028/U+2029, serde does not).
 
+use super::invocations::invoked_paths;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -220,13 +221,22 @@ fn load_skill_files_with(
     // describe two different versions of the same file (#315/N3).
     let mut analyzed_hashes: HashMap<String, String> = HashMap::new();
     let mut total_bytes: u64 = 0;
-    for rel in &files {
-        if !is_likely_text(Path::new(rel)) {
-            continue;
-        }
+    // Allowlisted text first, then sniffed files with whatever budget is left,
+    // so a large data file can never starve real code of the byte budget.
+    let allowlisted = files.iter().filter(|rel| is_likely_text(Path::new(rel)));
+    let sniffed = files.iter().filter(|rel| is_sniffable(rel));
+    for (rel, is_sniffed) in allowlisted
+        .map(|rel| (rel, false))
+        .chain(sniffed.map(|rel| (rel, true)))
+    {
+        // A sniffed file that cannot be read as text is simply not analyzed:
+        // it stays in the bundle digest and `invoked_paths` decides whether
+        // that makes the assessment partial (#322).
         if text_files.len() >= MAX_SKILL_FILES {
-            partial = true;
-            file_cap = true;
+            if !is_sniffed {
+                partial = true;
+                file_cap = true;
+            }
             continue;
         }
         // One bounded, non-blocking read: the cap is enforced on the bytes read
@@ -234,6 +244,7 @@ fn load_skill_files_with(
         // memory before the cap is noticed.
         let remaining = MAX_SKILL_TOTAL_BYTES.saturating_sub(total_bytes);
         match read_text_file(&root.join(rel), remaining) {
+            TextRead::Text(content) if is_sniffed && content.contains('\0') => {}
             TextRead::Text(content) => {
                 let mut hasher = Sha256::new();
                 hasher.update(content.as_bytes());
@@ -241,11 +252,12 @@ fn load_skill_files_with(
                 total_bytes += content.len() as u64;
                 text_files.insert(rel.clone(), content);
             }
-            TextRead::TooLarge => {
+            TextRead::TooLarge if !is_sniffed => {
                 partial = true;
                 size_cap = true;
             }
-            TextRead::Unreadable => skipped.push(rel.clone()),
+            TextRead::Unreadable if !is_sniffed => skipped.push(rel.clone()),
+            TextRead::TooLarge | TextRead::Unreadable => {}
         }
     }
 
@@ -274,6 +286,9 @@ fn load_skill_files_with(
     // Excluded content must not gain trust by being excluded (#315): risky
     // entries the scanner never saw make the assessment partial.
     let analyzed: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
+    // Files the skill's own text tells an agent to run (#322): if one was not
+    // decoded and analyzed, the assessment cannot be complete.
+    let invoked = invoked_paths(&text_files);
     let unanalyzed_risky = bundle.entries.iter().any(|entry| {
         let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
         // Classify the entry kind before exempting inert OS junk: a symlink
@@ -285,7 +300,13 @@ fn load_skill_files_with(
             BundleEntryKind::Unreadable => false,
             BundleEntryKind::File => {
                 let analyzed_text = analyzed.contains(entry.path.as_str())
-                    && is_likely_text(Path::new(&entry.path));
+                    && (is_likely_text(Path::new(&entry.path))
+                        || text_files.contains_key(&entry.path));
+                if !text_files.contains_key(&entry.path)
+                    && invoked.contains(&entry.path.to_lowercase())
+                {
+                    return true;
+                }
                 if !analyzed_text && (entry.executable || is_executable_extension(&entry.path)) {
                     return true;
                 }
@@ -654,6 +675,63 @@ fn is_executable_mode(entry: &fs::DirEntry) -> bool {
 #[cfg(not(unix))]
 fn is_executable_mode(_entry: &fs::DirEntry) -> bool {
     false
+}
+
+/// Extensions of binary or media files that are never read as text. Mirrors
+/// the hub's `isBinaryPath` (`skill-package.ts`) plus common media types.
+fn is_binary_extension(path: &str) -> bool {
+    let Some(extension) = Path::new(path).extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "ico"
+            | "bmp"
+            | "tif"
+            | "tiff"
+            | "svg"
+            | "mp3"
+            | "mp4"
+            | "mov"
+            | "avi"
+            | "wav"
+            | "ogg"
+            | "webm"
+            | "woff"
+            | "woff2"
+            | "ttf"
+            | "otf"
+            | "eot"
+            | "pdf"
+            | "zip"
+            | "tar"
+            | "gz"
+            | "tgz"
+            | "bz2"
+            | "xz"
+            | "7z"
+            | "rar"
+            | "exe"
+            | "dll"
+            | "so"
+            | "dylib"
+            | "class"
+            | "pyc"
+            | "wasm"
+            | "jar"
+    )
+}
+
+/// A file outside the text allowlist that is still read and analyzed when its
+/// bytes are text (#322). Known binaries and executable formats keep the
+/// existing "unanalyzed" handling, so this only ever adds coverage.
+fn is_sniffable(path: &str) -> bool {
+    !is_likely_text(Path::new(path)) && !is_binary_extension(path) && !is_executable_extension(path)
 }
 
 /// Extensions of executables and scripts the text scan does not decode.
@@ -1559,6 +1637,88 @@ mod tests {
         assert_eq!(
             load_skill_files(&root).incomplete_reasons,
             vec!["unanalyzed-content"]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    const CRED_READ: &str = "print(open(\"/home/fixture/.ssh/id_rsa\").read())\n";
+
+    fn skill_with(tag: &str, instruction: &str, files: &[(&str, &[u8])]) -> PathBuf {
+        let root = fixture_root(tag);
+        fs::write(root.join("SKILL.md"), format!("# skill\n{instruction}\n")).unwrap();
+        for (name, bytes) in files {
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn text_in_a_nonstandard_extension_is_analyzed_not_skipped() {
+        // #322: `python payload.dat` must reach the scanner, like payload.py.
+        let root = skill_with(
+            "sniff-dat",
+            "Run python payload.dat",
+            &[("payload.dat", CRED_READ.as_bytes())],
+        );
+        let load = load_skill_files(&root);
+        assert_eq!(
+            load.text_files.get("payload.dat").map(String::as_str),
+            Some(CRED_READ)
+        );
+        assert!(load.incomplete_reasons.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn invoked_file_that_cannot_be_read_as_text_is_partial() {
+        // Invalid UTF-8, NUL bytes: never decoded, so never complete once run.
+        for (tag, bytes) in [
+            ("sniff-bad", vec![0xff_u8, 0xfe, 0x70]),
+            ("sniff-nul", b"a\0b".to_vec()),
+        ] {
+            let root = skill_with(tag, "Run python payload.dat", &[("payload.dat", &bytes)]);
+            let load = load_skill_files(&root);
+            assert!(!load.text_files.contains_key("payload.dat"));
+            assert_eq!(load.incomplete_reasons, vec!["unanalyzed-content"]);
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn uninvoked_binary_data_stays_complete() {
+        // Paired with the case above: ordinary binary data is not blanket-rejected.
+        let root = skill_with(
+            "sniff-inert",
+            "Summarize text.",
+            &[("blob.dat", &[0xff, 0xfe, 0x00])],
+        );
+        assert!(load_skill_files(&root).incomplete_reasons.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn invoked_extensionless_path_in_a_subdirectory_and_known_binary() {
+        let root = skill_with("sniff-sub", "Run bash scripts/step.bin", &[]);
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/step.bin"), [0xff_u8, 0x00]).unwrap();
+        assert_eq!(
+            load_skill_files(&root).incomplete_reasons,
+            vec!["unanalyzed-content"]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sniffed_files_do_not_starve_allowlisted_code_of_budget() {
+        let root = skill_with("sniff-budget", "x", &[("code.py", b"print(1)\n")]);
+        let big = vec![b'a'; (MAX_SKILL_TOTAL_BYTES - 4) as usize];
+        fs::write(root.join("big.dat"), big).unwrap();
+        let load = load_skill_files(&root);
+        assert!(load.text_files.contains_key("code.py"));
+        assert!(
+            load.incomplete_reasons.is_empty(),
+            "{:?}",
+            load.incomplete_reasons
         );
         fs::remove_dir_all(&root).unwrap();
     }
