@@ -361,12 +361,12 @@ fn grade_from_findings(result: Option<&ExternalScannerResult>) -> &'static str {
 }
 
 /// The shared trust-level rule (`trust-definitions.json`, vettd#1213), the
-/// same mapping the server uses for imported skills: A/B Trusted, C or
-/// pending Conditional, F Untrusted. An incomplete assessment is never
+/// same mapping the server uses for imported skills: only A is Trusted, B, C
+/// or pending Conditional, F Untrusted. An incomplete assessment is never
 /// Trusted.
 fn trust_level(grade: &str, assessment_complete: bool) -> &'static str {
     let level = match grade {
-        "A" | "B" => "Trusted",
+        "A" => "Trusted",
         "F" => "Untrusted",
         _ => "Conditional", // "C", "pending" or unknown
     };
