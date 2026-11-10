@@ -273,6 +273,9 @@ pub fn handle_findings(slug: &str, min_rating: &str, json: bool) {
             if let Some(detail_text) = &f.detail {
                 println!("       {detail_text}");
             }
+            if let Some(line) = directory::inference_line(f) {
+                println!("       {line}");
+            }
             println!();
         }
         println!("  Showing {shown}/{total} findings (filter: >= {rating_display} rating).");
