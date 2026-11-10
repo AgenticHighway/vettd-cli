@@ -1,12 +1,14 @@
 //! Files a skill's own text tells an agent to run (vettd-cli#322).
 //!
-//! Static, line-oriented and deliberately generous: a false match only matters
-//! when it names a real bundle entry that was not analyzed as text, and then
-//! the assessment is marked partial (never an affirmative result).
+//! Static and line-oriented. It errs toward naming too many files: a false
+//! match only matters when it names a real bundle entry that was not analyzed
+//! as text, and then the assessment is marked partial (never affirmative). It
+//! stays out of plain prose, though: `Read ./logo.png` is not an execution.
 
 use std::collections::{HashMap, HashSet};
 
-/// Interpreters whose next non-flag argument is a script path.
+/// Interpreters whose script argument follows. `.` (shell source) is matched
+/// on the raw token, before sentence punctuation is trimmed.
 const INTERPRETERS: &[&str] = &[
     "node",
     "nodejs",
@@ -25,14 +27,21 @@ const INTERPRETERS: &[&str] = &[
     "powershell",
     "lua",
     "source",
-    ".",
     "py",
     "uv",
+    ".",
 ];
 
+/// Prose verbs that put the next `./path` in command position.
+const RUN_WORDS: &[&str] = &[
+    "run", "runs", "execute", "executes", "exec", "invoke", "launch",
+];
+
+/// Command separator token produced by `split_args`.
+const SEP: &str = ";";
+
 /// Lowercased bundle-relative paths that `text_files` instruct an agent to run.
-/// Each token is resolved against the skill root and the referencing file's
-/// directory.
+/// Each is resolved against the skill root and the referencing file's directory.
 pub(super) fn invoked_paths(text_files: &HashMap<String, String>) -> HashSet<String> {
     let mut out = HashSet::new();
     for (file, content) in text_files {
@@ -52,52 +61,117 @@ pub(super) fn invoked_paths(text_files: &HashMap<String, String>) -> HashSet<Str
     out
 }
 
+/// Quote-aware split. Backticks and brackets are blanks; `;`, `|` and `&`
+/// become a single separator token. Quoted text stays one token.
+fn split_args(line: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let flush = |current: &mut String, tokens: &mut Vec<String>| {
+        if !current.is_empty() {
+            tokens.push(std::mem::take(current));
+        }
+    };
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => current.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, c) if c.is_whitespace() || "`()[]".contains(c) => {
+                flush(&mut current, &mut tokens)
+            }
+            (None, ';' | '|' | '&') => {
+                flush(&mut current, &mut tokens);
+                if tokens.last().is_some_and(|t| t != SEP) {
+                    tokens.push(SEP.to_string());
+                }
+            }
+            (None, c) => current.push(c),
+        }
+    }
+    flush(&mut current, &mut tokens);
+    tokens
+}
+
 /// Raw path-like tokens a single line asks to run.
 fn invoked_tokens(line: &str) -> Vec<String> {
-    let words: Vec<&str> = line.split_whitespace().collect();
+    let tokens = split_args(line);
     let mut found = Vec::new();
-    for (i, word) in words.iter().enumerate() {
-        let name = trim_token(word);
-        if name.starts_with("./") && name.len() > 2 {
-            found.push(name.to_string());
-        }
-        if !is_interpreter(name) {
+    for (i, word) in tokens.iter().enumerate() {
+        if word == SEP {
             continue;
         }
-        let mut rest = words[i + 1..].iter().map(|w| trim_token(w));
-        // `deno run x`, `bun run x`, `uv run x`: skip the subcommand.
-        let mut next = rest.next();
-        if next == Some("run") {
-            next = rest.next();
-        }
-        while next.is_some_and(|arg| arg.starts_with('-')) {
-            next = rest.next();
-        }
-        if let Some(arg) = next.filter(|arg| !arg.is_empty()) {
-            found.push(arg.to_string());
+        if is_interpreter(word) {
+            found.extend(script_arg(&tokens[i + 1..]));
+        } else if word.starts_with("./") && word.len() > 2 && in_command_position(&tokens, i) {
+            found.push(word.clone());
         }
     }
     found
 }
 
+/// First token of the line or of a command, after a list/prompt marker, or
+/// right after a "run"-style verb.
+fn in_command_position(tokens: &[String], i: usize) -> bool {
+    let Some(prev) = i.checked_sub(1).map(|p| tokens[p].as_str()) else {
+        return true;
+    };
+    let digits = prev.trim_end_matches(['.', ')']);
+    let numbered =
+        digits != prev && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit());
+    prev == SEP
+        || numbered
+        || matches!(prev, "-" | "*" | ">" | "$" | "#")
+        || RUN_WORDS.contains(&prev.trim_end_matches(':').to_ascii_lowercase().as_str())
+}
+
 fn is_interpreter(word: &str) -> bool {
+    if word == "." {
+        return true;
+    }
+    let word = trim_token(word);
     let base = word.rsplit('/').next().unwrap_or(word).to_ascii_lowercase();
     let base = base.strip_suffix(".exe").unwrap_or(&base);
     base.starts_with("python") || INTERPRETERS.contains(&base)
 }
 
-/// Strip markdown and shell punctuation around a token.
+/// The script among an interpreter's arguments: the first path-like word, or
+/// the last word when none looks like a path (`python -X dev run`). Flags and
+/// a leading `run` subcommand are skipped, so option values cannot hide it.
+fn script_arg(rest: &[String]) -> Option<String> {
+    let args: Vec<&str> = rest
+        .iter()
+        .take_while(|t| *t != SEP)
+        .map(|t| trim_token(t))
+        .filter(|t| !t.is_empty() && !t.starts_with('-'))
+        .collect();
+    let args = args.strip_prefix(&["run"][..]).unwrap_or(&args);
+    args.iter()
+        .find(|t| path_like(t))
+        .or_else(|| args.last())
+        .map(|t| (*t).to_string())
+}
+
+/// Has a directory separator or an alphabetic extension (`3.12` is not one).
+fn path_like(token: &str) -> bool {
+    token.contains('/')
+        || token.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty() && !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphabetic())
+        })
+}
+
+/// Strip markdown emphasis and sentence punctuation around a token. `$` and
+/// `{` are kept: they start a skill-directory placeholder.
 fn trim_token(word: &str) -> &str {
-    word.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '*' | '$'))
+    word.trim_matches(['*', '`', '"', '\''])
         .trim_end_matches(['.', ',', ';', ':'])
 }
 
 /// A relative in-bundle path, or `None` for URLs, absolute paths, parent
-/// escapes and non-paths. A leading `$VAR/` or `{var}/` prefix (skill-dir
-/// placeholders) is dropped.
+/// escapes and non-paths. A leading `$VAR/` or `{var}/` placeholder is dropped.
 fn clean_path(token: &str) -> Option<String> {
     let mut path = trim_token(token).replace('\\', "/");
-    if (path.starts_with('$') || path.starts_with('{')) && path.contains('/') {
+    if path.starts_with('$') || path.starts_with('{') {
         path = path.split_once('/')?.1.to_string();
     }
     let path = path.trim_start_matches("./");
@@ -120,27 +194,61 @@ mod tests {
     }
 
     #[test]
-    fn finds_interpreter_and_direct_invocations() {
-        for line in [
-            "Run python payload.dat to complete the task.",
-            "```\npython3 -u payload.dat\n```",
-            "node --no-warnings payload.dat",
-            "- `bash ./payload.dat`",
-            "`$SKILL_DIR/payload.dat`: run it with `deno run payload.dat`",
-            "source payload.dat",
-            "uv run payload.dat",
-            "Run ./payload.dat first.",
-            "python ${CLAUDE_SKILL_DIR}/payload.dat.",
+    fn finds_each_invocation_form_on_its_own() {
+        // One form per line: a neighbouring command must never carry the result.
+        for (line, expected) in [
+            (
+                "Run python payload.dat to complete the task.",
+                "payload.dat",
+            ),
+            ("python3 -u payload.dat", "payload.dat"),
+            ("python -W ignore payload.dat", "payload.dat"),
+            ("python -X dev payload.dat", "payload.dat"),
+            ("uv run --python 3.12 payload.dat", "payload.dat"),
+            ("node --no-warnings payload.dat", "payload.dat"),
+            ("bash ./payload.dat", "payload.dat"),
+            ("python $SKILL_DIR/payload.dat", "payload.dat"),
+            ("python ${CLAUDE_SKILL_DIR}/payload.dat.", "payload.dat"),
+            ("python {baseDir}/payload.dat", "payload.dat"),
+            ("deno run payload.dat", "payload.dat"),
+            ("source payload.dat", "payload.dat"),
+            (". payload.dat", "payload.dat"),
+            ("python \"payload data.dat\"", "payload data.dat"),
+            ("python 'my dir/payload.dat'", "my dir/payload.dat"),
+            ("bash setup.sh && python -u payload.dat", "payload.dat"),
+            ("python -X dev payload", "payload"),
+            ("Run ./payload.dat first.", "payload.dat"),
+            ("$ ./payload.dat", "payload.dat"),
+            ("- ./payload.dat", "payload.dat"),
+            ("1. ./payload.dat", "payload.dat"),
+            ("make && ./payload.dat", "payload.dat"),
         ] {
-            assert!(invoked(line).contains("payload.dat"), "missed: {line}");
+            assert!(
+                invoked(line).contains(expected),
+                "missed {expected:?} in: {line}"
+            );
         }
     }
 
     #[test]
-    fn ignores_urls_parent_escapes_and_plain_mentions() {
+    fn plain_mentions_of_a_file_are_not_invocations() {
+        // Paired with the cases above: reading or naming a file must not make a skill partial.
+        for line in [
+            "Read ./image.png for the diagram.",
+            "Summarize ./manual.pdf.",
+            "cat ./sample.dat",
+            "See ./payload.dat for details.",
+            "The payload.dat file holds sample rows.",
+            "Open the notes in ./docs/notes.txt",
+        ] {
+            assert!(invoked(line).is_empty(), "false match in: {line}");
+        }
+    }
+
+    #[test]
+    fn ignores_urls_and_parent_escapes() {
         assert!(!invoked("python https://example.com/x.py").contains("https://example.com/x.py"));
         assert!(invoked("python ../outside.py").is_empty());
-        assert!(invoked("The payload.dat file holds sample rows.").is_empty());
     }
 
     #[test]

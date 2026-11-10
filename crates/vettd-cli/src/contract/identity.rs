@@ -1697,15 +1697,58 @@ mod tests {
     }
 
     #[test]
-    fn invoked_extensionless_path_in_a_subdirectory_and_known_binary() {
-        let root = skill_with("sniff-sub", "Run bash scripts/step.bin", &[]);
-        fs::create_dir_all(root.join("scripts")).unwrap();
-        fs::write(root.join("scripts/step.bin"), [0xff_u8, 0x00]).unwrap();
-        assert_eq!(
-            load_skill_files(&root).incomplete_reasons,
-            vec!["unanalyzed-content"]
-        );
-        fs::remove_dir_all(&root).unwrap();
+    fn every_invocation_form_makes_an_undecodable_non_executable_file_partial() {
+        // Each form is checked alone, against bytes no other rule flags (undecodable `.dat`, no
+        // exec bit), so only invocation tracking can make the result partial. Paired with an
+        // uninvoked control that stays complete.
+        for (tag, instruction, file) in [
+            ("inv-plain", "python payload.dat", "payload.dat"),
+            ("inv-var", "python $SKILL_DIR/payload.dat", "payload.dat"),
+            (
+                "inv-brace",
+                "python ${CLAUDE_SKILL_DIR}/payload.dat",
+                "payload.dat",
+            ),
+            ("inv-dot", ". payload.dat", "payload.dat"),
+            ("inv-opt", "python -W ignore payload.dat", "payload.dat"),
+            ("inv-uv", "uv run --python 3.12 payload.dat", "payload.dat"),
+            (
+                "inv-quote",
+                "python \"payload data.dat\"",
+                "payload data.dat",
+            ),
+            ("inv-direct", "Run ./payload.dat", "payload.dat"),
+            ("inv-sub", "bash scripts/step.dat", "scripts/step.dat"),
+        ] {
+            let root = skill_with(tag, instruction, &[]);
+            if let Some((dir, _)) = file.rsplit_once('/') {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            fs::write(root.join(file), [0xff_u8, 0x00]).unwrap();
+            assert_eq!(
+                load_skill_files(&root).incomplete_reasons,
+                vec!["unanalyzed-content"],
+                "{instruction}"
+            );
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn reading_or_naming_an_undecodable_file_does_not_make_the_skill_partial() {
+        // The paired control: mentioning, reading or summarizing the same bytes is not running them.
+        for (tag, instruction) in [
+            ("ctl-read", "Read ./payload.dat for the diagram."),
+            ("ctl-cat", "cat ./payload.dat"),
+            ("ctl-prose", "The payload.dat file holds sample rows."),
+        ] {
+            let root = skill_with(tag, instruction, &[("payload.dat", &[0xff_u8, 0x00])]);
+            assert!(
+                load_skill_files(&root).incomplete_reasons.is_empty(),
+                "{instruction}"
+            );
+            fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
