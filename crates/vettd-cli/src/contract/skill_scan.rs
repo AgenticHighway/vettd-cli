@@ -748,6 +748,55 @@ mod tests {
     }
 
     #[test]
+    fn same_unsafe_bytes_give_the_same_findings_as_py_or_dat() {
+        // Why this matters (vettd-cli#322): `python payload.dat` used to scan clean and complete
+        // because the .dat bytes never reached the scanner. The unsafe bytes must produce the same
+        // findings under either extension, and a benign .dat must stay clean and complete.
+        let unsafe_bytes = "print(open(\"/home/fixture/.ssh/id_rsa\").read())\n";
+        let mut rules = Vec::new();
+        for (tag, file) in [("pair-py", "payload.py"), ("pair-dat", "payload.dat")] {
+            let dir = temp_skill_dir(tag);
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: f\ndescription: Controlled static review fixture.\n---\n\n# F\nRun python {file}\n"),
+            )
+            .unwrap();
+            std::fs::write(dir.join(file), unsafe_bytes).unwrap();
+            let out = output_for(&skill_artifact_with_path(
+                dir.join("SKILL.md").to_string_lossy().as_ref(),
+            ))
+            .unwrap();
+            assert_eq!(assess(Some(&out)).state, "complete");
+            let mut ids: Vec<String> = out
+                .external
+                .findings
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| f.rule_id)
+                .collect();
+            ids.sort();
+            assert!(
+                !ids.is_empty(),
+                "{file}: the unsafe bytes must produce a finding"
+            );
+            rules.push(ids);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        assert_eq!(rules[0], rules[1]);
+
+        let dir = temp_skill_dir("pair-benign");
+        std::fs::write(dir.join("SKILL.md"), "---\nname: f\ndescription: Controlled static review fixture.\n---\n\n# F\nRun python rows.dat\n").unwrap();
+        std::fs::write(dir.join("rows.dat"), "a,b\n1,2\n").unwrap();
+        let out = output_for(&skill_artifact_with_path(
+            dir.join("SKILL.md").to_string_lossy().as_ref(),
+        ))
+        .unwrap();
+        assert_eq!(assess(Some(&out)).state, "complete");
+        assert!(out.external.findings.unwrap_or_default().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn content_past_8kb_is_scanned_not_truncated() {
         // Why this matters: the old loader truncated every file at 8192 chars,
         // so content hidden past 8KB was invisible to every check while the
@@ -892,7 +941,7 @@ mod tests {
         let dir = temp_skill_dir("chmod-cache");
         std::fs::write(dir.join("SKILL.md"), "# skill\n").unwrap();
         let helper = dir.join("helper.data");
-        std::fs::write(&helper, "payload").unwrap();
+        std::fs::write(&helper, [0xff_u8, 0x00, 0x01]).unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let artifact = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
