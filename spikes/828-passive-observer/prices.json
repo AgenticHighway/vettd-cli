@@ -1,0 +1,12 @@
+{
+  "note": "Display-time price table for cost rendering. Cost is never stored or transmitted; it is derived at display time from token counts, the model id, and this dated table. Prices are USD per million tokens and are placeholders to be replaced from the provider price pages on the stated date.",
+  "as_of": "2026-09-02",
+  "currency": "USD",
+  "per_million_tokens": {
+    "claude-fable-5-1": {"input": 15.0, "cache_creation": 18.75, "cache_read": 1.5, "output": 75.0},
+    "claude-opus-5": {"input": 15.0, "cache_creation": 18.75, "cache_read": 1.5, "output": 75.0},
+    "claude-sonnet-5": {"input": 3.0, "cache_creation": 3.75, "cache_read": 0.3, "output": 15.0},
+    "claude-haiku-4-5-20251001": {"input": 1.0, "cache_creation": 1.25, "cache_read": 0.1, "output": 5.0},
+    "other": null
+  }
+}
