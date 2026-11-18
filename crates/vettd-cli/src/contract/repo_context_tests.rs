@@ -117,7 +117,7 @@ fn no_frontmatter_caps_trust() {
 }
 
 #[test]
-fn outside_a_git_work_tree_an_escape_is_unverifiable_partial() {
+fn outside_a_git_work_tree_an_escape_above_the_parent_is_unverifiable_partial() {
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -127,4 +127,29 @@ fn outside_a_git_work_tree_an_escape_is_unverifiable_partial() {
     let a = artifact(&dir.path().join("skills/google-ads-assets/SKILL.md"));
     let out = output_for(&a).unwrap();
     assert_eq!(assess(Some(&out)).state, "partial");
+}
+
+#[test]
+fn sibling_skills_in_a_non_git_directory_give_a_note_not_a_partial() {
+    // An installed-skill directory (no .git): `../other/...` lands in a sibling skill.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "alpha/SKILL.md",
+        "---\nname: alpha\ndescription: Does alpha things. Use when asked about alpha.\n---\n\nSee [guide](../beta/references/guide.md) for details.\n",
+    );
+    write(
+        dir.path(),
+        "beta/SKILL.md",
+        "---\nname: beta\ndescription: Does beta things. Use when asked about beta.\n---\n\nBeta body.\n",
+    );
+    write(dir.path(), "beta/references/guide.md", "Guide.\n");
+    let a = artifact(&dir.path().join("alpha/SKILL.md"));
+    let out = output_for(&a).unwrap();
+    assert!(assess(Some(&out)).is_complete());
+    let coverage = out.external.coverage.as_deref().unwrap_or_default();
+    assert!(coverage
+        .iter()
+        .any(|c| c.rule_id == "reliability/sibling-skill-references"));
+    assert!(!coverage.iter().any(|c| c.kind == "partial"));
 }

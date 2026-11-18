@@ -48,9 +48,17 @@ fn cache() -> &'static WalkCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Context for the skill at `skill_root`, or `None` when it is not inside a git work tree.
+/// Context for the skill at `skill_root`. The root is the nearest git work tree; with none (an
+/// installed-skill directory such as `~/.claude/skills`) it is the skill's parent directory, so
+/// sibling skills resolve and anything above the parent stays unverifiable.
 pub(crate) fn for_skill(skill_root: &Path) -> Option<OwnedRepoContext> {
-    let (repo_root, _) = super::identity::find_git_dir(skill_root)?;
+    let repo_root = match super::identity::find_git_dir(skill_root) {
+        Some((root, _)) => root,
+        None => skill_root
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())?
+            .to_path_buf(),
+    };
     let bundle_path = skill_root
         .strip_prefix(&repo_root)
         .ok()?
