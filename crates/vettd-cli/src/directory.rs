@@ -365,6 +365,83 @@ pub struct DirectoryFinding {
     pub detail: Option<String>,
     pub source: Option<String>,
     pub filepath: Option<String>,
+    /// `"inferred"` for a model's judgment; absent for deterministic findings
+    /// and against servers that predate vettd#1228.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
+    /// 0..1, absent when not stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// Emitter tail; for inferred findings `{model, choice, probabilities, margin}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+}
+
+/// Confidence at or above which an inferred finding counts toward the grade.
+pub(crate) const INFERRED_TRUST_CONFIDENCE: f64 = 0.8;
+
+fn confidence_word(c: f64) -> &'static str {
+    if c >= INFERRED_TRUST_CONFIDENCE {
+        "high"
+    } else if c >= 0.5 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+/// Display name for a finding source (`system1` -> `System 1`).
+pub(crate) fn display_finding_source(s: &str) -> &str {
+    if s == "system1" {
+        "System 1"
+    } else {
+        s
+    }
+}
+
+/// One-line basis for an inferred finding; `None` for deterministic findings.
+/// Wording mirrors the server's report.md.
+pub(crate) fn inference_line(f: &DirectoryFinding) -> Option<String> {
+    if f.derivation.as_deref() != Some("inferred") {
+        return None;
+    }
+    let num = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_f64()).filter(|n| n.is_finite());
+    let payload = f.payload.as_ref();
+    let model = payload
+        .and_then(|p| p.get("model"))
+        .and_then(|m| m.as_str())
+        .map(|m| format!(" by {m}"))
+        .unwrap_or_default();
+    let conf = f.confidence.filter(|c| c.is_finite());
+    let mut parts = vec![match conf {
+        Some(c) => format!(
+            "Inferred{model}: confidence {c:.2} ({})",
+            confidence_word(c)
+        ),
+        None => format!("Inferred{model}: confidence not stated"),
+    }];
+    parts.push(match conf {
+        Some(c) if c >= INFERRED_TRUST_CONFIDENCE => "counts toward the grade".to_string(),
+        _ => format!("below the {INFERRED_TRUST_CONFIDENCE} needed to count toward the grade"),
+    });
+    let mut probs: Vec<(&String, f64)> = payload
+        .and_then(|p| p.get("probabilities"))
+        .and_then(|p| p.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| num(Some(v)).map(|n| (k, n)))
+                .collect()
+        })
+        .unwrap_or_default();
+    probs.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if !probs.is_empty() {
+        let list: Vec<String> = probs.iter().map(|(k, v)| format!("{k} {v:.2}")).collect();
+        parts.push(format!("probabilities {}", list.join(", ")));
+    }
+    if let Some(m) = num(payload.and_then(|p| p.get("margin"))) {
+        parts.push(format!("margin {m:.2}"));
+    }
+    Some(parts.join("; "))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1234,7 +1311,7 @@ pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
     } else {
         for f in &filtered {
             let rule = f.rule_id.as_deref().unwrap_or("—");
-            let src = f.source.as_deref().unwrap_or("—");
+            let src = f.source.as_deref().map_or("—", display_finding_source);
             let sc = severity_color(&f.severity.to_ascii_lowercase());
             println!(
                 "  {sc}[{}]{RESET}  {BOLD}{}{RESET}  {DIM}({rule}){RESET}",
@@ -1248,6 +1325,9 @@ pub fn handle_findings(slug: &str, min_severity: &str, json: bool) {
             }
             if let Some(detail_text) = &f.detail {
                 println!("       {detail_text}");
+            }
+            if let Some(line) = inference_line(f) {
+                println!("       {DIM}{line}{RESET}");
             }
             println!();
         }
@@ -2250,6 +2330,58 @@ mod tests {
         assert_eq!(severity_value("High"), severity_value("high"));
     }
 
+    fn finding_from(json: &str) -> DirectoryFinding {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn finding_deserializes_without_new_fields_and_serializes_unchanged() {
+        let f = finding_from(
+            r#"{"severity":"high","ruleId":"X-1","category":null,"label":"l","detail":null,"source":"vettd","filepath":null,"extra":1}"#,
+        );
+        assert!(f.derivation.is_none() && f.confidence.is_none() && f.payload.is_none());
+        assert_eq!(inference_line(&f), None);
+        assert_eq!(
+            serde_json::to_string(&f).unwrap(),
+            r#"{"severity":"high","ruleId":"X-1","category":null,"label":"l","detail":null,"source":"vettd","filepath":null}"#
+        );
+    }
+
+    #[test]
+    fn inferred_finding_passes_fields_through_and_renders_basis() {
+        let json = r#"{"severity":"medium","ruleId":"R","category":null,"label":"l","detail":null,"source":"system1","filepath":null,"derivation":"inferred","confidence":0.91,"payload":{"model":"m1","choice":"present","probabilities":{"none":0.09,"present":0.91},"margin":0.82}}"#;
+        let f = finding_from(json);
+        let out: serde_json::Value = serde_json::to_value(&f).unwrap();
+        assert_eq!(out["derivation"], "inferred");
+        assert_eq!(out["confidence"], 0.91);
+        assert_eq!(out["payload"]["choice"], "present");
+        assert_eq!(
+            inference_line(&f).unwrap(),
+            "Inferred by m1: confidence 0.91 (high); counts toward the grade; probabilities present 0.91, none 0.09; margin 0.82"
+        );
+        assert_eq!(display_finding_source("system1"), "System 1");
+        assert_eq!(display_finding_source("vettd"), "vettd");
+    }
+
+    #[test]
+    fn confidence_words_and_gate_marker() {
+        let mk = |c: Option<f64>| DirectoryFinding {
+            derivation: Some("inferred".into()),
+            confidence: c,
+            ..finding_from(r#"{"severity":"low","label":"l"}"#)
+        };
+        assert!(inference_line(&mk(Some(0.8)))
+            .unwrap()
+            .contains("(high); counts toward the grade"));
+        let mid = inference_line(&mk(Some(0.5))).unwrap();
+        assert!(mid.contains("(medium); below the 0.8 needed to count toward the grade"));
+        assert!(inference_line(&mk(Some(0.49)))
+            .unwrap()
+            .contains("(low); below the 0.8"));
+        let none = inference_line(&mk(None)).unwrap();
+        assert!(none.starts_with("Inferred: confidence not stated; below the 0.8"));
+    }
+
     #[test]
     fn count_by_severity_basic() {
         let findings = vec![
@@ -2261,6 +2393,9 @@ mod tests {
                 detail: None,
                 source: None,
                 filepath: None,
+                derivation: None,
+                confidence: None,
+                payload: None,
             },
             DirectoryFinding {
                 severity: "high".to_string(),
@@ -2270,6 +2405,9 @@ mod tests {
                 detail: None,
                 source: None,
                 filepath: None,
+                derivation: None,
+                confidence: None,
+                payload: None,
             },
             DirectoryFinding {
                 severity: "info".to_string(),
@@ -2279,6 +2417,9 @@ mod tests {
                 detail: None,
                 source: None,
                 filepath: None,
+                derivation: None,
+                confidence: None,
+                payload: None,
             },
         ];
         let (c, h, m, l, i) = count_by_severity(&findings);
