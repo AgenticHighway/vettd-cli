@@ -1665,7 +1665,11 @@ mod tests {
         use crate::contract::SkillScanOutput;
 
         let dir = tempfile::tempdir().unwrap();
-        let skill_md = dir.path().join("SKILL.md");
+        // The folder is named after the skill: a declared name that differs from its folder caps
+        // trust, and this fixture is the clean case.
+        let skill_dir = dir.path().join("release-notes");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md = skill_dir.join("SKILL.md");
         std::fs::write(
             &skill_md,
             "---\nname: release-notes\ndescription: Writes release notes\nversion: 1.2.0\nlicense: MIT\n---\nBody\n",
@@ -1680,13 +1684,16 @@ mod tests {
         a.compute_hash();
         // Identity must describe this directory, or the cache is (correctly)
         // discarded as stale and the scan re-runs.
-        let load = crate::contract::identity::load_skill_files(dir.path());
+        let load = crate::contract::identity::load_skill_files(&skill_dir);
         let identity = crate::contract::skill_scan::SkillIdentity {
             content_hash: crate::contract::identity::canonical_digest(&load.text_files),
             complete: !load.partial && load.skipped.is_empty() && load.bundle_digest.is_some(),
             bundle_digest: load.bundle_digest.clone(),
             exclusions: load.excluded.clone(),
-            assessment_fingerprint: load.assessment_fingerprint.clone(),
+            assessment_fingerprint: crate::contract::repo_context::fold_fingerprint(
+                &load.assessment_fingerprint,
+                crate::contract::repo_context::for_skill(&skill_dir).as_ref(),
+            ),
         };
         a.cached_skill_scan = Some(SkillScanOutput {
             external: ExternalScannerResult {
