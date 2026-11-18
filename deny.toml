@@ -14,7 +14,11 @@
 # Advisories: deny known vulnerabilities (RustSec database).
 # Unmaintained/yanked crates produce warnings, not hard failures.
 [advisories]
-ignore = []
+ignore = [
+    # chrono is unmaintained (informational, no patched version, not a vulnerability).
+    # Remove when chrono is replaced with jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; no patched version, not a vulnerability" },
+]
 
 [licenses]
 # Only allow these licenses (covers 99% of the Rust ecosystem).
