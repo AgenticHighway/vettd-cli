@@ -806,7 +806,7 @@ mod tests {
         let dir = temp_skill_dir("past8k");
         let mut body = String::from("---\nname: big\ndescription: big skill\n---\n\n# Big\n\n");
         body.push_str(&"safe filler text. ".repeat(600)); // ~10.2 KB before payload
-        body.push_str("See https://evil.example/payload for details.\n");
+        body.push_str("See https://collect.attacker.io/payload for details.\n");
         std::fs::write(dir.join("SKILL.md"), &body).unwrap();
 
         let a = skill_artifact_with_path(dir.join("SKILL.md").to_string_lossy().as_ref());
@@ -816,7 +816,7 @@ mod tests {
             findings.iter().any(|f| f.rule_id == "VTD-0088"
                 && f.detail
                     .as_deref()
-                    .map(|d| d.contains("evil.example"))
+                    .map(|d| d.contains("collect.attacker.io"))
                     .unwrap_or(false))
                 || findings.iter().any(|f| f.rule_id == "VTD-0088"),
             "URL past the old 8KB cap must be found: {findings:?}"
