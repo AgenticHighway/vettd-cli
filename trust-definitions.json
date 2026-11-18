@@ -3,7 +3,7 @@
   "description": "Shared grade and trust-level definition (vettd#1213). Kept byte-identical in vettd (packages/api/src/scan/trust-definitions.json) and vettd-cli (trust-definitions.json); both test suites assert every case.",
   "rules": {
     "grade": "The findings grade (A/B/C/F), except that an incomplete assessment (any state but complete) never grades A: A becomes pending. B/C/F are kept so a dangerous result stays visible.",
-    "trustLevel": "Only A is Trusted. B, C or pending is Conditional, F is Untrusted. An incomplete assessment caps Trusted at Conditional."
+    "trustLevel": "Only A is Trusted. B, C or pending is Conditional, F is Untrusted. An incomplete assessment caps Trusted at Conditional. A skill with no frontmatter, or whose declared name does not match its folder (a spec cap, `specCapped`), is also capped at Conditional; the cap never changes the grade."
   },
   "cases": [
     {
@@ -99,6 +99,27 @@
     {
       "findingsGrade": "F",
       "assessmentState": "unsupported",
+      "grade": "F",
+      "trustLevel": "Untrusted"
+    },
+    {
+      "findingsGrade": "A",
+      "assessmentState": "complete",
+      "specCapped": true,
+      "grade": "A",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "B",
+      "assessmentState": "complete",
+      "specCapped": true,
+      "grade": "B",
+      "trustLevel": "Conditional"
+    },
+    {
+      "findingsGrade": "F",
+      "assessmentState": "complete",
+      "specCapped": true,
       "grade": "F",
       "trustLevel": "Untrusted"
     }

@@ -19,7 +19,9 @@ use crate::contract::types::{
 use crate::models::ArtifactReport;
 
 use vettd_skill_scanner::consts::{CURRENT_SCANNER_VERSION, DEFAULT_SOURCE};
-use vettd_skill_scanner::scan_skill;
+use vettd_skill_scanner::{scan_skill, scan_skill_with_repo_context};
+
+use super::repo_context;
 
 /// Structural facts computed by the skill scanner, surfaced at the skill level
 /// (`skills[].hasSkillMd`, `skills[].fileCount`, ...) rather than inside
@@ -110,6 +112,12 @@ pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
         };
     };
     let mut reasons = output.incomplete_reasons.clone();
+    // The scanner disclosed that the instructions point at content it did not assess.
+    if scanner_reports_unscanned_dependencies(&output.external)
+        && !reasons.iter().any(|r| r == "unanalyzed-content")
+    {
+        reasons.push("unanalyzed-content".to_string());
+    }
     if output.partial && reasons.is_empty() {
         // The loader always names why it fell short; this keeps the invariant
         // (partial ⇒ reasons) even if a future shortfall forgets to.
@@ -123,6 +131,17 @@ pub(crate) fn assess(output: Option<&SkillScanOutput>) -> Assessment {
         "complete"
     };
     Assessment { state, reasons }
+}
+
+/// Rule id of the scanner's partial coverage entry for referenced content outside the skill.
+const UNSCANNED_DEPENDENCIES_RULE: &str = "reliability/unscanned-dependencies";
+
+fn scanner_reports_unscanned_dependencies(result: &ExternalScannerResult) -> bool {
+    result.coverage.as_deref().is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|c| c.kind == "partial" && c.rule_id == UNSCANNED_DEPENDENCIES_RULE)
+    })
 }
 
 /// The scan output for an artifact: the cached result only when it still
@@ -150,9 +169,11 @@ impl SkillScanOutput {
             return false;
         };
         let load = identity::load_skill_files(root);
+        let repo = repo_context::for_skill(root);
         load.bundle_digest.as_deref() == Some(cached_digest)
             && identity::canonical_digest(&load.text_files) == self.identity.content_hash
-            && load.assessment_fingerprint == self.identity.assessment_fingerprint
+            && repo_context::fold_fingerprint(&load.assessment_fingerprint, repo.as_ref())
+                == self.identity.assessment_fingerprint
     }
 }
 
@@ -199,6 +220,12 @@ fn run_skill_scanner_with_observed_at(
         bundle_digest,
         assessment_fingerprint,
     } = load;
+    // Where the skill sits in its repository: lets the scanner tell shared repository content
+    // from its own folder. The classification is folded into the fingerprint so a cached
+    // assessment cannot outlive a change in what the references resolve to.
+    let repo = repo_context::for_skill(skill_root);
+    let assessment_fingerprint =
+        repo_context::fold_fingerprint(&assessment_fingerprint, repo.as_ref());
     let identity = SkillIdentity {
         content_hash: identity::canonical_digest(&text_files),
         complete: !partial && skipped.is_empty() && bundle_digest.is_some(),
@@ -211,7 +238,16 @@ fn run_skill_scanner_with_observed_at(
     // Captured before the scan consumes the file map: these are the exact bytes
     // the scan and the content hash describe (#314/P2).
     let skill_md_text = text_files.get("SKILL.md").cloned();
-    let scan_result = match scan_skill(&text_files, &all_paths, observed_at) {
+    let scan = match &repo {
+        Some(ctx) => scan_skill_with_repo_context(
+            &text_files,
+            &all_paths,
+            &ctx.as_scanner_context(),
+            observed_at,
+        ),
+        None => scan_skill(&text_files, &all_paths, observed_at),
+    };
+    let scan_result = match scan {
         Ok(result) => result,
         Err(e) => {
             // Report the failed run instead of dropping it: a dropped result

@@ -14,6 +14,9 @@ mod mcp;
 #[cfg(test)]
 mod parity;
 mod prompts;
+mod repo_context;
+#[cfg(test)]
+mod repo_context_tests;
 mod skill_scan;
 pub(crate) use skill_scan::{assess, run_skill_scanner, SkillScanOutput};
 pub(crate) use skills::build_skills;
