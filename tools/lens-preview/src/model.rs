@@ -1,0 +1,215 @@
+//! Scope, views, pages and the row helpers every view builds from.
+
+use crate::fixture::{Session, PERIOD};
+use std::collections::BTreeSet;
+
+/// The question a result answers: which workspace, agent and period.
+/// It travels with the view so Back restores the earlier scope exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Scope {
+    pub(crate) ws: Option<&'static str>,
+    pub(crate) agent: Option<&'static str>,
+    pub(crate) from: u32,
+    pub(crate) to: u32,
+}
+
+impl Scope {
+    pub(crate) const WEEK: Scope = Scope {
+        ws: None,
+        agent: None,
+        from: 12,
+        to: 18,
+    };
+
+    pub(crate) fn of(s: &Session) -> Self {
+        Self {
+            ws: Some(s.workspace),
+            agent: Some(s.agent),
+            from: s.day,
+            to: s.day,
+        }
+    }
+
+    pub(crate) fn has(&self, s: &Session) -> bool {
+        (self.from..=self.to).contains(&s.day)
+            && self.ws.is_none_or(|w| w == s.workspace)
+            && self.agent.is_none_or(|a| a == s.agent)
+    }
+
+    pub(crate) fn period(&self) -> String {
+        if self.from == self.to {
+            format!("Nov {} UTC", self.from)
+        } else {
+            PERIOD.into()
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        format!(
+            "{} | {} | {}",
+            self.ws
+                .map_or("All workspaces".into(), |w| format!("Workspace {w}")),
+            self.agent.unwrap_or("All agents"),
+            self.period()
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum View {
+    Home,
+    Headroom,
+    Week,
+    Find,
+    Day(u32),
+    Session(usize),
+    Tokens(usize),
+    Help,
+    Inventory,
+    Component(usize, Scope),
+    Placement(usize),
+    Observation(usize, usize),
+    Signal(usize, &'static str, Scope),
+    Change(usize, bool),
+    Apply(usize, bool),
+}
+
+impl View {
+    /// The explicit, reversible widening from one day to the whole period.
+    pub(crate) fn widened(self) -> Option<View> {
+        match self {
+            View::Component(c, s) if s.from == s.to => Some(View::Component(c, s.wide())),
+            View::Signal(c, n, s) if s.from == s.to => Some(View::Signal(c, n, s.wide())),
+            _ => None,
+        }
+    }
+}
+
+impl Scope {
+    pub(crate) fn wide(self) -> Self {
+        Self {
+            from: Scope::WEEK.from,
+            to: Scope::WEEK.to,
+            ..self
+        }
+    }
+}
+
+pub(crate) struct Page {
+    pub(crate) view: View,
+    pub(crate) selected: usize,
+    pub(crate) top: usize,
+    pub(crate) filter: String,
+    /// Inventory filters: type, workspace, agent, evidence (0 = all).
+    pub(crate) filters: [usize; 4],
+    /// Whether the viewport follows the selection. Scrolling past the first
+    /// or last selectable row, or on a view with none, turns it off so rows
+    /// without actions stay reachable.
+    pub(crate) follow: bool,
+}
+
+impl Page {
+    pub(crate) fn new(view: View) -> Self {
+        Self {
+            view,
+            selected: 0,
+            top: 0,
+            filter: String::new(),
+            filters: [0; 4],
+            follow: true,
+        }
+    }
+}
+
+/// Process-local simulation state, independent of the fixture and history.
+#[derive(Default)]
+pub(crate) struct Runtime {
+    pub(crate) disabled: BTreeSet<usize>,
+    pub(crate) notice: Option<(usize, String)>,
+}
+
+pub(crate) struct Row {
+    pub(crate) text: String,
+    pub(crate) open: Option<(View, &'static str)>,
+}
+
+pub(crate) fn line(text: impl Into<String>) -> Row {
+    Row {
+        text: text.into(),
+        open: None,
+    }
+}
+
+pub(crate) fn link(text: impl Into<String>, view: View, action: &'static str) -> Row {
+    Row {
+        text: text.into(),
+        open: Some((view, action)),
+    }
+}
+
+pub(crate) fn usd(cents: u32) -> String {
+    format!("${}.{:02}", cents / 100, cents % 100)
+}
+
+pub(crate) fn bar(amount: u32, max: u32, width: usize) -> String {
+    let boxes = (amount as usize * width).div_ceil(max.max(1) as usize);
+    format!("{:width$}", "━".repeat(boxes))
+}
+
+pub(crate) fn priced(s: &Session) -> usize {
+    s.requests
+        .iter()
+        .filter(|r| r.milli_usd_per_ktok.is_some())
+        .count()
+}
+
+pub(crate) fn measure(s: &Session, count: bool) -> u32 {
+    if count {
+        s.requests.len() as u32
+    } else {
+        s.cents()
+    }
+}
+
+pub(crate) fn units(value: u32, count: bool) -> String {
+    if count {
+        format!("{value} req")
+    } else {
+        usd(value)
+    }
+}
+
+pub(crate) fn cost_label(s: &Session) -> String {
+    let n = priced(s);
+    if n == 0 {
+        "No priced requests".into()
+    } else {
+        format!("{} USD ({n}/{} priced)", usd(s.cents()), s.requests.len())
+    }
+}
+
+pub(crate) fn comparable(s: &Session, count: bool) -> bool {
+    !s.incomplete && (count || priced(s) == s.requests.len())
+}
+
+pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
+    let measure = if count {
+        format!("{} req", s.requests.len())
+    } else if s.requests.iter().all(|r| r.milli_usd_per_ktok.is_none()) {
+        "unpriced".into()
+    } else {
+        usd(s.cents())
+    };
+    link(
+        format!(
+            "{:<16} {:<4} {:<7} {:>8}{}",
+            s.name,
+            s.workspace,
+            s.agent,
+            measure,
+            if s.incomplete { "  partial" } else { "" }
+        ),
+        View::Session(id),
+        "Open session cost and components",
+    )
+}
