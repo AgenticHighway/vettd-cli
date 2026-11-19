@@ -306,52 +306,53 @@ fn help_opens_and_returns() {
     assert!(u.selected().starts_with("▸ Nov 16"));
 }
 
+// The unit toggle keeps the selection on the row that opens the same thing.
+// review-kit moves up a row in requests mode, because Nov 16 isn't unusual
+// in requests; the selection must move with it, not stay on the position.
+#[test]
+fn unit_toggle_keeps_the_selected_target() {
+    let mut u = User::at((80, 24));
+    u.times(Down, 2);
+    assert!(u.selected().starts_with("▸ review-kit"));
+    u.press(KeyCode::Char('c'));
+    assert!(u.selected().starts_with("▸ review-kit"), "{}", u.screen());
+    // Nov 16 has no requests-mode finding, so the selection goes to the
+    // first row instead of whatever slid into its place.
+    let mut u = User::at((80, 24));
+    u.press(Down).press(KeyCode::Char('c'));
+    assert!(
+        u.selected().starts_with("▸ Claude 5-hour"),
+        "{}",
+        u.screen()
+    );
+}
+
+// `c` only acts where the footer offers it, so it can't change Home unseen.
+#[test]
+fn unit_toggle_is_ignored_where_it_is_not_offered() {
+    let mut u = User::at((80, 24));
+    u.press(KeyCode::Char('i')).doesnt_see("USD/requests");
+    u.press(KeyCode::Char('c')).press(Esc).sees("DAILY SPEND");
+}
+
+// Pressing ? again on Keys does nothing, so one Esc always leaves help.
+#[test]
+fn repeated_help_takes_one_esc_to_leave() {
+    let mut u = User::at((80, 24));
+    u.times(KeyCode::Char('?'), 3).press(Esc);
+    assert_eq!(u.crumb(), "Home");
+}
+
+// The daily view answers with what the week held instead of a label.
+#[test]
+fn daily_view_answers_instead_of_labelling() {
+    let mut u = User::at((80, 24));
+    u.times(Down, 4).press(Enter);
+    u.sees("6 of 7 days had input · $12.36 priced")
+        .doesnt_see("Activity over time");
+}
+
 // Rows without an action must still be reachable. In a 38x10 terminal only
 // a few rows fit, so arrow and page keys scroll once there is no selectable
 // row to move to.
-mod scrolling {
-    use super::*;
-    use KeyCode::{PageDown, Up};
-
-    const SMALL: (u16, u16) = (38, 10);
-
-    // Token detail has no actions at all: Down must scroll to the last worker.
-    #[test]
-    fn token_detail_scrolls_to_its_last_row() {
-        let mut u = User::at(SMALL);
-        u.press(Down).press(Enter).press(Enter).press(Enter);
-        u.sees("Main / Large").doesnt_see("Subagent / Small");
-        u.times(Down, 12).sees("Output").sees("21000 tokens");
-        u.times(Up, 12).sees("Main / Large");
-    }
-
-    #[test]
-    fn help_scrolls_to_quit() {
-        let mut u = User::at(SMALL);
-        u.press(KeyCode::Char('?')).doesnt_see("Quit (Ctrl+C");
-        u.times(PageDown, 6).sees("Quit (Ctrl+C");
-    }
-
-    // An exact copy lists its locator before its first action. Up from the
-    // first action scrolls back to it, and Down returns to the action.
-    #[test]
-    fn exact_copy_reveals_rows_above_its_first_action() {
-        let mut u = User::at(SMALL);
-        u.app.stack.push(Page::new(View::Placement(0)));
-        u.doesnt_see("Locator");
-        u.times(Up, 12).sees("Locator");
-        // Down scrolls back until the selected action is on screen again.
-        u.times(Down, 12);
-        u.selected();
-    }
-
-    // Plan headroom's explanation sits below its last window row.
-    #[test]
-    fn plan_headroom_reaches_its_trailing_explanation() {
-        let mut u = User::at(SMALL);
-        u.press(Enter).doesnt_see("Provider meters are");
-        u.times(Down, 14).sees("Provider meters are");
-        u.times(Up, 14);
-        assert!(u.selected().contains("Claude · 5-hour"));
-    }
-}
+mod scrolling;

@@ -134,7 +134,7 @@ impl App {
             }
             KeyCode::Enter => self.open(shown.active),
             code if self.edit_page(code, &shown) => {}
-            code => return self.global(code),
+            code => return self.global(code, all, (w, h), shown.active),
         }
         true
     }
@@ -201,7 +201,13 @@ impl App {
     }
 
     /// Keys that work everywhere. Returns false when the key quits.
-    fn global(&mut self, code: KeyCode) -> bool {
+    fn global(
+        &mut self,
+        code: KeyCode,
+        all: &[Session],
+        size: (u16, u16),
+        active: Option<(usize, (View, &'static str))>,
+    ) -> bool {
         let view = self.stack.last().unwrap().view;
         match code {
             KeyCode::Char('p') => {
@@ -212,12 +218,31 @@ impl App {
             KeyCode::Char('i') if !matches!(view, View::Inventory) => {
                 self.stack.push(Page::new(View::Inventory))
             }
-            KeyCode::Char('?') => self.stack.push(Page::new(View::Help)),
+            // Help on top of help would take one Esc per press to leave.
+            KeyCode::Char('?') if view != View::Help => self.stack.push(Page::new(View::Help)),
             KeyCode::Char('q') => return false,
             KeyCode::Char('/') => self.stack.push(Page::new(View::Find)),
-            KeyCode::Char('c') => self.count = !self.count,
+            KeyCode::Char('c') if view.measured() => {
+                self.toggle_unit(all, size, active.map(|(_, (target, _))| target))
+            }
             _ => {}
         }
         true
+    }
+
+    /// Switches between USD and requests, keeping the selection on the row
+    /// that opens the same thing. Rows can appear or vanish with the unit
+    /// (Nov 16 is unusual in dollars, not in requests), so the selection
+    /// follows the target, not the position. If it vanished, the first row
+    /// is selected rather than whichever row slid into its place.
+    fn toggle_unit(&mut self, all: &[Session], (w, _): (u16, u16), before: Option<View>) {
+        self.count = !self.count;
+        let page = self.stack.last_mut().unwrap();
+        let (_, _, rows) = content(page, all, self.count, screen::list_width(w), &self.rt);
+        let targets: Vec<View> = rows.iter().filter_map(|r| r.open.map(|o| o.0)).collect();
+        page.selected = before
+            .and_then(|v| targets.iter().position(|t| *t == v))
+            .unwrap_or(0);
+        page.follow = true;
     }
 }

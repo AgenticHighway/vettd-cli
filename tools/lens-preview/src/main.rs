@@ -67,24 +67,37 @@ fn run(all: &[Session]) -> io::Result<()> {
     Ok(())
 }
 
+/// The whole synthetic corpus, so every number a view shows can be rebuilt
+/// from the export: sessions, inventory, plan windows and the Home split.
+fn export(sessions: &[Session]) -> serde_json::Value {
+    let token_sources: Vec<_> = fixture::SOURCE_SHARES
+        .iter()
+        .map(|&(source, basis_points)| {
+            serde_json::json!({"source": source, "basis_points": basis_points})
+        })
+        .collect();
+    serde_json::json!({
+        "synthetic": true,
+        "period": PERIOD,
+        "snapshot": fixture::SNAPSHOT,
+        "workspaces": WORKSPACES,
+        "agents": AGENTS,
+        "components": COMPONENTS,
+        "placements": fixture::PLACEMENTS,
+        "scans": fixture::SCANS,
+        "windows": fixture::WINDOWS,
+        "now_minutes_from_nov_18": fixture::NOW,
+        "claude_weekly_ends_percent": fixture::CLAUDE_WEEKLY_ENDS,
+        "limit_hits": fixture::LIMIT_HITS,
+        "token_sources": token_sources,
+        "sessions": sessions,
+    })
+}
+
 fn main() -> io::Result<()> {
     let sessions = fixture::sessions();
     if std::env::args().nth(1).as_deref() == Some("--json") {
-        println!(
-            "{}",
-            serde_json::json!({
-                "synthetic": true,
-                "period": PERIOD,
-                "snapshot": fixture::SNAPSHOT,
-                "workspaces": WORKSPACES,
-                "agents": AGENTS,
-                "components": COMPONENTS,
-                "placements": fixture::PLACEMENTS,
-                "scans": fixture::SCANS,
-                "windows": fixture::WINDOWS,
-                "sessions": sessions,
-            })
-        );
+        println!("{}", export(&sessions));
         return Ok(());
     }
     run(&sessions)

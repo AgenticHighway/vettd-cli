@@ -67,6 +67,15 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
         })
         .collect();
     let peak = days.iter().map(|day| day.1).max().unwrap_or(1);
+    let with_input = days.iter().filter(|d| d.2 > 0).count();
+    let total: u32 = days.iter().map(|d| d.1).sum();
+    // An answer, not a label: how many days had input and what they add to.
+    let answer = format!(
+        "{with_input} of {} days had input · {}{}",
+        days.len(),
+        units(total, count),
+        if count { "" } else { " priced" }
+    );
     let rows = days
         .into_iter()
         .map(|(day, value, n, partial)| {
@@ -89,7 +98,7 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
         })
         .collect();
     (
-        "Activity over time".into(),
+        answer,
         format!(
             "{PERIOD} | All workspaces | {} per day",
             if count { "Requests" } else { "Priced USD" }

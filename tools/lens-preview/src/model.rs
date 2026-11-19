@@ -55,7 +55,7 @@ impl Scope {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum View {
     Home,
     Headroom,
@@ -75,6 +75,14 @@ pub(crate) enum View {
 }
 
 impl View {
+    /// Views whose numbers follow the unit toggle. Only these offer `c`.
+    pub(crate) fn measured(self) -> bool {
+        matches!(
+            self,
+            View::Home | View::Week | View::Day(_) | View::Session(_) | View::Tokens(_)
+        )
+    }
+
     /// The explicit, reversible widening from one day to the whole period.
     pub(crate) fn widened(self) -> Option<View> {
         match self {

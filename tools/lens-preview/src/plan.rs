@@ -15,15 +15,20 @@ pub(crate) fn pace(w: &Window) -> Option<u32> {
     Some((f64::from(p1) + slope * f64::from(w.minutes - t1)).round() as u32)
 }
 
-/// When the window reaches 100% at its pace, if that comes before reset.
-pub(crate) fn full_by(w: &Window) -> Option<String> {
+/// When the window reaches 100% at its pace, in minutes from Nov 18 00:00,
+/// if that comes before reset.
+pub(crate) fn full_at(w: &Window) -> Option<i32> {
     let (&(t0, p0), &(t1, p1)) = (w.readings.first()?, w.readings.last()?);
     if pace(w)? < 100 || p1 <= p0 {
         return None;
     }
     let minutes =
         f64::from(t1) + f64::from(100 - p1.min(100)) * f64::from(t1 - t0) / f64::from(p1 - p0);
-    Some(clock(w.start + minutes.round() as i32))
+    Some(w.start + minutes.round() as i32)
+}
+
+pub(crate) fn full_by(w: &Window) -> Option<String> {
+    full_at(w).map(clock)
 }
 
 /// Minutes from Nov 18 00:00 as "13:22", or "Nov 23 09:00" on another day.
@@ -41,13 +46,20 @@ pub(crate) fn used(w: &Window) -> u32 {
     w.readings.last().map_or(0, |r| r.1)
 }
 
-/// The window that will fill soonest, if any is on pace to fill.
-pub(crate) fn filling() -> Option<(&'static Window, u32)> {
-    fixture::WINDOWS
+/// The window that fills soonest, if any is on pace to fill. That is the
+/// one that can stop work first, whatever its projected share: a weekly
+/// window at 155% that fills in two days matters less than a 5-hour window
+/// at 115% that fills this afternoon.
+pub(crate) fn soonest(windows: &[Window]) -> Option<(&Window, u32)> {
+    windows
         .iter()
-        .filter(|w| full_by(w).is_some())
-        .max_by_key(|w| pace(w))
-        .map(|w| (w, used(w)))
+        .filter_map(|w| full_at(w).map(|at| (w, at)))
+        .min_by_key(|&(_, at)| at)
+        .map(|(w, _)| (w, used(w)))
+}
+
+pub(crate) fn filling() -> Option<(&'static Window, u32)> {
+    soonest(&fixture::WINDOWS)
 }
 
 /// One window: its used share, pace at reset, reset time and source.

@@ -279,3 +279,61 @@ fn headroom_rows_fit_80_columns() {
         assert!(text.contains(needle), "{needle} missing:\n{text}");
     }
 }
+
+// The answer must name the window that stops work first. A weekly window
+// projected at 155% that fills in two days matters less than a 5-hour window
+// at 115% that fills this afternoon, so the earliest fill time wins, not the
+// largest projection.
+#[test]
+fn soonest_window_wins_over_the_largest_projection() {
+    let claude = window("Claude", "5-hour");
+    let fast_weekly = Window {
+        agent: "Codex",
+        name: "weekly",
+        source: "logs",
+        minutes: 7 * 1440,
+        start: -3 * 1440 + 22 * 60 + 10,
+        readings: &[(1000, 20), (3695, 60)],
+    };
+    assert!(pace(&fast_weekly) > pace(claude));
+    let windows = [fast_weekly, Window { ..*claude }];
+    let (w, used) = soonest(&windows).unwrap();
+    assert_eq!((w.agent, w.name, used), ("Claude", "5-hour", 62));
+}
+
+// Every number Home and Plan headroom show must be rebuildable from the
+// export, or scripts and the TUI can disagree.
+#[test]
+fn export_carries_home_and_headroom_data() {
+    let json = export(&fixture::sessions());
+    let bp: u64 = json["token_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["basis_points"].as_u64().unwrap())
+        .sum();
+    assert_eq!(bp, 10_000);
+    assert_eq!(json["windows"].as_array().unwrap().len(), 4);
+    assert_eq!(json["limit_hits"], 3);
+    assert_eq!(
+        json["claude_weekly_ends_percent"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(json["now_minutes_from_nov_18"], fixture::NOW);
+}
+
+// A wrapped answer keeps its indent under the marker instead of starting
+// at the screen edge.
+#[test]
+fn wrapped_answer_keeps_its_indent() {
+    let text = screen_text(&render(
+        &[Page::new(View::Home), Page::new(View::Headroom)],
+        (60, 24),
+        false,
+    ));
+    let second = text.lines().nth(3).unwrap();
+    assert!(
+        second.starts_with("   ") && second.contains("13:22"),
+        "{text}"
+    );
+}

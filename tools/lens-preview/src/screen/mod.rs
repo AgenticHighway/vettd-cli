@@ -280,16 +280,15 @@ fn draw_header(
         Paragraph::new(format!(" {}", breadcrumb(stack, cx.all, max))).style(theme.fg(MUTED)),
         path,
     );
+    // The marker gets its own column so a wrapped answer keeps its indent.
+    let [marker, text] =
+        Layout::horizontal([Constraint::Length(3), Constraint::Fill(1)]).areas(answer);
+    f.render_widget(Paragraph::new(" ◆ ").style(theme.fg(CYAN)), marker);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ◆ ", theme.fg(CYAN)),
-            Span::styled(
-                title.to_string(),
-                theme.fg(INK).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .wrap(Wrap { trim: false }),
-        answer,
+        Paragraph::new(title.to_string())
+            .style(theme.fg(INK).add_modifier(Modifier::BOLD))
+            .wrap(Wrap { trim: true }),
+        text,
     );
     f.render_widget(
         Paragraph::new(chips(scope, usize::from(f.area().width), theme)),
@@ -329,10 +328,7 @@ fn draw_hint(f: &mut Frame, hint: Rect, cx: &Ctx) {
 fn footer_keys(view: View, w: u16) -> Vec<(&'static str, &'static str)> {
     let widen = view.widened().is_some();
     // Only views that follow the selected measure advertise its toggle.
-    let measured = matches!(
-        view,
-        View::Home | View::Week | View::Day(_) | View::Session(_) | View::Tokens(_)
-    );
+    let measured = view.measured();
     match view {
         View::Change(..) => vec![("↑↓", "Move"), ("Enter", "Apply"), ("Esc", "Cancel")],
         View::Inventory if w >= 76 => vec![
