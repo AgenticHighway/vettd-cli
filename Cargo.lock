@@ -2342,7 +2342,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vettd-cli"
-version = "0.15.0"
+version = "0.14.1"
 dependencies = [
  "base64",
  "chrono",
@@ -2372,7 +2372,7 @@ dependencies = [
 [[package]]
 name = "vettd-skill-scanner"
 version = "0.6.0"
-source = "git+https://github.com/AgenticHighway/vettd-skill-scanner?rev=e5d7d08fbafa338faa8e26c54e58cdd3d0409fb7#e5d7d08fbafa338faa8e26c54e58cdd3d0409fb7"
+source = "git+https://github.com/AgenticHighway/vettd-skill-scanner?rev=1eef592294b804ba6e755a160d7c2cd9bd33e7c4#1eef592294b804ba6e755a160d7c2cd9bd33e7c4"
 dependencies = [
  "base64",
  "regex",
