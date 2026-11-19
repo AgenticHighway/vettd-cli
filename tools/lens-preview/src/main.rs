@@ -2,7 +2,7 @@ mod components;
 mod fixture;
 mod screen;
 
-use fixture::{Session, AGENTS, COMPONENTS, KINDS, PARTS, PERIOD, WORKSPACES};
+use fixture::{Session, Window, AGENTS, COMPONENTS, KINDS, PARTS, PERIOD, WORKSPACES};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -71,6 +71,7 @@ impl Scope {
 #[derive(Clone, Copy)]
 enum View {
     Home,
+    Headroom,
     Week,
     Find,
     Day(u32),
@@ -221,6 +222,116 @@ fn session_row(id: usize, s: &Session, count: bool) -> Row {
     )
 }
 
+/// Projected used share at reset: a straight line through the first and
+/// last readings of this window. None with fewer than 2 readings, because
+/// one reading has no pace.
+fn pace(w: &Window) -> Option<u32> {
+    let (&(t0, p0), &(t1, p1)) = (w.readings.first()?, w.readings.last()?);
+    if w.readings.len() < 2 || t1 <= t0 {
+        return None;
+    }
+    let slope = f64::from(p1.saturating_sub(p0)) / f64::from(t1 - t0);
+    Some((f64::from(p1) + slope * f64::from(w.minutes - t1)).round() as u32)
+}
+
+/// When the window reaches 100% at its pace, if that comes before reset.
+fn full_by(w: &Window) -> Option<String> {
+    let (&(t0, p0), &(t1, p1)) = (w.readings.first()?, w.readings.last()?);
+    if pace(w)? < 100 || p1 <= p0 {
+        return None;
+    }
+    let minutes =
+        f64::from(t1) + f64::from(100 - p1.min(100)) * f64::from(t1 - t0) / f64::from(p1 - p0);
+    Some(clock(w.start + minutes.round() as i32))
+}
+
+/// Minutes from Nov 18 00:00 as "13:22", or "Nov 23 09:00" on another day.
+fn clock(minutes: i32) -> String {
+    let (day, rest) = (minutes.div_euclid(1440), minutes.rem_euclid(1440));
+    let time = format!("{:02}:{:02}", rest / 60, rest % 60);
+    if day == 0 {
+        time
+    } else {
+        format!("Nov {} {time}", 18 + day)
+    }
+}
+
+fn used(w: &Window) -> u32 {
+    w.readings.last().map_or(0, |r| r.1)
+}
+
+/// The window that will fill soonest, if any is on pace to fill.
+fn filling() -> Option<(&'static Window, u32)> {
+    fixture::WINDOWS
+        .iter()
+        .filter(|w| full_by(w).is_some())
+        .max_by_key(|w| pace(w))
+        .map(|w| (w, used(w)))
+}
+
+/// Plan headroom: each provider window's used share, its pace to reset,
+/// and where the number came from. No plan is recommended: Lens can't see
+/// what other plans allow.
+fn headroom() -> (String, String, Vec<Row>) {
+    let answer = match filling() {
+        Some((w, used)) => format!(
+            "{} {} window is {used}% used. At this pace it's full by {}.",
+            w.agent,
+            w.name,
+            full_by(w).unwrap()
+        ),
+        None => "No window is on pace to fill before it resets.".into(),
+    };
+    let mut rows: Vec<Row> = fixture::WINDOWS
+        .iter()
+        .map(|w| {
+            let at_reset = pace(w).map_or("—".into(), |p| format!("~{p}%"));
+            // 5-hour windows are today's work; weekly ones span the period.
+            let (view, action) = if w.minutes <= 300 {
+                (View::Day(18), "See today's sessions")
+            } else {
+                (View::Week, "See every day in this window")
+            };
+            link(
+                format!(
+                    "{:<15}{:>4}  {:>8}  {:<12} {}",
+                    format!("{} · {}", w.agent, w.name),
+                    format!("{}%", used(w)),
+                    at_reset,
+                    clock(w.start + w.minutes as i32),
+                    w.source
+                ),
+                view,
+                action,
+            )
+        })
+        .collect();
+    let ends: Vec<String> = fixture::CLAUDE_WEEKLY_ENDS
+        .iter()
+        .map(|e| format!("{e}%"))
+        .collect();
+    rows.extend([
+        line("── Last 4 weeks ──"),
+        line(format!("Claude weekly ended at {}", ends.join(", "))),
+        line(format!(
+            "5-hour limit stopped work {}×",
+            fixture::LIMIT_HITS
+        )),
+        line("── How to read it ──"),
+        line("At reset: straight line through this"),
+        line("window's readings. — means one reading."),
+        line("Provider meters are the source of truth."),
+    ]);
+    (
+        answer,
+        format!(
+            "Claude + Codex | Nov 18 {} | Plan share",
+            clock(fixture::NOW)
+        ),
+        rows,
+    )
+}
+
 /// The dashboard: one sentence on what was used, then findings to open.
 /// It describes the week; judgments live on the screens the findings open.
 fn home(all: &[Session], count: bool) -> (String, String, Vec<Row>) {
@@ -228,6 +339,19 @@ fn home(all: &[Session], count: bool) -> (String, String, Vec<Row>) {
     let cents: u32 = all.iter().map(Session::cents).sum();
     let (days, normal) = screen::daily(all, count);
     let mut rows = Vec::new();
+    // A window on pace to fill comes first: it is the one that can stop work.
+    if let Some((w, used)) = filling() {
+        rows.push(link(
+            format!(
+                "{} {}: {used}%, full by {}",
+                w.agent,
+                w.name,
+                full_by(w).unwrap()
+            ),
+            View::Headroom,
+            "See every plan window and its pace",
+        ));
+    }
     if let Some((day, value)) = days
         .iter()
         .filter(|d| !d.partial)
@@ -290,6 +414,7 @@ fn content(
         | View::Change(..)
         | View::Apply(..) => components::rows(page, all, rt),
         View::Home => home(all, count),
+        View::Headroom => headroom(),
         View::Help => (
             "Keyboard shortcuts".into(),
             "Esc returns to your previous selection and scope".into(),
@@ -648,6 +773,7 @@ fn main() -> io::Result<()> {
                 "components": COMPONENTS,
                 "placements": fixture::PLACEMENTS,
                 "scans": fixture::SCANS,
+                "windows": fixture::WINDOWS,
                 "sessions": sessions,
             })
         );
@@ -892,7 +1018,11 @@ mod tests {
         }
         // Hooks are listed so people learn they cost nothing, not omitted.
         assert!(at("Hooks") > at("File reads"));
-        assert!(text.contains("▸ Nov 16:"), "{text}");
+        assert!(
+            text.contains("▸ Claude 5-hour: 62%, full by 13:22"),
+            "{text}"
+        );
+        assert!(text.contains("Nov 16: 10× a normal day"), "{text}");
         assert!(text.contains("review-kit: unknown load in Codex"), "{text}");
     }
 
@@ -907,7 +1037,11 @@ mod tests {
         );
         assert!(text.contains("WHERE TOKENS WENT"), "{text}");
         assert!(text.contains("WORTH A LOOK"), "{text}");
-        assert!(text.contains("▸ Nov 16:"), "{text}");
+        assert!(
+            text.contains("▸ Claude 5-hour: 62%, full by 13:22"),
+            "{text}"
+        );
+        assert!(text.contains("Nov 16: 10× a normal day"), "{text}");
     }
 
     // Shares on Home must add to 100% or the dashboard misstates the week.
@@ -1003,6 +1137,97 @@ mod tests {
         for size in [(50, 24), (38, 10)] {
             let text = screen_text(&render(&[Page::new(View::Home)], size, false));
             assert!(text.contains("$12.36"), "{size:?}:\n{text}");
+        }
+    }
+
+    fn window(agent: &str, name: &str) -> &'static Window {
+        fixture::WINDOWS
+            .iter()
+            .find(|w| w.agent == agent && w.name == name)
+            .unwrap()
+    }
+
+    // One reading has no pace. Showing a projection from it would invent a
+    // trend, so the window shows "—" instead of a number.
+    #[test]
+    fn pace_needs_two_readings() {
+        let codex = window("Codex", "5-hour");
+        assert_eq!(codex.readings.len(), 1);
+        assert_eq!(pace(codex), None);
+        assert_eq!(full_by(codex), None);
+        let row = headroom()
+            .2
+            .into_iter()
+            .find(|r| r.text.starts_with("Codex · 5-hour"))
+            .unwrap();
+        assert!(row.text.contains(" —  "), "{}", row.text);
+    }
+
+    // Pace is a straight line through the first and last readings. Claude's
+    // 5-hour window goes 9% -> 62% over 135 minutes, so it reaches 100% about
+    // 97 minutes after the last reading, before the 14:00 reset.
+    #[test]
+    fn pace_extrapolates_to_reset_and_names_when_it_fills() {
+        let claude = window("Claude", "5-hour");
+        assert_eq!(pace(claude), Some(115));
+        assert_eq!(full_by(claude).as_deref(), Some("13:22"));
+        // A window on pace to stay under its limit has no fill time.
+        let weekly = window("Claude", "weekly");
+        assert!(pace(weekly).unwrap() < 100);
+        assert_eq!(full_by(weekly), None);
+    }
+
+    // The answer names the window that will stop work first, and every row
+    // says where its number came from, because the two sources differ.
+    #[test]
+    fn headroom_answers_with_the_filling_window_and_cites_sources() {
+        let (answer, _, rows) = headroom();
+        assert_eq!(
+            answer,
+            "Claude 5-hour window is 62% used. At this pace it's full by 13:22."
+        );
+        let windows: Vec<_> = rows.iter().filter(|r| r.open.is_some()).collect();
+        assert_eq!(windows.len(), fixture::WINDOWS.len());
+        for row in windows {
+            let source = if row.text.starts_with("Claude") {
+                "relay"
+            } else {
+                "logs"
+            };
+            assert!(row.text.ends_with(source), "{}", row.text);
+        }
+    }
+
+    // Home's first finding is the window that can stop work, and Enter on it
+    // opens Plan headroom.
+    #[test]
+    fn home_leads_with_the_filling_window() {
+        let rows = content(
+            &Page::new(View::Home),
+            &fixture::sessions(),
+            false,
+            80,
+            &Runtime::default(),
+        )
+        .2;
+        assert!(
+            rows[0].text.starts_with("Claude 5-hour"),
+            "{}",
+            rows[0].text
+        );
+        assert!(matches!(rows[0].open, Some((View::Headroom, _))));
+    }
+
+    // Every column, SOURCE included, must survive an 80-column terminal.
+    #[test]
+    fn headroom_rows_fit_80_columns() {
+        let text = screen_text(&render(
+            &[Page::new(View::Home), Page::new(View::Headroom)],
+            (80, 24),
+            false,
+        ));
+        for needle in ["~115%", "Nov 23 09:00 relay", "15:00        logs"] {
+            assert!(text.contains(needle), "{needle} missing:\n{text}");
         }
     }
 }

@@ -199,6 +199,66 @@ pub const SOURCE_SHARES: [(&str, u32); 6] = [
     ("Hooks", 0),
 ];
 
+/// "Now" for plan windows: Nov 18 11:45, in minutes from Nov 18 00:00.
+pub const NOW: i32 = 11 * 60 + 45;
+
+/// One provider usage window, as its source reports it. Codex writes these
+/// to its session logs (`rate_limits.primary` / `secondary`); Claude sends
+/// them only to the statusline (`rate_limits.five_hour` / `seven_day`), so
+/// they reach Lens through the opt-in relay.
+#[derive(Serialize)]
+pub struct Window {
+    pub agent: &'static str,
+    pub name: &'static str,
+    pub source: &'static str,
+    pub minutes: u32,
+    /// Window start, in minutes from Nov 18 00:00.
+    pub start: i32,
+    /// (minutes since start, used percent) as each reading arrived.
+    pub readings: &'static [(u32, u32)],
+}
+
+pub const WINDOWS: [Window; 4] = [
+    Window {
+        agent: "Claude",
+        name: "5-hour",
+        source: "relay",
+        minutes: 300,
+        start: 9 * 60,
+        readings: &[(30, 9), (90, 31), (165, 62)],
+    },
+    Window {
+        agent: "Claude",
+        name: "weekly",
+        source: "relay",
+        minutes: 7 * 1440,
+        start: -2 * 1440 + 9 * 60,
+        readings: &[(1440, 25), (3045, 31)],
+    },
+    // One reading so far: too few for a pace.
+    Window {
+        agent: "Codex",
+        name: "5-hour",
+        source: "logs",
+        minutes: 300,
+        start: 10 * 60,
+        readings: &[(105, 12)],
+    },
+    Window {
+        agent: "Codex",
+        name: "weekly",
+        source: "logs",
+        minutes: 7 * 1440,
+        start: -3 * 1440 + 22 * 60 + 10,
+        readings: &[(1000, 33), (3695, 44)],
+    },
+];
+
+/// Used share at each of the last four Claude weekly resets, oldest first.
+pub const CLAUDE_WEEKLY_ENDS: [u32; 4] = [41, 63, 38, 55];
+/// Requests refused with a structured `rate_limit` error in those weeks.
+pub const LIMIT_HITS: u32 = 3;
+
 /// Scan evidence is keyed by artifact identity, never by version label.
 pub const SCANS: [(&str, &str); 2] = [
     ("sha:1c4e", "Fixture scan RK-14: A"),

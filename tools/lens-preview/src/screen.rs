@@ -105,6 +105,7 @@ impl Theme {
 fn crumb(view: View, all: &[Session]) -> String {
     match view {
         View::Home => "Home".into(),
+        View::Headroom => "Plan headroom".into(),
         View::Week => "Daily activity".into(),
         View::Find => "Lookup".into(),
         View::Day(day) => format!("Nov {day}"),
@@ -290,6 +291,7 @@ fn keys(pairs: &[(&str, &str)], theme: Theme) -> Line<'static> {
 fn header(view: View, count: bool) -> &'static str {
     match view {
         View::Home => "",
+        View::Headroom => "WINDOW         USED  AT RESET  RESETS       SOURCE",
         View::Week if count => "DAY       REQUESTS  DAILY VOLUME",
         View::Week => "DAY      PRICED USD DAILY COST",
         View::Day(_) => "SESSION          WS   AGENT      TOTAL",
@@ -493,7 +495,7 @@ fn draw_list(
         && body.height >= 9
         && !matches!(
             page.view,
-            View::Change(..) | View::Placement(_) | View::Observation(..)
+            View::Change(..) | View::Placement(_) | View::Observation(..) | View::Headroom
         );
     let [list, side] = if pane {
         Layout::horizontal([

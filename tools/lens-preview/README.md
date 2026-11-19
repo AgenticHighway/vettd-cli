@@ -14,6 +14,12 @@ record sources), and a short Worth a look list whose rows open the older
 views below. Render tests use ratatui's `TestBackend` at 80×24, 60×24 and
 under `NO_COLOR`.
 
+Plan headroom opens from Home's first finding. It lists each provider
+window (Claude and Codex, 5-hour and weekly) with its used share, a
+straight-line pace to reset, the reset time and its source: Codex logs, or
+the opt-in Claude statusline relay. A window with one reading shows "—"
+rather than a guessed pace. Window readings are synthetic fixture values.
+
 CI runs the preview's checks in its own workflow (`lens-preview.yml`), only
 when this folder changes. To run them locally in Docker from this folder:
 
