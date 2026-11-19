@@ -144,7 +144,13 @@ fn merge_skill(existing: &mut Skill, later: Skill) {
         complete,
     )
     .to_string();
-    existing.trust_level = trust_level(&existing.overall_grade, complete).to_string();
+    let spec_capped = spec_trust_capped(
+        existing
+            .external_scanner_results
+            .as_ref()
+            .and_then(|r| r.first()),
+    );
+    existing.trust_level = trust_level(&existing.overall_grade, complete, spec_capped).to_string();
 }
 
 fn merge_scanner_result(into: &mut ExternalScannerResult, later: ExternalScannerResult) {
@@ -214,7 +220,9 @@ fn artifact_to_skill(artifact: &ArtifactReport, agents: &[Agent]) -> (Skill, boo
         assessment.is_complete(),
     )
     .to_string();
-    let trust_level = trust_level(&overall_grade, assessment.is_complete()).to_string();
+    let spec_capped = spec_trust_capped(scan_output.as_ref().map(|o| &o.external));
+    let trust_level =
+        trust_level(&overall_grade, assessment.is_complete(), spec_capped).to_string();
     let structural = scan_output.as_ref().and_then(|o| o.structural.as_ref());
 
     // Content identity (#274, #130): digest over the whole skill directory
@@ -360,17 +368,35 @@ fn grade_from_findings(result: Option<&ExternalScannerResult>) -> &'static str {
     }
 }
 
+/// Signal rule ids that cap trust at Conditional: the skill does not meet the Agent Skills
+/// format in a way that undermines its identity (no frontmatter, or a name that does not match
+/// its folder). They are compatibility signals and never touch the grade.
+const SPEC_TRUST_CAP_SIGNALS: [&str; 2] = [
+    "compatibility/spec-frontmatter",
+    "compatibility/spec-name-folder",
+];
+
+fn spec_trust_capped(result: Option<&ExternalScannerResult>) -> bool {
+    result
+        .and_then(|r| r.signals.as_deref())
+        .is_some_and(|signals| {
+            signals
+                .iter()
+                .any(|s| SPEC_TRUST_CAP_SIGNALS.contains(&s.rule_id.as_str()))
+        })
+}
+
 /// The shared trust-level rule (`trust-definitions.json`, vettd#1213), the
 /// same mapping the server uses for imported skills: only A is Trusted, B, C
 /// or pending Conditional, F Untrusted. An incomplete assessment is never
 /// Trusted.
-fn trust_level(grade: &str, assessment_complete: bool) -> &'static str {
+fn trust_level(grade: &str, assessment_complete: bool, spec_capped: bool) -> &'static str {
     let level = match grade {
         "A" => "Trusted",
         "F" => "Untrusted",
         _ => "Conditional", // "C", "pending" or unknown
     };
-    if level == "Trusted" && !assessment_complete {
+    if level == "Trusted" && (!assessment_complete || spec_capped) {
         "Conditional"
     } else {
         level
@@ -737,7 +763,7 @@ fn tool_to_skill(tool_name: &str, _artifact: &ArtifactReport, agents: &[Agent]) 
         id: tool_name.to_string(),
         name: tool_name.to_string(),
         skill_type: skill_type.to_string(),
-        trust_level: trust_level("pending", false).to_string(),
+        trust_level: trust_level("pending", false, false).to_string(),
         overall_grade: "pending".to_string(),
         execution_environment: exec_env.to_string(),
         description: skill_description(tool_name),
@@ -1244,7 +1270,7 @@ mod tests {
         // grade A (→ Trusted): that is the #314 trust bug.
         assert_eq!(grade_from_scanner_result(None, false), "pending");
         assert_eq!(
-            trust_level(grade_from_scanner_result(None, false), false),
+            trust_level(grade_from_scanner_result(None, false), false, false),
             "Conditional"
         );
 
@@ -1378,7 +1404,12 @@ mod tests {
             let complete = case["assessmentState"] == "complete";
             let grade = effective_grade(findings_grade, complete);
             assert_eq!(grade, case["grade"], "{case}");
-            assert_eq!(trust_level(grade, complete), case["trustLevel"], "{case}");
+            let spec_capped = case["specCapped"].as_bool().unwrap_or(false);
+            assert_eq!(
+                trust_level(grade, complete, spec_capped),
+                case["trustLevel"],
+                "{case}"
+            );
         }
     }
 
@@ -1634,7 +1665,11 @@ mod tests {
         use crate::contract::SkillScanOutput;
 
         let dir = tempfile::tempdir().unwrap();
-        let skill_md = dir.path().join("SKILL.md");
+        // The folder is named after the skill: a declared name that differs from its folder caps
+        // trust, and this fixture is the clean case.
+        let skill_dir = dir.path().join("release-notes");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md = skill_dir.join("SKILL.md");
         std::fs::write(
             &skill_md,
             "---\nname: release-notes\ndescription: Writes release notes\nversion: 1.2.0\nlicense: MIT\n---\nBody\n",
@@ -1649,13 +1684,16 @@ mod tests {
         a.compute_hash();
         // Identity must describe this directory, or the cache is (correctly)
         // discarded as stale and the scan re-runs.
-        let load = crate::contract::identity::load_skill_files(dir.path());
+        let load = crate::contract::identity::load_skill_files(&skill_dir);
         let identity = crate::contract::skill_scan::SkillIdentity {
             content_hash: crate::contract::identity::canonical_digest(&load.text_files),
             complete: !load.partial && load.skipped.is_empty() && load.bundle_digest.is_some(),
             bundle_digest: load.bundle_digest.clone(),
             exclusions: load.excluded.clone(),
-            assessment_fingerprint: load.assessment_fingerprint.clone(),
+            assessment_fingerprint: crate::contract::repo_context::fold_fingerprint(
+                &load.assessment_fingerprint,
+                crate::contract::repo_context::for_skill(&skill_dir).as_ref(),
+            ),
         };
         a.cached_skill_scan = Some(SkillScanOutput {
             external: ExternalScannerResult {
