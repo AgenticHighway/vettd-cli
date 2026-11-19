@@ -43,8 +43,18 @@ pub fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
 
-pub fn visible(h: u16) -> usize {
-    h.saturating_sub(HEAD + FOOT).max(1).into()
+/// Rows the answer line needs: it wraps onto a second line rather than cut
+/// off its numbers, which usually come last.
+pub fn answer_rows(w: u16, title: &str) -> u16 {
+    if title.chars().count() + 3 > usize::from(w) {
+        2
+    } else {
+        1
+    }
+}
+
+pub fn visible(h: u16, answer: u16) -> usize {
+    h.saturating_sub(HEAD + FOOT + answer - 1).max(1).into()
 }
 
 /// Colours, or none at all under NO_COLOR, where selection falls back to
@@ -345,7 +355,7 @@ pub fn draw(
     let [bar, path, answer, chip, body, hint, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(answer_rows(area.width, title)),
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -376,7 +386,8 @@ pub fn draw(
                 title.to_string(),
                 theme.fg(INK).add_modifier(Modifier::BOLD),
             ),
-        ])),
+        ]))
+        .wrap(Wrap { trim: false }),
         answer,
     );
     f.render_widget(
@@ -555,17 +566,34 @@ fn draw_list(
     }
 }
 
-/// Days with input, their totals in the current unit, and the median day.
-pub fn daily(all: &[Session], count: bool) -> (Vec<(u32, Option<u32>)>, u32) {
-    let days: Vec<_> = (12..=18)
+/// One day on the chart. `value` is None when there was no input at all;
+/// `partial` means some input is incomplete or, for spend, unpriced, so the
+/// value is only a floor.
+pub struct Day {
+    pub day: u32,
+    pub value: Option<u32>,
+    pub partial: bool,
+}
+
+/// Each day's total in the current unit, and the median complete day.
+pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, u32) {
+    let days: Vec<Day> = (12..=18)
         .map(|day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
-            let value =
-                (!sessions.is_empty()).then(|| sessions.iter().map(|s| measure(s, count)).sum());
-            (day, value)
+            Day {
+                day,
+                value: (!sessions.is_empty())
+                    .then(|| sessions.iter().map(|s| measure(s, count)).sum()),
+                partial: sessions.iter().any(|s| !comparable(s, count)),
+            }
         })
         .collect();
-    let mut values: Vec<u32> = days.iter().filter_map(|d| d.1).collect();
+    // A partial day's total is a floor, so it never sets what "normal" means.
+    let mut values: Vec<u32> = days
+        .iter()
+        .filter(|d| !d.partial)
+        .filter_map(|d| d.value)
+        .collect();
     values.sort_unstable();
     let normal = values.get(values.len() / 2).copied().unwrap_or(0);
     (days, normal)
@@ -598,42 +626,51 @@ fn draw_home(
     theme: Theme,
 ) {
     let wide = body.width >= 76;
-    let chart_h = match (wide, body.height >= 16) {
-        (true, true) => 8,
-        (false, true) => 6,
-        _ => 5,
-    };
-    let [chart, rest] =
-        Layout::vertical([Constraint::Length(chart_h), Constraint::Fill(1)]).areas(body);
-    let (sources, findings) = if wide {
+    let (chart_h, sources_h) = home_heights(body.height, rows.len() as u16, wide);
+    let (chart, sources, findings) = if wide {
+        let [chart, rest] =
+            Layout::vertical([Constraint::Length(chart_h), Constraint::Fill(1)]).areas(body);
         let [a, b] = Layout::horizontal([Constraint::Length(42), Constraint::Fill(1)])
             .spacing(1)
             .areas(rest);
-        (a, b)
+        (chart, a, b)
     } else {
-        let [a, b] = Layout::vertical([Constraint::Length(8), Constraint::Fill(1)]).areas(rest);
-        (a, b)
+        let [chart, a, b] = Layout::vertical([
+            Constraint::Length(chart_h),
+            Constraint::Length(sources_h),
+            Constraint::Fill(1),
+        ])
+        .areas(body);
+        (chart, a, b)
     };
 
     let (days, normal) = daily(all, count);
-    let peak = days.iter().filter_map(|d| d.1).max().unwrap_or(0);
+    let peak = days.iter().filter_map(|d| d.value).max().unwrap_or(0);
     let label = |v: u32| if count { v.to_string() } else { usd(v) };
     let bars: Vec<Bar> = days
         .iter()
-        .map(|&(day, value)| {
-            let outlier = value.is_some_and(|v| v == peak && v > normal * 3);
-            // No-data days show "·", never a zero-height bar that reads as $0.
-            let caption = match value {
-                None => format!("{day} ·"),
-                Some(v) if wide => format!("{day} {}", label(v)),
-                Some(_) => day.to_string(),
-            };
-            Bar::default()
-                .value(u64::from(value.unwrap_or(0)))
-                .text_value(String::new())
-                .label(Line::from(caption))
-                .style(theme.fg(if outlier { AMBER } else { CYAN }))
-        })
+        .map(
+            |&Day {
+                 day,
+                 value,
+                 partial,
+             }| {
+                let outlier = value.is_some_and(|v| v == peak && v > normal * 3);
+                // No-data days show "·", never a zero-height bar that reads as $0.
+                // Partial days show "≥": the total is a floor, not the day's cost.
+                let floor = if partial { "≥" } else { "" };
+                let caption = match value {
+                    None => format!("{day} ·"),
+                    Some(v) if wide => format!("{day} {floor}{}", label(v)),
+                    Some(_) => format!("{day}{floor}"),
+                };
+                Bar::default()
+                    .value(u64::from(value.unwrap_or(0)))
+                    .text_value(String::new())
+                    .label(Line::from(caption))
+                    .style(theme.fg(if outlier { AMBER } else { CYAN }))
+            },
+        )
         .collect();
     let gap = 1u16;
     let bar_width = (chart.width.saturating_sub(2) / 7)
@@ -643,9 +680,14 @@ fn draw_home(
         BarChart::default()
             .block(panel_block(
                 &format!(
-                    "DAILY {}  ·  normal ≈ {}",
+                    "DAILY {}  ·  normal ≈ {}{}",
                     if count { "REQUESTS" } else { "SPEND" },
-                    label(normal)
+                    label(normal),
+                    if days.iter().any(|d| d.partial) {
+                        "  ·  ≥ partial"
+                    } else {
+                        ""
+                    }
                 ),
                 theme,
             ))
@@ -693,9 +735,15 @@ fn draw_home(
         sources,
     );
 
+    // Scroll the findings so the selected one is always drawn.
+    let room = usize::from(findings.height.saturating_sub(1)).max(1);
+    let selected = active.map_or(0, |(i, _)| i);
+    let top = (selected + 1).saturating_sub(room);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
+        .skip(top)
+        .take(room)
         .map(|(i, row)| {
             let selected = active.is_some_and(|(selection, _)| i == selection);
             Line::styled(
@@ -714,11 +762,32 @@ fn draw_home(
         })
         .collect();
     f.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(panel_block("WORTH A LOOK", theme)),
+        Paragraph::new(lines).block(panel_block("WORTH A LOOK", theme)),
         findings,
     );
+}
+
+/// Splits Home's body so the findings, which take the selection, always get
+/// their rows first. The chart and token table share what is left: a small
+/// chart first, then the full table, then a taller chart. Returns the chart
+/// height and, when stacked, the token table height.
+pub fn home_heights(body: u16, findings: u16, wide: bool) -> (u16, u16) {
+    const CHART_MIN: u16 = 4;
+    const CHART_MAX: u16 = 8;
+    const TABLE: u16 = 8; // title, header and six sources
+    let findings = (findings + 1).min(body);
+    let left = body - findings;
+    if wide {
+        // Findings sit beside the table, so the table can use their rows.
+        let rest = findings.max(TABLE.min(left.saturating_sub(CHART_MIN)));
+        let chart = body.saturating_sub(rest).min(CHART_MAX);
+        let chart = if chart < CHART_MIN { 0 } else { chart };
+        return (chart, 0);
+    }
+    let chart_min = if left >= CHART_MIN { CHART_MIN } else { 0 };
+    let table = TABLE.min(left - chart_min);
+    let chart = (left - table).min(CHART_MAX - 2);
+    (if chart < CHART_MIN { 0 } else { chart }, table)
 }
 
 fn panel_block(title: &str, theme: Theme) -> Block<'static> {

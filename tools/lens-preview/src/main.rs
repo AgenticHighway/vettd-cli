@@ -230,7 +230,8 @@ fn home(all: &[Session], count: bool) -> (String, String, Vec<Row>) {
     let mut rows = Vec::new();
     if let Some((day, value)) = days
         .iter()
-        .filter_map(|&(d, v)| v.map(|v| (d, v)))
+        .filter(|d| !d.partial)
+        .filter_map(|d| d.value.map(|v| (d.day, v)))
         .max_by_key(|&(_, v)| v)
         .filter(|&(_, v)| normal > 0 && v > normal * 3)
     {
@@ -529,7 +530,7 @@ fn run(all: &[Session]) -> io::Result<()> {
         let inventory = matches!(page.view, View::Inventory);
         page.selected = page.selected.min(actions.len().saturating_sub(1));
         let active = actions.get(page.selected);
-        let visible = screen::visible(h);
+        let visible = screen::visible(h, screen::answer_rows(w, &title));
         let focus = active.map_or(page.selected, |(i, _)| *i);
         page.top = page.top.min(focus).max((focus + 1).saturating_sub(visible));
         let active = active.copied();
@@ -881,8 +882,13 @@ mod tests {
         assert!(at("12 sessions") < at("WHERE TOKENS WENT"));
         assert!(text.contains("$12.36 priced"), "{text}");
         assert!(at("DAILY SPEND") < at("WORTH A LOOK"));
-        for day in 12..=18 {
-            assert!(text.contains(&day.to_string()), "day {day} label missing");
+        // Every day is labelled with its value; the day without input says so.
+        for caption in ["12 $0.80", "13 ·", "16 $8.52"] {
+            assert!(
+                text.contains(caption),
+                "{caption} missing:
+{text}"
+            );
         }
         // Hooks are listed so people learn they cost nothing, not omitted.
         assert!(at("Hooks") > at("File reads"));
@@ -947,5 +953,56 @@ mod tests {
     fn too_small_terminal_says_what_it_needs() {
         let text = screen_text(&render(&[Page::new(View::Home)], (30, 8), false));
         assert!(text.contains("38×10"), "{text}");
+    }
+
+    // The selected finding is what Enter opens, so it must be on screen at
+    // every size Lens accepts, not just at 80x24.
+    #[test]
+    fn selected_home_finding_is_drawn_at_every_size() {
+        let all = fixture::sessions();
+        let rows = content(&Page::new(View::Home), &all, false, 80, &Runtime::default()).2;
+        for size in [(80, 24), (60, 24), (80, 12), (50, 16), (38, 10)] {
+            for (i, row) in rows.iter().enumerate() {
+                let mut page = Page::new(View::Home);
+                page.selected = i;
+                let text = screen_text(&render(&[page], size, false));
+                let start: String = row.text.chars().take(12).collect();
+                assert!(
+                    text.contains(&format!("▸ {start}")),
+                    "{size:?} row {i} hidden:\n{text}"
+                );
+            }
+        }
+    }
+
+    // Nov 18's input is incomplete and its model unpriced. Its total is a
+    // floor, so the chart must not show it as a complete cheap day, and it
+    // must not pull down what "normal" means.
+    #[test]
+    fn partial_day_reads_as_floor_and_stays_out_of_normal() {
+        let all = fixture::sessions();
+        let (days, normal) = screen::daily(&all, false);
+        let nov18 = days.iter().find(|d| d.day == 18).unwrap();
+        assert!(nov18.partial);
+        let mut complete: Vec<u32> = days
+            .iter()
+            .filter(|d| !d.partial)
+            .filter_map(|d| d.value)
+            .collect();
+        complete.sort_unstable();
+        assert_eq!(normal, complete[complete.len() / 2]);
+        let text = screen_text(&render(&[Page::new(View::Home)], (80, 24), false));
+        assert!(text.contains("18 ≥$0.54"), "{text}");
+        assert!(!text.contains("18 $0.54"), "{text}");
+    }
+
+    // The answer's numbers come last, so a narrow terminal must wrap the
+    // line rather than cut off the spend.
+    #[test]
+    fn answer_wraps_instead_of_cutting_its_numbers() {
+        for size in [(50, 24), (38, 10)] {
+            let text = screen_text(&render(&[Page::new(View::Home)], size, false));
+            assert!(text.contains("$12.36"), "{size:?}:\n{text}");
+        }
     }
 }

@@ -14,6 +14,15 @@ record sources), and a short Worth a look list whose rows open the older
 views below. Render tests use ratatui's `TestBackend` at 80×24, 60×24 and
 under `NO_COLOR`.
 
+CI runs the preview's checks in its own workflow (`lens-preview.yml`), only
+when this folder changes. To run them locally in Docker from this folder:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w -e CARGO_TARGET_DIR=/tmp/target rust:1.88 \
+  sh -c "rustup component add clippy rustfmt && cargo fmt --check && \
+  cargo clippy --locked --all-targets -- -D warnings && cargo test --locked"
+```
+
 - Developer. Select Nov 16 and open the contributing sessions. Index rebuild
   (workspace api) accounts for $8.20 of the day's $8.52. Its components
   observed open at Nov 16 / api / Claude scope. Press p to widen that
