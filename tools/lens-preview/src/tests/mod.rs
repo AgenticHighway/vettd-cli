@@ -3,6 +3,9 @@
 use super::components::{apply, resolve, Resolution};
 use super::*;
 
+mod corpus;
+mod stress;
+
 fn rows(view: View, rt: &Runtime) -> Vec<Row> {
     content(&Page::new(view), &fixture::sessions(), false, 80, rt).2
 }

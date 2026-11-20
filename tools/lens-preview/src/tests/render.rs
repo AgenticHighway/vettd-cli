@@ -305,7 +305,7 @@ fn soonest_window_wins_over_the_largest_projection() {
 // export, or scripts and the TUI can disagree.
 #[test]
 fn export_carries_home_and_headroom_data() {
-    let json = export(&fixture::sessions());
+    let json = export("default", &fixture::sessions());
     let bp: u64 = json["token_sources"]
         .as_array()
         .unwrap()
