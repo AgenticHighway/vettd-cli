@@ -1,0 +1,16 @@
+{
+  "name": "lens-preview-tui-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Black-box terminal tests for the Lens preview binary",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/journeys.test.mjs"
+  },
+  "devDependencies": {
+    "@microsoft/tui-test": "0.1.1"
+  }
+}

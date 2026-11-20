@@ -1,6 +1,6 @@
 //! Frame computation and key handling, apart from the terminal.
 
-use crate::fixture::{Session, AGENTS, KINDS, WORKSPACES};
+use crate::fixture::{workspaces, Session, AGENTS, KINDS};
 use crate::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -133,7 +133,7 @@ impl App {
                 }
             }
             KeyCode::Enter => self.open(shown.active),
-            code if self.edit_page(code, &shown) => {}
+            code if self.edit_page(code, all, &shown) => {}
             code => return self.global(code, all, (w, h), shown.active),
         }
         true
@@ -155,7 +155,7 @@ impl App {
     /// Keys that act on the current page: moving and scrolling, typing in
     /// Find, and inventory filters. Returns false when the key isn't one.
     /// Find takes letters first, so typing never triggers a command.
-    fn edit_page(&mut self, code: KeyCode, shown: &Shown) -> bool {
+    fn edit_page(&mut self, code: KeyCode, all: &[Session], shown: &Shown) -> bool {
         let page = self.stack.last_mut().unwrap();
         let finding = matches!(page.view, View::Find);
         let inventory = matches!(page.view, View::Inventory);
@@ -188,7 +188,7 @@ impl App {
                 reset(page);
             }
             KeyCode::Tab if inventory => cycle(page, 0, KINDS.len()),
-            KeyCode::Char('w') if inventory => cycle(page, 1, WORKSPACES.len()),
+            KeyCode::Char('w') if inventory => cycle(page, 1, workspaces(all).len()),
             KeyCode::Char('a') if inventory => cycle(page, 2, AGENTS.len()),
             KeyCode::Char('e') if inventory => cycle(page, 3, components::EVIDENCE.len()),
             KeyCode::Char('x') if inventory => {

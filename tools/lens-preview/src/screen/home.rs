@@ -39,6 +39,23 @@ pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, Option<u32>) {
     (days, normal)
 }
 
+/// The chart's floor: bars are drawn above this, so ordinary days still
+/// differ. It is the lowest day less the gap between it and the peak, rounded
+/// down to whole dollars (or whole requests). Zero means no floor is drawn:
+/// there is no data, all days match, or the peak is under twice the lowest.
+pub fn baseline(days: &[Day], count: bool) -> u32 {
+    let values = days.iter().filter_map(|d| d.value);
+    let (Some(min), Some(peak)) = (values.clone().min(), values.max()) else {
+        return 0;
+    };
+    if min == peak || min.saturating_mul(2) < peak {
+        return 0;
+    }
+    let unit = if count { 1 } else { 100 };
+    let floor = min.saturating_sub(peak - min);
+    floor / unit * unit
+}
+
 /// u64: a few thousand sessions already pass 3B tokens, near u32's limit.
 pub fn total_tokens(all: &[Session]) -> u64 {
     all.iter()
@@ -98,6 +115,8 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     // whole dollars (rounded down, so a floor stays a floor), then to the
     // day alone.
     let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
+    // Bars start above the floor, so small differences between days show.
+    let base = baseline(&days, cx.count);
     let bars: Vec<Bar> = days
         .iter()
         .map(|d| {
@@ -124,26 +143,44 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
                 Some(_) => format!("{}{floor}", d.day),
             };
             Bar::default()
-                .value(u64::from(d.value.unwrap_or(0)))
+                .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
                 .text_value(String::new())
                 .label(Line::from(caption))
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
     // No complete day means no normal: say so rather than show a zero.
-    let normal_text = normal.map_or("normal: no complete day".into(), |n| {
-        format!("normal ≈ {}", label(n))
-    });
-    let title = format!(
-        "DAILY {}  ·  {normal_text}{}",
-        if cx.count { "REQUESTS" } else { "SPEND" },
-        if all_partial {
-            "  ·  every day partial (≥)"
-        } else if days.iter().any(|d| d.partial) {
-            "  ·  ≥ partial"
+    let unit = if cx.count {
+        ("DAILY REQUESTS", "REQUESTS")
+    } else {
+        ("DAILY SPEND", "SPEND")
+    };
+    let normal_part: Part = normal.map_or(
+        ("normal: no complete day".into(), "no normal".into()),
+        |n| (format!("normal ≈ {}", label(n)), format!("≈ {}", label(n))),
+    );
+    let partial_part: Option<Part> = if all_partial {
+        Some(("every day partial (≥)".into(), "all partial ≥".into()))
+    } else if days.iter().any(|d| d.partial) {
+        Some(("≥ partial".into(), "≥ partial".into()))
+    } else {
+        None
+    };
+    let axis_part: Option<Part> = (base > 0).then(|| {
+        let amount = if cx.count {
+            base.to_string()
         } else {
-            ""
-        }
+            format!("${}", base / 100)
+        };
+        (format!("axis from {amount}"), format!("from {amount}"))
+    });
+    let unit_part: Part = (unit.0.into(), unit.1.into());
+    let title = chart_title(
+        &unit_part,
+        &normal_part,
+        partial_part.as_ref(),
+        axis_part.as_ref(),
+        usize::from(chart.width),
     );
     f.render_widget(
         BarChart::default()
@@ -154,6 +191,78 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
             .label_style(cx.theme.fg(MUTED)),
         chart,
     );
+}
+
+/// One title part: its full wording and its short wording.
+type Part = (String, String);
+
+/// Builds the chart title from parts, each in full or short wording. Full
+/// wording is used while it fits the block. Then the unit and the axis
+/// shorten first, then the normal and partial notes, so the figures keep
+/// their full wording as long as the title allows. If every part is short
+/// and it still does not fit, the partial note and then the normal are
+/// dropped. The unit and the axis are never dropped: a raised axis must
+/// always be named. No word is ever cut. A block title is drawn as
+/// " {title} ", so it needs two cells more than its text.
+fn chart_title(
+    unit: &Part,
+    normal: &Part,
+    partial: Option<&Part>,
+    axis: Option<&Part>,
+    width: usize,
+) -> String {
+    let fits = |text: &str| text.chars().count() + 2 <= width;
+    // Shown in this order; `true` marks a part that may be dropped.
+    let parts: Vec<(&Part, bool)> = [Some((unit, false)), Some((normal, true))]
+        .into_iter()
+        .chain([partial.map(|p| (p, true)), axis.map(|a| (a, false))])
+        .flatten()
+        .collect();
+    let render = |short: &[bool], kept: &[bool]| -> String {
+        let texts: Vec<&str> = parts
+            .iter()
+            .zip(short)
+            .zip(kept)
+            .filter(|(_, &kept)| kept)
+            .map(|(((part, _), &is_short), _)| {
+                if is_short {
+                    part.1.as_str()
+                } else {
+                    part.0.as_str()
+                }
+            })
+            .collect();
+        let all_short = short.iter().all(|&is_short| is_short);
+        texts.join(if all_short { " · " } else { "  ·  " })
+    };
+    let last = parts.len() - 1;
+    let mut order = vec![0];
+    if axis.is_some() {
+        order.push(last);
+    }
+    order.extend(1..parts.len() - usize::from(axis.is_some()));
+    let mut short = vec![false; parts.len()];
+    let mut kept = vec![true; parts.len()];
+    let full = render(&short, &kept);
+    if fits(&full) {
+        return full;
+    }
+    for &i in &order {
+        short[i] = true;
+        let text = render(&short, &kept);
+        if fits(&text) {
+            return text;
+        }
+    }
+    // Drop optional parts from the end: the partial note, then the normal.
+    for i in (0..parts.len()).rev().filter(|&i| parts[i].1) {
+        kept[i] = false;
+        let text = render(&short, &kept);
+        if fits(&text) {
+            return text;
+        }
+    }
+    render(&short, &kept)
 }
 
 fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {

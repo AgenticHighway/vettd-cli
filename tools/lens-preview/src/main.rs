@@ -96,8 +96,6 @@ fn parse_args(args: &[String]) -> Result<(bool, &'static str), &'static str> {
 /// The stress corpus reuses the default synthetic plan windows and token
 /// sources, since no session records them.
 fn export(corpus: &str, sessions: &[Session]) -> serde_json::Value {
-    let workspaces: std::collections::BTreeSet<&str> =
-        sessions.iter().map(|s| s.workspace).collect();
     let token_sources: Vec<_> = fixture::SOURCE_SHARES
         .iter()
         .map(|&(source, basis_points)| {
@@ -109,7 +107,7 @@ fn export(corpus: &str, sessions: &[Session]) -> serde_json::Value {
         "corpus": corpus,
         "period": PERIOD,
         "snapshot": fixture::SNAPSHOT,
-        "workspaces": workspaces,
+        "workspaces": fixture::workspaces(sessions),
         "agents": AGENTS,
         "components": COMPONENTS,
         "placements": fixture::PLACEMENTS,

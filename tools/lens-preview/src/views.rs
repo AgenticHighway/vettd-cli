@@ -27,9 +27,9 @@ pub(crate) fn content(
         View::Help => help(),
         View::Week => week(all, count, bar_width),
         View::Find => find(&page.filter),
-        View::Day(day) => day_sessions(day, all, count),
-        View::Session(id) => session(id, &all[id], bar_width),
-        View::Tokens(id) => tokens(&all[id]),
+        View::Day(day) => day_sessions(day, all, count, width),
+        View::Session(id) => session(id, &all[id], bar_width, width),
+        View::Tokens(id) => tokens(&all[id], width),
     }
 }
 
@@ -131,7 +131,32 @@ fn find(filter: &str) -> Content {
     )
 }
 
-fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
+/// The workspace column for one day: its longest name, clamped so the
+/// fixed columns still fit `width` (the list width). Shorter days keep the
+/// narrow column, so the default corpus renders as before.
+pub(crate) fn day_ws_width(day: u32, all: &[Session], width: u16) -> usize {
+    // Row marker (3) plus name, agent and total with their separators (34).
+    let room = usize::from(width).saturating_sub(3 + 34);
+    let longest = all
+        .iter()
+        .filter(|s| s.day == day)
+        .map(|s| s.workspace.chars().count())
+        .max()
+        .unwrap_or(0);
+    longest.clamp(4, room.max(4))
+}
+
+/// The Day column header, aligned with the rows `day_sessions` builds.
+pub(crate) fn day_header(day: u32, all: &[Session], width: u16) -> String {
+    let ws = day_ws_width(day, all, width);
+    format!(
+        "{:<16} {:<ws$} {:<7} {:>8}",
+        "SESSION", "WS", "AGENT", "TOTAL"
+    )
+}
+
+fn day_sessions(day: u32, all: &[Session], count: bool, width: u16) -> Content {
+    let ws = day_ws_width(day, all, width);
     let mut sessions: Vec<_> = all
         .iter()
         .enumerate()
@@ -163,7 +188,7 @@ fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
         ),
         sessions
             .into_iter()
-            .map(|(id, s)| session_row(id, s, count))
+            .map(|(id, s)| session_row(id, s, count, ws))
             .collect(),
     )
 }
@@ -186,10 +211,20 @@ fn incomplete_rows(s: &Session) -> Vec<Row> {
     }
 }
 
-fn tokens(s: &Session) -> Content {
+/// "worker / model", with the model shortened so the row, plus `reserved`
+/// columns after it, fits `room`. The model keeps at least one character.
+fn worker_model(worker: &str, model: &str, reserved: usize, room: usize) -> String {
+    let model_room = room
+        .saturating_sub(worker.chars().count() + 3 + reserved)
+        .max(1);
+    format!("{worker} / {}", shorten(model, model_room))
+}
+
+fn tokens(s: &Session, width: u16) -> Content {
+    let room = usize::from(width).saturating_sub(3);
     let mut rows = incomplete_rows(s);
     for r in &s.requests {
-        rows.push(line(format!("{} / {}", r.worker, r.model)));
+        rows.push(line(worker_model(r.worker, r.model, 0, room)));
         rows.extend(
             PARTS
                 .iter()
@@ -205,7 +240,8 @@ fn tokens(s: &Session) -> Content {
 }
 
 /// Cost by part (only when something is priced) and by request.
-fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
+fn cost_rows(s: &Session, bar_width: usize, width: u16) -> Vec<Row> {
+    let room = usize::from(width).saturating_sub(3);
     let mut rows = Vec::new();
     let parts: [u32; 4] = std::array::from_fn(|i| s.requests.iter().map(|r| r.cents()[i]).sum());
     if priced(s) > 0 {
@@ -223,14 +259,17 @@ fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
         } else {
             "unpriced".into()
         };
-        line(format!("{} / {}   {cost}", r.worker, r.model))
+        line(format!(
+            "{}   {cost}",
+            worker_model(r.worker, r.model, 3 + cost.chars().count(), room)
+        ))
     }));
     rows
 }
 
-fn session(id: usize, s: &Session, bar_width: usize) -> Content {
+fn session(id: usize, s: &Session, bar_width: usize, width: u16) -> Content {
     let mut rows = incomplete_rows(s);
-    rows.extend(cost_rows(s, bar_width));
+    rows.extend(cost_rows(s, bar_width, width));
     rows.push(link(
         "Token and cache detail",
         View::Tokens(id),

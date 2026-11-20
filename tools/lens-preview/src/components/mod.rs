@@ -189,7 +189,7 @@ fn pick(values: &[&'static str], index: usize) -> Option<&'static str> {
 
 pub fn rows(page: &Page, all: &[Session], rt: &Runtime) -> (String, String, Vec<Row>) {
     match page.view {
-        View::Inventory => inventory(page, rt),
+        View::Inventory => inventory(page, all, rt),
         View::Component(c, scope) => component(c, scope, all, rt),
         View::Placement(pid) => placement(pid, all, rt),
         View::Observation(sid, u) => observation(sid, u, all),

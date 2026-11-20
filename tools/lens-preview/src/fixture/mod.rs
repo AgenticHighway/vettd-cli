@@ -269,3 +269,11 @@ mod sessions;
 pub use sessions::*;
 mod stress;
 pub use stress::*;
+
+/// The distinct workspaces in a corpus, sorted. The inventory filter offers
+/// exactly these, so it follows the corpus instead of a fixed list.
+pub fn workspaces(all: &[Session]) -> Vec<&'static str> {
+    let distinct: std::collections::BTreeSet<&'static str> =
+        all.iter().map(|s| s.workspace).collect();
+    distinct.into_iter().collect()
+}

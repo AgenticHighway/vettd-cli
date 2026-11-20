@@ -10,7 +10,8 @@ fn header(view: View, count: bool) -> &'static str {
         View::Headroom => "WINDOW         USED  AT RESET  RESETS       SOURCE",
         View::Week if count => "DAY       REQUESTS  DAILY VOLUME",
         View::Week => "DAY      PRICED USD DAILY COST",
-        View::Day(_) => "SESSION          WS   AGENT      TOTAL",
+        // Built per day by views::day_header, since its workspace column varies.
+        View::Day(_) => "",
         View::Find => "MATCHES",
         View::Session(_) => "COST, WORKERS AND OBSERVED COMPONENTS",
         View::Tokens(_) => "TOKENS BY WORKER",
@@ -58,8 +59,13 @@ pub(super) fn draw_list(f: &mut Frame, body: Rect, page: &Page, cx: &Ctx) {
         [body, Rect::default()]
     };
     let [head, items] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(list);
+    // Same width the rows were built with, so the columns line up.
+    let heading = match page.view {
+        View::Day(day) => day_header(day, cx.all, list_width(body.width)),
+        view => header(view, cx.count).into(),
+    };
     f.render_widget(
-        Paragraph::new(format!("   {}", header(page.view, cx.count)))
+        Paragraph::new(format!("   {heading}"))
             .style(cx.theme.panel().add_modifier(Modifier::BOLD)),
         head,
     );

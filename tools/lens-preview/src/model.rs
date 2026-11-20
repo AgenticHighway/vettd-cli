@@ -155,6 +155,27 @@ pub(crate) fn link(text: impl Into<String>, view: View, action: &'static str) ->
     }
 }
 
+/// Cuts text to `max` characters, keeping its start and its end, because
+/// names often differ only at the ends. Counts chars so text is never split
+/// inside a character.
+pub(crate) fn shorten(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    match max {
+        0 => String::new(),
+        1 => "…".into(),
+        _ => {
+            let head = max / 2;
+            let tail = (max - 1) / 2;
+            let start: String = chars[..head].iter().collect();
+            let end: String = chars[chars.len() - tail..].iter().collect();
+            format!("{start}…{end}")
+        }
+    }
+}
+
 pub(crate) fn usd(cents: u32) -> String {
     format!("${}.{:02}", cents / 100, cents % 100)
 }
@@ -200,7 +221,8 @@ pub(crate) fn comparable(s: &Session, count: bool) -> bool {
     !s.incomplete && (count || priced(s) == s.requests.len())
 }
 
-pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
+/// `ws` is the workspace column width; long names are shortened to fit it.
+pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row {
     let measure = if count {
         format!("{} req", s.requests.len())
     } else if s.requests.iter().all(|r| r.milli_usd_per_ktok.is_none()) {
@@ -210,9 +232,9 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
     };
     link(
         format!(
-            "{:<16} {:<4} {:<7} {:>8}{}",
+            "{:<16} {:<ws$} {:<7} {:>8}{}",
             s.name,
-            s.workspace,
+            shorten(s.workspace, ws),
             s.agent,
             measure,
             if s.incomplete { "  partial" } else { "" }
