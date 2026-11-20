@@ -10,7 +10,8 @@ corpus approximates real local logs at scale.
 
 ### Requirement: Corpus selection
 The preview SHALL accept `--corpus <name>`, where the name is `default` or
-`stress`. If the option is omitted, the preview SHALL use `default`.
+`stress`, and `--json`, each anywhere on the command line. If `--corpus` is
+omitted, the preview SHALL use `default`. Other arguments SHALL be ignored.
 
 #### Scenario: Default when omitted
 - **WHEN** the preview runs with `--json` and no `--corpus`
@@ -20,9 +21,17 @@ The preview SHALL accept `--corpus <name>`, where the name is `default` or
 - **WHEN** the preview runs with `--corpus stress --json`
 - **THEN** the export describes the stress corpus and its `corpus` field is `"stress"`
 
+#### Scenario: Flag order does not matter
+- **WHEN** the preview runs with `--json --corpus stress`
+- **THEN** stdout is byte-identical to a run with `--corpus stress --json`
+
 #### Scenario: Unknown corpus rejected
 - **WHEN** the preview runs with `--corpus other`
-- **THEN** it prints a message naming the valid corpora to stderr, writes nothing to stdout and exits non-zero
+- **THEN** it prints `error: --corpus must be default or stress` to stderr, writes nothing to stdout and exits with code 2
+
+#### Scenario: Missing corpus value rejected
+- **WHEN** the preview runs with `--json --corpus` and nothing after it
+- **THEN** it prints `error: --corpus must be default or stress` to stderr, writes nothing to stdout and exits with code 2
 
 ### Requirement: Deterministic export
 The JSON export of either corpus SHALL be byte-identical on every run of the
@@ -40,6 +49,10 @@ same build.
 Apart from the added `corpus` field, the default corpus SHALL keep every
 session, figure and field it had before this change.
 
+#### Scenario: Export matches the pre-change capture
+- **WHEN** the default corpus is exported with `--json`
+- **THEN** the output, with the `corpus` field removed, equals as JSON the export captured from the branch head before this change, including `windows`, `token_sources`, `limit_hits`, `claude_weekly_ends_percent` and `now_minutes_from_nov_18`
+
 #### Scenario: Pinned fixture figures hold
 - **WHEN** the default corpus is loaded
 - **THEN** the Nov 16 Index rebuild run costs $8.20, and every existing test of fixture figures still passes
@@ -55,11 +68,26 @@ session names that repeat across sessions.
 
 #### Scenario: Long and duplicate identifiers
 - **WHEN** the stress corpus is loaded
-- **THEN** at least one workspace or path is longer than 80 characters, at least one model ID is longer than 40 characters, and at least one session name is shared by 10 or more sessions
+- **THEN** at least one workspace is longer than 80 characters, at least one model ID is longer than 40 characters, and at least one session name is shared by 10 or more sessions
+
+### Requirement: Stress export workspaces and plan data
+The stress export SHALL list the sorted, distinct workspaces of the stress
+corpus. It SHALL carry the same plan-window and token-source data as the
+default export, since neither corpus's sessions record that data.
+
+#### Scenario: Workspaces from the selected corpus
+- **WHEN** `--corpus stress --json` runs
+- **THEN** `workspaces` lists the 6 stress workspaces in sorted order with no duplicates
+
+#### Scenario: Plan data reused
+- **WHEN** the stress and default exports are compared
+- **THEN** their `windows`, `token_sources`, `limit_hits`, `claude_weekly_ends_percent` and `now_minutes_from_nov_18` values are equal, and `token_sources` basis points sum to 10,000
 
 ### Requirement: Low copy coverage
 In the stress corpus, at most 15% of skill uses SHALL record which copy ran (an
-artifact identity). A use without that record SHALL NOT have a version label.
+artifact identity), and every recorded identity SHALL be one the inventory
+lists for that component. A use without that record SHALL NOT have a version
+label.
 
 #### Scenario: Coverage ceiling
 - **WHEN** the stress corpus is loaded
@@ -93,5 +121,5 @@ second in a release build.
 The interactive preview SHALL start on the selected corpus without crashing.
 
 #### Scenario: Stress content builds
-- **WHEN** the screen content for each top-level view is built from the stress corpus
+- **WHEN** the screen content for Home, Plan headroom, Week, Find, Help, Inventory and each day of Nov 12–18 is built from the stress corpus
 - **THEN** no build panics

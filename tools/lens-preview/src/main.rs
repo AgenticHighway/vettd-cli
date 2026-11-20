@@ -15,7 +15,7 @@ pub(crate) use model::*;
 pub(crate) use plan::*;
 pub(crate) use views::*;
 
-use fixture::{Session, AGENTS, COMPONENTS, PARTS, PERIOD, WORKSPACES};
+use fixture::{Session, AGENTS, COMPONENTS, PARTS, PERIOD};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -67,9 +67,37 @@ fn run(all: &[Session]) -> io::Result<()> {
     Ok(())
 }
 
+const CORPUS_ERROR: &str = "error: --corpus must be default or stress";
+
+/// `--json` and `--corpus default|stress` may appear anywhere; other
+/// arguments are ignored. Returns (json, corpus name).
+fn parse_args(args: &[String]) -> Result<(bool, &'static str), &'static str> {
+    let mut json = false;
+    let mut corpus = "default";
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--corpus" => {
+                corpus = match it.next().map(String::as_str) {
+                    Some("default") => "default",
+                    Some("stress") => "stress",
+                    _ => return Err(CORPUS_ERROR),
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((json, corpus))
+}
+
 /// The whole synthetic corpus, so every number a view shows can be rebuilt
 /// from the export: sessions, inventory, plan windows and the Home split.
-fn export(sessions: &[Session]) -> serde_json::Value {
+/// The stress corpus reuses the default synthetic plan windows and token
+/// sources, since no session records them.
+fn export(corpus: &str, sessions: &[Session]) -> serde_json::Value {
+    let workspaces: std::collections::BTreeSet<&str> =
+        sessions.iter().map(|s| s.workspace).collect();
     let token_sources: Vec<_> = fixture::SOURCE_SHARES
         .iter()
         .map(|&(source, basis_points)| {
@@ -78,9 +106,10 @@ fn export(sessions: &[Session]) -> serde_json::Value {
         .collect();
     serde_json::json!({
         "synthetic": true,
+        "corpus": corpus,
         "period": PERIOD,
         "snapshot": fixture::SNAPSHOT,
-        "workspaces": WORKSPACES,
+        "workspaces": workspaces,
         "agents": AGENTS,
         "components": COMPONENTS,
         "placements": fixture::PLACEMENTS,
@@ -95,9 +124,21 @@ fn export(sessions: &[Session]) -> serde_json::Value {
 }
 
 fn main() -> io::Result<()> {
-    let sessions = fixture::sessions();
-    if std::env::args().nth(1).as_deref() == Some("--json") {
-        println!("{}", export(&sessions));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (json, corpus) = match parse_args(&args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let sessions = if corpus == "stress" {
+        fixture::stress_sessions()
+    } else {
+        fixture::sessions()
+    };
+    if json {
+        println!("{}", export(corpus, &sessions));
         return Ok(());
     }
     run(&sessions)

@@ -147,12 +147,13 @@ fn findings(all: &[Session], count: bool) -> Vec<Row> {
             "See every plan window and its pace",
         ));
     }
-    if let Some((day, value)) = days
+    if let Some(((day, value), normal)) = days
         .iter()
         .filter(|d| !d.partial)
         .filter_map(|d| d.value.map(|v| (d.day, v)))
         .max_by_key(|&(_, v)| v)
-        .filter(|&(_, v)| normal > 0 && v > normal * 3)
+        .zip(normal.filter(|&n| n > 0))
+        .filter(|&((_, v), n)| v > n * 3)
     {
         rows.push(link(
             format!("Nov {day}: {}× a normal day", value / normal),
