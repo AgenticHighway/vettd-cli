@@ -94,6 +94,8 @@ For a human walkthrough, start at Activity with no instructions. See whether
 the developer can predict what Enter will open from the chart and whether
 the maintainer can find a known skill without choosing a date. Ask each
 person to go Back after opening evidence and describe the scope they land in.
+The full protocol, its tasks and the gate decision rule are in
+[docs/screen-test.md](docs/screen-test.md).
 
 ## Component inventory
 
