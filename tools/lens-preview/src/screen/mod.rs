@@ -1,6 +1,6 @@
 use super::{
-    comparable, content, cost_label, measure, priced, units, usd, Page, Row, Runtime, Session,
-    View, COMPONENTS, PARTS,
+    comparable, content, cost_label, day_header, measure, priced, shorten, units, usd, Page, Row,
+    Runtime, Session, View, COMPONENTS, PARTS,
 };
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -15,6 +15,9 @@ mod list;
 mod preview;
 
 pub use home::{compact, daily, total_tokens};
+// Only tests build days by hand and read the floor directly.
+#[cfg(test)]
+pub use home::{baseline, Day};
 
 const INK: Color = Color::Rgb(231, 239, 243);
 const MUTED: Color = Color::Rgb(158, 179, 195);
@@ -147,22 +150,36 @@ fn breadcrumb(stack: &[Page], all: &[Session], max: usize) -> String {
 }
 
 /// Scope parts become chips, so workspace, agent and period read as values.
-/// Chips that don't fit are replaced by "…" instead of being cut mid-word.
+/// A chip that doesn't fit is shortened so the later chips still fit, which
+/// keeps the agent and cost in view. Only when even that leaves too little
+/// does it give way to "…", so chips are never cut mid-word.
 fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
+    const MIN_VALUE: usize = 8;
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
     let parts: Vec<_> = scope.split(" | ").filter(|p| !p.is_empty()).collect();
     for (i, part) in parts.iter().enumerate() {
-        let chip = if theme.mono {
-            format!("[{part}]")
-        } else {
-            format!(" {part} ")
-        };
+        let mut value = part.to_string();
         let more = if i + 1 < parts.len() { 2 } else { 0 };
-        if used + chip.chars().count() + more > width {
-            spans.push(Span::styled("…", theme.fg(MUTED)));
-            break;
+        if used + value.chars().count() + 2 + more > width {
+            // Each later chip needs its brackets (2) and a space (1).
+            let later: usize = parts[i + 1..].iter().map(|p| p.chars().count() + 3).sum();
+            let with_later = width.saturating_sub(used + 3 + later);
+            let alone = width.saturating_sub(used + 5);
+            if with_later >= MIN_VALUE {
+                value = shorten(part, with_later);
+            } else if alone >= MIN_VALUE {
+                value = shorten(part, alone);
+            } else {
+                spans.push(Span::styled("…", theme.fg(MUTED)));
+                break;
+            }
         }
+        let chip = if theme.mono {
+            format!("[{value}]")
+        } else {
+            format!(" {value} ")
+        };
         used += chip.chars().count() + 1;
         spans.push(Span::styled(chip, theme.on(INK, PANEL)));
         spans.push(Span::raw(" "));

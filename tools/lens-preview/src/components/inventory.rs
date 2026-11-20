@@ -1,7 +1,7 @@
 //! The component inventory and one component's copies and recorded use.
 
 use super::*;
-use crate::fixture::Component;
+use crate::fixture::{workspaces, Component};
 use std::collections::BTreeMap;
 
 /// Room left in an inventory row beside the preview pane at 80 columns.
@@ -52,10 +52,10 @@ fn component_row(
     ))
 }
 
-pub(super) fn inventory(page: &Page, rt: &Runtime) -> (String, String, Vec<Row>) {
+pub(super) fn inventory(page: &Page, all: &[Session], rt: &Runtime) -> (String, String, Vec<Row>) {
     let [kind, ws, agent, evid] = page.filters;
     let scope = Scope {
-        ws: pick(&WORKSPACES, ws),
+        ws: pick(&workspaces(all), ws),
         agent: pick(&AGENTS, agent),
         ..Scope::WEEK
     };

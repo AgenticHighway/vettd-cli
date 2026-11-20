@@ -64,8 +64,9 @@ docker run --rm -v "$PWD:/src:ro" node:22.17.0-bookworm bash -c '
   (workspace api) accounts for $8.20 of the day's $8.52. Its components
   observed open at Nov 16 / api / Claude scope. Press p to widen that
   component to the week; Esc restores the day scope and selection.
-- Maintainer. Press i. Narrow with w (workspace), a (agent), Tab (type) and
-  e (evidence); x clears. The header shows the scope, result count and
+- Maintainer. Press i. Narrow with w (workspace: every workspace in the
+  loaded corpus, in sorted order), a (agent), Tab (type) and e (evidence);
+  x clears. The header shows the scope, result count and
   snapshot time. Open a component, then an exact copy, to see its locator,
   artifact, scan, resolution, competing copies and observations of the
   same artifact. Stage disable previews the predicted outcome; Apply is
@@ -78,7 +79,12 @@ Grouping the subagent under its parent follows the trace-tree pattern in
 [LangSmith](https://docs.langchain.com/langsmith/cost-tracking). Rates, calls,
 context attribution and grade evidence are illustrative fixture values.
 The fixture never treats partial skill signals as definitive usage totals.
-The chart toggle previews USD and request counts. Upstream count breakdowns
+The chart toggle previews USD and request counts. When every day with data
+is at least half the peak, as on the stress corpus, Home's chart starts from
+a raised baseline so the differences between days show. Its title then names
+the axis start, for example `from $1510`. Long workspaces and model IDs are
+shortened in the middle (`platf…tress`) so totals and costs stay whole and
+aligned. Upstream count breakdowns
 by trigger, tool, class and MCP remain Phase 1 parity work.
 
 ## Five phases
