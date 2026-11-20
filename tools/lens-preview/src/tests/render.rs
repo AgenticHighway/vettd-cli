@@ -173,7 +173,7 @@ fn partial_day_reads_as_floor_and_stays_out_of_normal() {
         .filter_map(|d| d.value)
         .collect();
     complete.sort_unstable();
-    assert_eq!(normal, complete[complete.len() / 2]);
+    assert_eq!(normal, Some(complete[complete.len() / 2]));
     let text = screen_text(&render(&[Page::new(View::Home)], (80, 24), false));
     assert!(text.contains("18 ≥$0.54"), "{text}");
     assert!(!text.contains("18 $0.54"), "{text}");

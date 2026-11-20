@@ -15,7 +15,8 @@ pub struct Day {
 }
 
 /// Each day's total in the current unit, and the median complete day.
-pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, u32) {
+/// `None` means no day is complete, so there is no normal to compare with.
+pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, Option<u32>) {
     let days: Vec<Day> = (12..=18)
         .map(|day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
@@ -34,20 +35,26 @@ pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, u32) {
         .filter_map(|d| d.value)
         .collect();
     values.sort_unstable();
-    let normal = values.get(values.len() / 2).copied().unwrap_or(0);
+    let normal = values.get(values.len() / 2).copied();
     (days, normal)
 }
 
-pub fn total_tokens(all: &[Session]) -> u32 {
+/// u64: a few thousand sessions already pass 3B tokens, near u32's limit.
+pub fn total_tokens(all: &[Session]) -> u64 {
     all.iter()
         .flat_map(|s| &s.requests)
-        .map(|r| r.tokens.iter().sum::<u32>())
+        .flat_map(|r| r.tokens)
+        .map(u64::from)
         .sum()
 }
 
-pub fn compact(tokens: u32) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", f64::from(tokens) / 1e6)
+/// At most six characters below 1,000B, so it fits Home's token column.
+pub fn compact(tokens: u64) -> String {
+    // 999.95M would round up to a seven-character "1000.0M".
+    if tokens >= 999_950_000 {
+        format!("{:.1}B", tokens as f64 / 1e9)
+    } else if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1e6)
     } else {
         format!("{}k", tokens.div_ceil(1000))
     }
@@ -81,13 +88,18 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let (days, normal) = daily(cx.all, cx.count);
     let peak = days.iter().filter_map(|d| d.value).max().unwrap_or(0);
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
+    let with_data = || days.iter().filter(|d| d.value.is_some());
+    let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
     let bars: Vec<Bar> = days
         .iter()
         .map(|d| {
-            let outlier = d.value.is_some_and(|v| v == peak && v > normal * 3);
+            let outlier = d
+                .value
+                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
             // No-data days show "·", never a zero-height bar that reads as $0.
             // Partial days show "≥": the total is a floor, not the day's cost.
-            let floor = if d.partial { "≥" } else { "" };
+            // When every day is partial the title says so once instead.
+            let floor = if d.partial && !all_partial { "≥" } else { "" };
             let caption = match d.value {
                 None => format!("{} ·", d.day),
                 Some(v) if wide => format!("{} {floor}{}", d.day, label(v)),
@@ -104,11 +116,16 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let bar_width = (chart.width.saturating_sub(2) / 7)
         .saturating_sub(gap)
         .clamp(3, 9);
+    // No complete day means no normal: say so rather than show a zero.
+    let normal_text = normal.map_or("normal: no complete day".into(), |n| {
+        format!("normal ≈ {}", label(n))
+    });
     let title = format!(
-        "DAILY {}  ·  normal ≈ {}{}",
+        "DAILY {}  ·  {normal_text}{}",
         if cx.count { "REQUESTS" } else { "SPEND" },
-        label(normal),
-        if days.iter().any(|d| d.partial) {
+        if all_partial {
+            "  ·  every day partial (≥)"
+        } else if days.iter().any(|d| d.partial) {
             "  ·  ≥ partial"
         } else {
             ""
@@ -136,7 +153,10 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
             let (amount, share) = if bp == 0 {
                 ("0".to_string(), "—".to_string())
             } else {
-                (compact(total / 10_000 * bp), format!("{}%", bp / 100))
+                (
+                    compact(total / 10_000 * u64::from(bp)),
+                    format!("{}%", bp / 100),
+                )
             };
             TRow::new(vec![
                 Cell::from(name),

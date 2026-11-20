@@ -33,7 +33,7 @@ corpus.
 | Copy coverage | 111 of 1,178 skill uses (9.4%) record an artifact and version; the rest have neither | Assumption, labelled. Real share unmeasured |
 | Unpriced requests | 47 of 4,952 (0.95%), with no rate (never a zero rate) | Assumption. Real: 0 unpriced models. Kept above real so the state is exercised |
 | Incomplete sessions | 19 of 2,011 (0.94%) | Assumption. Real incompleteness is not measured; 0 skipped lines and 0 unreadable files is a different measure |
-| Token part size | ≤ 1,000,000 (max 999,799) | Assumption. Bound keeps u32 cost maths from overflowing |
+| Token part size | ≤ 1,000,000 (max 999,799) | Assumption. Bound keeps u32 cost maths from overflowing. The corpus token total (~3.36B) is summed in u64 |
 | Components and artifacts | Existing 10 components and existing `PLACEMENTS` identities only | Matches the default fixture, not real |
 | Plan windows, limit hits, weekly ends, token sources | Same values as the default export | Reused default synthetic values. No session records them |
 

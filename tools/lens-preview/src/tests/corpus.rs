@@ -137,7 +137,7 @@ fn stress_reuses_default_plan_and_sources() {
 
 // Long stress strings must not panic in the views or the frame. This copies
 // the render helper's steps, on the stress corpus instead of the default one.
-fn draw_stress(page: &Page, all: &[fixture::Session]) {
+fn draw_stress(page: &Page, all: &[fixture::Session]) -> String {
     let rt = Runtime::default();
     let stack = std::slice::from_ref(page);
     let (title, scope, rows) = content(page, all, false, screen::list_width(80), &rt);
@@ -161,6 +161,14 @@ fn draw_stress(page: &Page, all: &[fixture::Session]) {
         )
     })
     .unwrap();
+    let buffer = term.backend().buffer();
+    (0..24)
+        .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
 }
 
 // Every screen the TUI can open must build and draw on the stress corpus, or
@@ -183,6 +191,68 @@ fn stress_views_build_and_draw_at_80x24() {
             let (title, _scope, rows) = content(&Page::new(view), &all, count, 80, &rt);
             assert!(!rows.is_empty() || !title.is_empty(), "{view:?}");
         }
-        draw_stress(&Page::new(view), &all);
+        let _ = draw_stress(&Page::new(view), &all);
     }
+}
+
+// Real logs already hold more sessions than the stress corpus, which is
+// at 3.36B tokens. A u32 total would panic (debug) or wrap to a wrong total
+// (release) at about 4.29B, so the sum must not depend on that ceiling.
+#[test]
+fn token_total_does_not_overflow_u32() {
+    let request = || fixture::Request {
+        worker: "main",
+        model: "m",
+        tokens: [u32::MAX; 4],
+        milli_usd_per_ktok: None,
+    };
+    let session = fixture::Session {
+        day: 12,
+        name: "big",
+        workspace: "api",
+        agent: "Claude",
+        incomplete: false,
+        requests: vec![request(), request()],
+        observed: vec![],
+    };
+    assert_eq!(screen::total_tokens(&[session]), 8 * u64::from(u32::MAX));
+}
+
+// The token column is six cells wide. A longer figure loses its leading
+// digit, so 1,276.5M read as 276.5M, smaller than the row below it.
+#[test]
+fn compact_tokens_fit_six_cells() {
+    for tokens in [
+        999,
+        999_999,
+        999_949_999,
+        999_950_000,
+        1_276_500_000,
+        999_900_000_000,
+    ] {
+        let text = screen::compact(tokens);
+        assert!(text.chars().count() <= 6, "{tokens} -> {text}");
+    }
+    assert_eq!(screen::compact(999_950_000), "1.0B");
+    assert_eq!(screen::compact(1_276_500_000), "1.3B");
+}
+
+// Every stress day has an unpriced or incomplete session, so none is
+// complete. The chart must say there is no normal, never "normal ≈ $0.00",
+// and mark the floors once in the title rather than on every bar.
+#[test]
+fn stress_home_shows_unknown_normal_and_whole_token_figures() {
+    let all = fixture::stress_sessions();
+    let (days, normal) = screen::daily(&all, false);
+    assert!(days.iter().all(|d| d.partial));
+    assert_eq!(normal, None);
+    let text = draw_stress(&Page::new(View::Home), &all);
+    assert!(text.contains("normal: no complete day"), "{text}");
+    assert!(text.contains("every day partial (≥)"), "{text}");
+    assert!(!text.contains("$0.00"), "{text}");
+    assert_eq!(text.matches('≥').count(), 1, "{text}");
+    assert!(
+        text.contains("File reads") && text.contains("1.3B"),
+        "{text}"
+    );
 }

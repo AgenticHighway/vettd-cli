@@ -49,6 +49,15 @@ works like this today:
 **Non-Goals:**
 - Making the screens read well at stress scale: column widths, scrolling,
   answer-line widths. That belongs to Slices 1–2.
+  - Exception, added after apply at the user's request: three Home defects
+    the stress corpus exposed are fixed here, because each misstates a
+    number rather than just reading poorly.
+    - With no complete day, the chart says "normal: no complete day"
+      instead of "normal ≈ $0.00", and no day is flagged as an outlier.
+    - When every day is partial, the title says so once, in place of a ≥ on
+      every bar.
+    - Token figures of 999.95M or more show as billions ("1.3B"), so they fit
+      the six-cell column instead of losing their leading digit.
 - New components or placements. Stress uses refer to the existing 10 components
   and the existing artifact identities.
 - Reading real logs or `*.local.json` files.
@@ -79,6 +88,10 @@ works like this today:
      6,000 cents, far below the u32 limit in `Request::cents`.
    - At most 4 requests per session keeps the whole-corpus u32 sums under
      about 2,100 × 4 × 24,000 ≈ 202M cents, also far below the limit.
+   - Token totals are not bounded the same way. The stress corpus sums to
+     about 3.36B tokens, 78% of u32's limit, and real logs hold more
+     sessions. Added after apply: `total_tokens` and `compact` use u64, and a
+     test sums past u32's limit.
 6. **Copy coverage is about 10%, as a labelled assumption.**
    - Skill uses (components 0, 4, 6) record an existing artifact identity from
      `PLACEMENTS` for that component, with its version, in about 10% of cases.
