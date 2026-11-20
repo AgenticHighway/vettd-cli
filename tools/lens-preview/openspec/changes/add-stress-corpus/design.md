@@ -58,6 +58,8 @@ works like this today:
       every bar.
     - Token figures of 999.95M or more show as billions ("1.3B"), so they fit
       the six-cell column instead of losing their leading digit.
+    - A day label too wide for its bar falls back to whole dollars, rounded
+      down, then to the day alone, instead of being cut mid-number.
 - New components or placements. Stress uses refer to the existing 10 components
   and the existing artifact identities.
 - Reading real logs or `*.local.json` files.

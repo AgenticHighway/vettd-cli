@@ -256,3 +256,22 @@ fn stress_home_shows_unknown_normal_and_whole_token_figures() {
         "{text}"
     );
 }
+
+// Stress days cost thousands of dollars, so "12 $1885.33" is wider than its
+// 9-cell bar and was cut to "12 $1885.", losing its cents mid-number. Labels
+// must fit whole, falling back to whole dollars.
+#[test]
+fn stress_day_labels_fit_their_bars() {
+    let text = draw_stress(&Page::new(View::Home), &fixture::stress_sessions());
+    for day in 12..=18 {
+        let start = format!("{day} $");
+        let at = text.find(&start).expect("day label missing") + start.len();
+        let amount: String = text[at..].chars().take_while(|c| *c != ' ').collect();
+        assert!(
+            amount.chars().all(|c| c.is_ascii_digit()),
+            "{day}: label cut to ${amount}
+{text}"
+        );
+    }
+    assert!(text.contains("12 $1885 "), "{text}");
+}

@@ -90,6 +90,14 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
     let with_data = || days.iter().filter(|d| d.value.is_some());
     let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
+    let gap = 1u16;
+    let bar_width = (chart.width.saturating_sub(2) / 7)
+        .saturating_sub(gap)
+        .clamp(3, 9);
+    // A caption wider than its bar is cut, dropping digits. Fall back to
+    // whole dollars (rounded down, so a floor stays a floor), then to the
+    // day alone.
+    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
     let bars: Vec<Bar> = days
         .iter()
         .map(|d| {
@@ -102,7 +110,17 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
             let floor = if d.partial && !all_partial { "≥" } else { "" };
             let caption = match d.value {
                 None => format!("{} ·", d.day),
-                Some(v) if wide => format!("{} {floor}{}", d.day, label(v)),
+                Some(v) if wide => {
+                    let full = format!("{} {floor}{}", d.day, label(v));
+                    let whole = format!("{} {floor}${}", d.day, v / 100);
+                    if fits(&full) {
+                        full
+                    } else if !cx.count && fits(&whole) {
+                        whole
+                    } else {
+                        format!("{}{floor}", d.day)
+                    }
+                }
                 Some(_) => format!("{}{floor}", d.day),
             };
             Bar::default()
@@ -112,10 +130,6 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
-    let gap = 1u16;
-    let bar_width = (chart.width.saturating_sub(2) / 7)
-        .saturating_sub(gap)
-        .clamp(3, 9);
     // No complete day means no normal: say so rather than show a zero.
     let normal_text = normal.map_or("normal: no complete day".into(), |n| {
         format!("normal ≈ {}", label(n))
