@@ -32,6 +32,34 @@ docker run --rm -v "$PWD:/w" -w /w -e CARGO_TARGET_DIR=/tmp/target rust:1.88 \
   cargo clippy --locked --all-targets -- -D warnings && cargo test --locked"
 ```
 
+### Terminal tests
+
+`tui-tests/` holds black-box journeys that run the built binary in a real
+pseudo-terminal at 80×24 and drive it with keystrokes, using Microsoft's
+[tui-test](https://github.com/microsoft/tui-test) (`@microsoft/tui-test`,
+pinned to 0.1.1) under `node:test`. tui-test 0.1 has no runner or config file,
+so shared settings live in `tui-tests/lens.mjs`. The PTY shows both stdout and
+stderr, so the stderr-drawn TUI is captured; the bad-`--corpus` test checks
+which stream the error uses with a plain `spawnSync`. Needs Node 20+.
+
+From this folder, build once and run:
+
+```sh
+cargo build --locked
+cd tui-tests && npm ci && npm test
+```
+
+Set `CARGO_TARGET_DIR` or `LENS_BIN` if the binary lives elsewhere. The suite
+also runs headless in Docker:
+
+```sh
+docker run --rm -v "$PWD:/src:ro" node:22.17.0-bookworm bash -c '
+  set -e
+  curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.88.0
+  . "$HOME/.cargo/env" && cp -r /src /w && cd /w && rm -rf target tui-tests/node_modules
+  cargo build --locked -q && cd tui-tests && npm ci && npm test'
+```
+
 - Developer. Select Nov 16 and open the contributing sessions. Index rebuild
   (workspace api) accounts for $8.20 of the day's $8.52. Its components
   observed open at Nov 16 / api / Claude scope. Press p to widen that
