@@ -122,3 +122,80 @@ test("8. --corpus other exits 2 with the error on stderr", T, async () => {
   assert.equal(out.stdout, "");
   assert.equal(out.stderr.trim(), "error: --corpus must be default or stress");
 });
+
+// The counter at the end of the hint row ("n/total"), so a journey can tell
+// where the selection is in a long list.
+function counter(text) {
+  const hint = text.split("\n").find((l) => l.includes(" Enter "));
+  return hint?.trim().split(/\s+/).pop() ?? null;
+}
+
+// Reaching a day used to take seven presses through Week. In a real
+// terminal the arrow keys must choose a bar and Enter open it, and Esc must
+// come back with the same bar still chosen.
+test("9. Right, Right, Enter opens Nov 13; Esc keeps the bar chosen", T, () =>
+  journey([], async (term) => {
+    await term.press("Right");
+    await term.press("Right");
+    await term.getByText("Enter See Nov 13 sessions").expect();
+    await term.press("Enter");
+    await until(term, (t) => crumb(t) === "Home › Nov 13", "Nov 13 breadcrumb");
+    await term.getByText("No session input.").expect();
+    await term.press("Escape");
+    await until(term, (t) => crumb(t) === "Home" && t.includes("13▸"), "Home with Nov 13 chosen");
+  }));
+
+// A digit opens a day straight from Home, and Esc returns there.
+test("10. 5 opens Nov 16 with Index rebuild first; Esc returns Home", T, () =>
+  journey([], async (term) => {
+    await term.press("5");
+    await until(term, (t) => crumb(t) === "Home › Nov 16", "Nov 16 breadcrumb");
+    await selectedStartsWith(term, "▸ Index rebuild");
+    await term.press("Escape");
+    await until(term, (t) => crumb(t) === "Home", "Home breadcrumb");
+  }));
+
+// Find reaches a session by name, and Esc keeps the search and the row,
+// so a person can open the next result without typing again.
+test("11. / index finds the Nov 16 run; Esc keeps search and row", T, () =>
+  journey([], async (term) => {
+    await term.press("/");
+    await term.type("index");
+    await term.getByText("── Sessions (6)").expect();
+    for (let i = 0; i < 3; i++) await term.press("Down");
+    await selectedStartsWith(term, "▸ Nov 16 Index rebuild");
+    await term.press("Enter");
+    await until(term, (t) => crumb(t).endsWith("Index rebuild") && t.includes("$8.20"), "Nov 16 session");
+    await term.press("Escape");
+    await term.getByText("Search: index_").expect();
+    await selectedStartsWith(term, "▸ Nov 16 Index rebuild");
+  }));
+
+// A 280-row stress day: End and g must reach both ends in one press each.
+test("12. stress Nov 16: End reaches the last session, g the first", T, () =>
+  journey(["--corpus", "stress"], async (term) => {
+    await term.press("5");
+    // Home has a counter too, so wait for the day before reading it.
+    await until(
+      term,
+      (t) => crumb(t) === "Home › Nov 16" && /^1\/\d+$/.test(counter(t) ?? ""),
+      "Nov 16 first row counter",
+    );
+    const total = counter(await term.text()).split("/")[1];
+    assert.ok(Number(total) > 100, `only ${total} sessions`);
+    await term.press("End");
+    await until(term, (t) => counter(t) === `${total}/${total}`, "last row counter");
+    await term.press("g");
+    await until(term, (t) => counter(t) === `1/${total}`, "back to the first row");
+  }));
+
+// The new keys must be findable without being told: the footer names the
+// day arrows and help lists every new key.
+test("13. footer names the day arrows; help lists the new keys", T, () =>
+  journey([], async (term) => {
+    await term.getByText("←→ Day").expect();
+    await term.press("?");
+    for (const text of ["Home/End First or last row", "Home: choose a day", "Home, Week: open that day"]) {
+      await term.getByText(text).expect();
+    }
+  }));

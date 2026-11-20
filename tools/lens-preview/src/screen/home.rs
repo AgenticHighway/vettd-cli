@@ -127,25 +127,42 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
             // Partial days show "≥": the total is a floor, not the day's cost.
             // When every day is partial the title says so once instead.
             let floor = if d.partial && !all_partial { "≥" } else { "" };
+            // The chosen bar is marked by a character, so it shows without
+            // colour too. "▸" takes the place of the space after the day.
+            let chosen = cx.bar == Some(d.day);
+            let mark = if chosen { "▸" } else { " " };
+            let day_only = || {
+                let text = format!("{}{}{floor}", if chosen { "▸" } else { "" }, d.day);
+                if fits(&text) || !chosen {
+                    text
+                } else {
+                    format!("▸{}", d.day)
+                }
+            };
             let caption = match d.value {
-                None => format!("{} ·", d.day),
+                None => format!("{}{mark}·", d.day),
                 Some(v) if wide => {
-                    let full = format!("{} {floor}{}", d.day, label(v));
-                    let whole = format!("{} {floor}${}", d.day, v / 100);
+                    let full = format!("{}{mark}{floor}{}", d.day, label(v));
+                    let whole = format!("{}{mark}{floor}${}", d.day, v / 100);
                     if fits(&full) {
                         full
                     } else if !cx.count && fits(&whole) {
                         whole
                     } else {
-                        format!("{}{floor}", d.day)
+                        day_only()
                     }
                 }
-                Some(_) => format!("{}{floor}", d.day),
+                Some(_) => day_only(),
+            };
+            let caption = if chosen {
+                Line::styled(caption, cx.theme.selected())
+            } else {
+                Line::from(caption)
             };
             Bar::default()
                 .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
                 .text_value(String::new())
-                .label(Line::from(caption))
+                .label(caption)
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
@@ -317,7 +334,8 @@ fn draw_findings(f: &mut Frame, findings: Rect, cx: &Ctx) {
         .skip(top)
         .take(room)
         .map(|(i, row)| {
-            let selected = cx.active.is_some_and(|(selection, _)| i == selection);
+            let selected =
+                cx.bar.is_none() && cx.active.is_some_and(|(selection, _)| i == selection);
             Line::styled(
                 format!(
                     "{}{:<width$}",

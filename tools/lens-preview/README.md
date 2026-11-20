@@ -64,6 +64,11 @@ docker run --rm -v "$PWD:/src:ro" node:22.17.0-bookworm bash -c '
   (workspace api) accounts for $8.20 of the day's $8.52. Its components
   observed open at Nov 16 / api / Claude scope. Press p to widen that
   component to the week; Esc restores the day scope and selection.
+  Shorter paths: on Home, ←/→ chooses a day's bar and Enter opens it, and
+  1–7 (Home and Week) opens Nov 12–18 directly. `/` finds a day ("nov 16"),
+  a session by name or workspace, or a component. Home/End (or g/G outside
+  Find) jump to a list's first or last row. On lists, figures are bold and
+  workspace and agent columns are muted.
 - Maintainer. Press i. Narrow with w (workspace: every workspace in the
   loaded corpus, in sorted order), a (agent), Tab (type) and e (evidence);
   x clears. The header shows the scope, result count and

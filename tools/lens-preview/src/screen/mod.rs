@@ -1,6 +1,6 @@
 use super::{
-    comparable, content, cost_label, day_header, measure, priced, shorten, units, usd, Page, Row,
-    Runtime, Session, View, COMPONENTS, PARTS,
+    comparable, content, cost_label, day_header, measure, priced, shorten, units, usd, Emphasis,
+    Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -204,6 +204,8 @@ struct Ctx<'a> {
     active: Option<(usize, (View, &'static str))>,
     rt: &'a Runtime,
     theme: Theme,
+    /// Home's chosen daily bar, if any. The findings show no selection then.
+    bar: Option<u32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -225,6 +227,7 @@ pub fn draw(
         active,
         rt,
         theme: Theme { mono },
+        bar: stack.last().and_then(|p| p.day),
     };
     let area = f.area();
     f.render_widget(Block::default().style(cx.theme.base()), area);
@@ -325,6 +328,12 @@ fn draw_hint(f: &mut Frame, hint: Rect, cx: &Ctx) {
         .filter(|row| row.open.is_some())
         .count();
     let total = cx.rows.iter().filter(|row| row.open.is_some()).count();
+    // A chosen bar isn't one of the rows, so the counter would mislead.
+    let counter = if cx.bar.is_some() {
+        String::new()
+    } else {
+        format!("{n}/{total} ")
+    };
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(8)]).areas(hint);
     f.render_widget(
@@ -335,7 +344,7 @@ fn draw_hint(f: &mut Frame, hint: Rect, cx: &Ctx) {
         left,
     );
     f.render_widget(
-        Paragraph::new(format!("{n}/{total} "))
+        Paragraph::new(counter)
             .style(cx.theme.fg(MUTED))
             .right_aligned(),
         right,
@@ -365,14 +374,22 @@ fn footer_keys(view: View, w: u16) -> Vec<(&'static str, &'static str)> {
         View::Find => vec![("Type", "to filter"), ("Esc", "Back"), ("Ctrl+C", "Quit")],
         _ if widen => vec![("p", "Widen to week"), ("Esc", "Back"), ("?", "Keys")],
         View::Home if w < 65 => vec![("c", "USD/req"), ("i", "Inventory"), ("?", "Keys")],
+        // q still quits and is in help; the day keys earn its place.
         View::Home => vec![
+            ("←→", "Day"),
             ("c", "USD/requests"),
             ("i", "Inventory"),
             ("/", "Find"),
             ("?", "Keys"),
-            ("q", "Quit"),
         ],
         _ if w < 65 => vec![("i", "Inventory"), ("/", "Find"), ("Esc", "Back")],
+        View::Week => vec![
+            ("1–7", "Day"),
+            ("c", "USD/requests"),
+            ("/", "Find"),
+            ("Esc", "Back"),
+            ("?", "Keys"),
+        ],
         _ if measured => vec![
             ("c", "USD/requests"),
             ("/", "Find"),

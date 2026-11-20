@@ -429,3 +429,8 @@ fn daily_view_answers_instead_of_labelling() {
 // a few rows fit, so arrow and page keys scroll once there is no selectable
 // row to move to.
 mod scrolling;
+
+// Home, End, number keys and Home bar selection: reaching a place in few
+// presses.
+mod emphasis;
+mod navigation;

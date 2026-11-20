@@ -52,6 +52,40 @@ impl Viewport {
             page.top.saturating_sub(step)
         };
     }
+
+    /// Home/End: select the first or last selectable row and scroll to that
+    /// end of the list. The selection wins when both can't be shown.
+    pub(crate) fn jump(&self, page: &mut Page, last: bool) {
+        page.follow = self.actions > 0;
+        page.selected = if last {
+            self.actions.saturating_sub(1)
+        } else {
+            0
+        };
+        page.top = if last {
+            self.rows.saturating_sub(self.visible)
+        } else {
+            0
+        };
+    }
+}
+
+/// The Enter hint for a daily bar on Home. Hints are static text, so the
+/// period's days are spelled out.
+fn day_hint(day: u32) -> &'static str {
+    const HINTS: [&str; 7] = [
+        "See Nov 12 sessions",
+        "See Nov 13 sessions",
+        "See Nov 14 sessions",
+        "See Nov 15 sessions",
+        "See Nov 16 sessions",
+        "See Nov 17 sessions",
+        "See Nov 18 sessions",
+    ];
+    day.checked_sub(12)
+        .and_then(|i| HINTS.get(i as usize))
+        .copied()
+        .unwrap_or("See that day's sessions")
 }
 
 /// Everything the loop carries between frames. Keeping it apart from the
@@ -81,7 +115,10 @@ impl App {
             .filter_map(|(i, r)| r.open.map(|open| (i, open)))
             .collect();
         page.selected = page.selected.min(actions.len().saturating_sub(1));
-        let active = actions.get(page.selected).copied();
+        let mut active = actions.get(page.selected).copied();
+        if let (Some(day), Some((_, target))) = (page.day, active.as_mut()) {
+            *target = (View::Day(day), day_hint(day));
+        }
         let visible = screen::visible(h, screen::answer_rows(w, &title));
         let focus = active.map_or(page.selected, |(i, _)| i);
         if page.follow {
@@ -167,18 +204,45 @@ impl App {
             page.filters[slot] = (page.filters[slot] + 1) % (len + 1);
             reset(page);
         };
+        let view = Viewport {
+            actions: shown.rows.iter().filter(|r| r.open.is_some()).count(),
+            focus: shown.active.map(|(i, _)| i),
+            rows: shown.rows.len(),
+            visible: shown.visible,
+        };
+        let vertical = matches!(
+            code,
+            KeyCode::Down
+                | KeyCode::Up
+                | KeyCode::PageDown
+                | KeyCode::PageUp
+                | KeyCode::Home
+                | KeyCode::End
+        ) || (matches!(code, KeyCode::Char('g' | 'G')) && !finding);
+        // The first vertical key after choosing a bar returns to the
+        // findings, on the finding that was selected before.
+        if vertical && page.day.take().is_some() {
+            return true;
+        }
         match code {
+            KeyCode::Left | KeyCode::Right if matches!(page.view, View::Home) => {
+                let days = screen::daily(all, false).0;
+                let (first, last) = (days[0].day, days[days.len() - 1].day);
+                page.day = Some(match (page.day, code == KeyCode::Right) {
+                    (None, true) => first,
+                    (None, false) => last,
+                    (Some(d), true) => (d + 1).min(last),
+                    (Some(d), false) => d.saturating_sub(1).max(first),
+                });
+            }
             KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp => {
                 let paged = matches!(code, KeyCode::PageDown | KeyCode::PageUp);
                 let down = matches!(code, KeyCode::Down | KeyCode::PageDown);
-                let view = Viewport {
-                    actions: shown.rows.iter().filter(|r| r.open.is_some()).count(),
-                    focus: shown.active.map(|(i, _)| i),
-                    rows: shown.rows.len(),
-                    visible: shown.visible,
-                };
                 view.navigate(page, down, if paged { shown.visible } else { 1 });
             }
+            KeyCode::Home | KeyCode::End => view.jump(page, code == KeyCode::End),
+            // Find types letters, so g and G only jump elsewhere.
+            KeyCode::Char(ch @ ('g' | 'G')) if !finding => view.jump(page, ch == 'G'),
             KeyCode::Backspace if finding => {
                 page.filter.pop();
                 reset(page);
@@ -222,6 +286,12 @@ impl App {
             KeyCode::Char('?') if view != View::Help => self.stack.push(Page::new(View::Help)),
             KeyCode::Char('q') => return false,
             KeyCode::Char('/') => self.stack.push(Page::new(View::Find)),
+            // 1–7 open the period's days by position, as Week lists them.
+            // Find never gets here: it types digits first.
+            KeyCode::Char(ch @ '1'..='7') if matches!(view, View::Home | View::Week) => {
+                let day = 11 + ch.to_digit(10).unwrap();
+                self.stack.push(Page::new(View::Day(day)));
+            }
             KeyCode::Char('c') if view.measured() => {
                 self.toggle_unit(all, size, active.map(|(_, (target, _))| target))
             }
@@ -238,6 +308,10 @@ impl App {
     fn toggle_unit(&mut self, all: &[Session], (w, _): (u16, u16), before: Option<View>) {
         self.count = !self.count;
         let page = self.stack.last_mut().unwrap();
+        if page.day.is_some() {
+            // The active target is the bar's day; the finding stays put.
+            return;
+        }
         let (_, _, rows) = content(page, all, self.count, screen::list_width(w), &self.rt);
         let targets: Vec<View> = rows.iter().filter_map(|r| r.open.map(|o| o.0)).collect();
         page.selected = before

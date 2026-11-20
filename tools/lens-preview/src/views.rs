@@ -26,7 +26,7 @@ pub(crate) fn content(
         View::Headroom => headroom(),
         View::Help => help(),
         View::Week => week(all, count, bar_width),
-        View::Find => find(&page.filter),
+        View::Find => find(&page.filter, all, count, width),
         View::Day(day) => day_sessions(day, all, count, width),
         View::Session(id) => session(id, &all[id], bar_width, width),
         View::Tokens(id) => tokens(&all[id], width),
@@ -40,6 +40,9 @@ fn help() -> Content {
         [
             "↑ / ↓   Move selection; preview updates",
             "PgUp/Dn Scroll by a screen",
+            "Home/End First or last row (g / G too)",
+            "← / →   Home: choose a day's bar",
+            "1–7     Home, Week: open that day",
             "Enter   Inspect the selected object",
             "Esc     Back to previous scope",
             "p       Widen a one-day scope to the week",
@@ -47,7 +50,7 @@ fn help() -> Content {
             "Tab     Inventory: cycle type",
             "w a e   Inventory: workspace, agent, evidence",
             "x       Inventory: clear filters",
-            "/       Find a component",
+            "/       Find a day, session or component",
             "c       Toggle priced USD and requests",
             "q       Quit (Ctrl+C also works in search)",
         ]
@@ -86,15 +89,18 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
             } else {
                 usd(value)
             };
-            link(
-                format!(
-                    "Nov {day}  {label:>8}  {}{}",
-                    bar(value, peak, bar_width),
-                    if partial { "  partial" } else { "" }
-                ),
-                View::Day(day),
-                "See contributing sessions",
-            )
+            Cells::default()
+                .add(format!("Nov {day}  "), None)
+                .add(format!("{label:>8}"), (n > 0).then_some(Emphasis::Figure))
+                .add(
+                    format!(
+                        "  {}{}",
+                        bar(value, peak, bar_width),
+                        if partial { "  partial" } else { "" }
+                    ),
+                    None,
+                )
+                .link(View::Day(day), "See contributing sessions")
         })
         .collect();
     (
@@ -107,15 +113,17 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
     )
 }
 
-fn find(filter: &str) -> Content {
-    let rows = COMPONENTS
+/// Find: with a search, matching days, then sessions, then components,
+/// each group under a divider with its count. With no search, components
+/// only, as before sessions and days could be found.
+fn find(filter: &str, all: &[Session], count: bool, width: u16) -> Content {
+    let needle = filter.to_ascii_lowercase();
+    let matches = |text: &str| text.to_ascii_lowercase().contains(&needle);
+    let components: Vec<Row> = COMPONENTS
         .iter()
         .enumerate()
         .map(|(i, c)| (i, format!("{} {}", c.kind, c.name)))
-        .filter(|(_, name)| {
-            name.to_ascii_lowercase()
-                .contains(&filter.to_ascii_lowercase())
-        })
+        .filter(|(_, name)| matches(name))
         .map(|(i, name)| {
             link(
                 name,
@@ -124,11 +132,70 @@ fn find(filter: &str) -> Content {
             )
         })
         .collect();
-    (
-        "Find a component".into(),
-        format!("{PERIOD} | Search: {filter}_"),
-        rows,
-    )
+    let title = "Find a day, session or component".to_string();
+    let scope = format!("{PERIOD} | Search: {filter}_");
+    if filter.is_empty() {
+        return (title, scope, components);
+    }
+    let days: Vec<Row> = (12..=18)
+        .filter(|day| matches(&format!("Nov {day}")))
+        .map(|day| {
+            let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
+            let label = if sessions.is_empty() {
+                "No input".into()
+            } else {
+                units(sessions.iter().map(|s| measure(s, count)).sum(), count)
+            };
+            link(
+                format!("Nov {day}  {label:>8}  {} sessions", sessions.len()),
+                View::Day(day),
+                "See contributing sessions",
+            )
+        })
+        .collect();
+    let mut found: Vec<_> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| matches(s.name) || matches(s.workspace))
+        .collect();
+    found.sort_by_key(|(_, s)| (s.day, std::cmp::Reverse(measure(s, count))));
+    // The Day row layout after a "Nov dd " column, sized to what matched.
+    let room = usize::from(width).saturating_sub(3 + 34 + 7);
+    let ws = found
+        .iter()
+        .map(|(_, s)| s.workspace.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, room.max(4));
+    let sessions: Vec<Row> = found
+        .into_iter()
+        .map(|(id, s)| {
+            let row = session_row(id, s, count, ws);
+            let prefix = format!("Nov {} ", s.day);
+            let shift = prefix.chars().count();
+            Row {
+                text: format!("{prefix}{}", row.text),
+                spans: row
+                    .spans
+                    .into_iter()
+                    .map(|(at, e)| (at.start + shift..at.end + shift, e))
+                    .collect(),
+                ..row
+            }
+        })
+        .collect();
+    let mut rows = Vec::new();
+    for (name, group) in [
+        ("Days", days),
+        ("Sessions", sessions),
+        ("Components", components),
+    ] {
+        if !group.is_empty() {
+            rows.push(line(format!("── {name} ({})", group.len())));
+            rows.extend(group);
+        }
+    }
+    (title, scope, rows)
 }
 
 /// The workspace column for one day: its longest name, clamped so the
@@ -225,12 +292,13 @@ fn tokens(s: &Session, width: u16) -> Content {
     let mut rows = incomplete_rows(s);
     for r in &s.requests {
         rows.push(line(worker_model(r.worker, r.model, 0, room)));
-        rows.extend(
-            PARTS
-                .iter()
-                .zip(r.tokens)
-                .map(|(part, tokens)| line(format!("{part:<14} {tokens:>8} tokens"))),
-        );
+        rows.extend(PARTS.iter().zip(r.tokens).map(|(part, tokens)| {
+            Cells::default()
+                .add(format!("{part:<14} "), None)
+                .add(format!("{tokens:>8}"), Some(Emphasis::Figure))
+                .add(" tokens", None)
+                .line()
+        }));
     }
     (
         format!("{} / token and cache detail", s.name),
@@ -246,23 +314,30 @@ fn cost_rows(s: &Session, bar_width: usize, width: u16) -> Vec<Row> {
     let parts: [u32; 4] = std::array::from_fn(|i| s.requests.iter().map(|r| r.cents()[i]).sum());
     if priced(s) > 0 {
         rows.extend(PARTS.iter().zip(parts).map(|(part, cost)| {
-            line(format!(
-                "{part:<13} {:>7}  {}",
-                usd(cost),
-                bar(cost, s.cents(), bar_width)
-            ))
+            Cells::default()
+                .add(format!("{part:<13} "), None)
+                .add(format!("{:>7}", usd(cost)), Some(Emphasis::Figure))
+                .add(format!("  {}", bar(cost, s.cents(), bar_width)), None)
+                .line()
         }));
     }
     rows.extend(s.requests.iter().map(|r| {
-        let cost = if r.milli_usd_per_ktok.is_some() {
+        let priced = r.milli_usd_per_ktok.is_some();
+        let cost = if priced {
             usd(r.cents().iter().sum())
         } else {
             "unpriced".into()
         };
-        line(format!(
-            "{}   {cost}",
-            worker_model(r.worker, r.model, 3 + cost.chars().count(), room)
-        ))
+        Cells::default()
+            .add(
+                format!(
+                    "{}   ",
+                    worker_model(r.worker, r.model, 3 + cost.chars().count(), room)
+                ),
+                None,
+            )
+            .add(&cost, priced.then_some(Emphasis::Figure))
+            .line()
     }));
     rows
 }
