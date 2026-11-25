@@ -316,6 +316,25 @@ fn codex_windows_group_by_time_with_a_running_maximum() {
         .any(|r| r.text == "  Claude 5-hour: relay not set up"));
 }
 
+// With no relay, the gap is context for the history, not the answer: the
+// answer stays about pace. The relay note must sit under "Last 4 weeks"
+// and not leak into the fixture, which has Claude readings.
+#[test]
+fn local_headroom_names_the_missing_relay_under_history() {
+    let (answer, _, rows) = crate::headroom(&load());
+    assert_eq!(answer, "No window is on pace to fill before it resets.");
+    let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+    let at = |s: &str| texts.iter().position(|t| t.trim() == s).unwrap();
+    let note = at("Claude windows need the statusline");
+    assert!(at("── Last 4 weeks ──") < note && note < at("── How to read it ──"));
+    assert_eq!(texts[note + 1].trim(), "relay; Lens doesn't guess them.");
+
+    let fixture = crate::headroom(&Data::fixture()).2;
+    assert!(!fixture
+        .iter()
+        .any(|r| r.text.contains("need the statusline")));
+}
+
 #[test]
 fn window_that_reset_shows_no_share() {
     let midnight = now().div_euclid(DAY) * DAY;

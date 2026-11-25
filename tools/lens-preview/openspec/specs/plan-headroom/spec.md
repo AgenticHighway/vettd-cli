@@ -88,15 +88,18 @@ Covered by: `headroom_answers_with_the_filling_window_and_cites_sources` and
 - **THEN** the Claude 5-hour window is the one named
 
 ### Requirement: Answer when nothing fills
-When no window with readings is on pace to fill before it resets, the
-answer SHALL say so. On local data without relay readings it SHALL add
-that Claude windows need the statusline relay.
+When no window is on pace to fill before it resets, the answer SHALL say
+"No window is on pace to fill before it resets." On local data without relay
+readings, the answer SHALL NOT mention the relay. Instead, the "Last 4 weeks"
+section SHALL say that Claude windows need the statusline relay and that Lens
+doesn't guess them.
 
-Covered by: no test yet checks this answer's text.
+Covered by: `local_headroom_names_the_missing_relay_under_history`
+(src/local/tests.rs).
 
 #### Scenario: Nothing filling, no relay
 - **WHEN** Plan headroom is shown with `--source local`, no relay data, and no Codex window on pace to fill
-- **THEN** the answer says no window with readings is on pace to fill and that Claude windows need the statusline relay
+- **THEN** the answer is "No window is on pace to fill before it resets.", and under "Last 4 weeks" a note says Claude windows need the statusline relay and that Lens doesn't guess them
 
 ### Requirement: No plan recommendation
 Plan headroom SHALL NOT recommend a plan. Below the window rows it SHALL show
