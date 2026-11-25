@@ -50,4 +50,4 @@ must keep passing on `--source fixture` after each group.
 
 - [x] 6.1 README: document `--source local`, what it reads, what stays synthetic, and that nothing leaves the machine
 - [x] 6.2 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked` in `tools/lens-preview/`
-- [ ] 6.3 Run `--source local` by hand on a real machine and check Home and Plan headroom against Codex's own `/status`, without recording any output in the repository (run on 2026-11-25 with aggregate checks only; the `/status` comparison is still open)
+- [ ] 6.3 Run `--source local` by hand on a real machine and check Home and Plan headroom against Codex's own `/status`, without recording any output in the repository (2026-11-25: the TUI was run on real logs and the journeys are covered by `src/e2e/local.rs` on hand-written logs; the `/status` comparison is still open)

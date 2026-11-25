@@ -288,6 +288,21 @@ impl Roots {
     }
 }
 
+/// The hand-written logs under `tests/data/`, read as of 2026-11-25 12:00
+/// UTC.
+#[cfg(test)]
+pub(crate) fn test_data() -> Data {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data");
+    let roots = Roots {
+        claude: Some(dir.join("claude")),
+        codex: Some(dir.join("codex")),
+    };
+    let now = parse_ts("2026-11-25T12:00:00Z").unwrap();
+    read(&roots, now, None, &mut Vec::new())
+}
+
 /// Reads local logs as of the system clock. Notes go to stderr.
 pub(crate) fn load() -> Data {
     eprintln!("Reading local logs…");

@@ -221,6 +221,14 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
             View::Headroom,
             "See every plan window and its pace",
         ));
+    } else if all.local() {
+        // The fixture always has a filling window; real weeks often don't,
+        // and Plan headroom must still be reachable.
+        rows.push(link(
+            "Plan windows: none filling",
+            View::Headroom,
+            "See every plan window and its pace",
+        ));
     }
     if let Some((day, value)) = days
         .iter()

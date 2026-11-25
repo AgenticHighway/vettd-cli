@@ -135,7 +135,9 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
 fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
     let theme = cx.theme;
     let total = total_tokens(cx.all);
-    let bar_cells = usize::from(sources.width.saturating_sub(36)).clamp(4, 14);
+    // Local source names are longer ("Instructions and files").
+    let name_width: u16 = if cx.all.local() { 22 } else { 19 };
+    let bar_cells = usize::from(sources.width.saturating_sub(17 + name_width)).clamp(4, 14);
     // Local data has more sources than the table has rows: the largest
     // six are shown, and Token detail and the export hold the rest.
     let mut shares: Vec<_> = cx.all.token_sources.iter().collect();
@@ -164,7 +166,7 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
         })
         .collect();
     let widths = [
-        Constraint::Length(19),
+        Constraint::Length(name_width),
         Constraint::Length(6),
         Constraint::Length(5),
         Constraint::Fill(1),
