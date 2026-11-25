@@ -725,6 +725,7 @@ fn relay_readings_feed_claude_windows_like_codex() {
         .find(|r| r.text.starts_with("Claude · weekly"))
         .unwrap();
     assert!(weekly.text.contains(" —  "), "{}", weekly.text);
+    assert!(weekly.open.is_none());
     assert!(rows
         .iter()
         .any(|r| r.text == "  Claude weekly reset; no relay reading since"));
@@ -840,6 +841,7 @@ fn elapsed_forecast_is_not_full_and_a_full_reading_is() {
     let mut data = load();
     let now = data.now;
     let mut w = window_of(&data, "Codex", "5-hour");
+    w.precise.clear();
     // 20% then 60% project 100% within the hour, long before now, but
     // the last reading is 60%.
     w.readings = Cow::Owned(vec![(10, 20), (30, 60)]);
@@ -976,4 +978,83 @@ fn window_minutes_never_reset_early_or_shift_days() {
         0,
         "the reading is on Nov 25"
     );
+}
+
+// Review fixes (PR #339).
+
+// Two relay readings in one minute still have a trend, and a fractional
+// rise isn't rounded into a false fill.
+#[test]
+fn pace_uses_unrounded_relay_readings() {
+    let file = relay_file(
+        "precise",
+        &[
+            (
+                "2026-11-25T10:00:05Z",
+                "five_hour",
+                40.0,
+                "2026-11-25T14:00:00Z",
+            ),
+            (
+                "2026-11-25T10:00:50Z",
+                "five_hour",
+                40.4,
+                "2026-11-25T14:00:00Z",
+            ),
+        ],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let w = window_of(&data, "Claude", "5-hour");
+    assert_eq!(w.readings[0].0, w.readings[1].0, "both in one minute");
+    assert!(
+        crate::pace(&w).is_some(),
+        "same-minute readings keep a pace"
+    );
+    // Rounded, 40% -> 40% looks flat; 0.4 points in 45 s is a steep trend.
+    assert!(crate::pace(&w).unwrap() > 100);
+    let file = relay_file(
+        "fraction",
+        &[
+            (
+                "2026-11-25T10:00:00Z",
+                "five_hour",
+                0.4,
+                "2026-11-25T14:00:00Z",
+            ),
+            (
+                "2026-11-25T11:00:00Z",
+                "five_hour",
+                0.6,
+                "2026-11-25T14:00:00Z",
+            ),
+        ],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    // Rounded, 0% -> 1% in an hour would read as 1 point an hour; it is 0.2.
+    assert_eq!(crate::pace(&window_of(&data, "Claude", "5-hour")), Some(1));
+}
+
+// A window that has reset has no current reading, so its row opens
+// nothing.
+#[test]
+fn reset_window_row_opens_nothing() {
+    let file = relay_file(
+        "expired",
+        &[(
+            "2026-11-17T10:00:00Z",
+            "seven_day",
+            55.0,
+            "2026-11-18T00:00:00Z",
+        )],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let rows = crate::headroom(&data).2;
+    let weekly = rows
+        .iter()
+        .find(|r| r.text.starts_with("Claude · weekly"))
+        .unwrap();
+    assert!(weekly.open.is_none(), "{}", weekly.text);
 }

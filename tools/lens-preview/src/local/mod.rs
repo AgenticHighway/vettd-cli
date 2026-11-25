@@ -584,6 +584,7 @@ pub(crate) fn windows_for(
                 start: None,
                 readings: Cow::Owned(Vec::new()),
                 note: None,
+                precise: Vec::new(),
             };
             let Some(end) = mine.iter().map(|r| r.resets_at).max() else {
                 return empty;
@@ -599,17 +600,20 @@ pub(crate) fn windows_for(
             let start_minute = (start - midnight).div_euclid(60)
                 + i64::from((start - midnight).rem_euclid(60) > 0);
             let mut high = 0.0f64;
-            let points = current
+            let grid = midnight + start_minute * 60;
+            let (points, precise): (Vec<_>, Vec<_>) = current
                 .iter()
                 .map(|r| {
                     high = high.max(r.percent);
                     let minute = (r.ts - midnight).div_euclid(60) - start_minute;
-                    (minute.max(0) as u32, high.round() as u32)
+                    let exact = ((r.ts - grid) as f64 / 60.0).max(0.0);
+                    ((minute.max(0) as u32, high.round() as u32), (exact, high))
                 })
-                .collect();
+                .unzip();
             Window {
                 start: Some(start_minute as i32),
                 readings: Cow::Owned(points),
+                precise,
                 ..empty
             }
         })

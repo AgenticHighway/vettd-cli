@@ -220,6 +220,10 @@ pub struct Window {
     /// Why a window has no reading, shown under its row (local data).
     #[serde(skip)]
     pub note: Option<&'static str>,
+    /// Local data: the same readings unrounded, as (minutes since start,
+    /// running-maximum share). Pace uses these when present.
+    #[serde(skip)]
+    pub precise: Vec<(f64, f64)>,
 }
 
 pub const WINDOWS: [Window; 4] = [
@@ -231,6 +235,7 @@ pub const WINDOWS: [Window; 4] = [
         start: Some(9 * 60),
         readings: Cow::Borrowed(&[(30, 9), (90, 31), (165, 62)]),
         note: None,
+        precise: Vec::new(),
     },
     Window {
         agent: "Claude",
@@ -240,6 +245,7 @@ pub const WINDOWS: [Window; 4] = [
         start: Some(-2 * 1440 + 9 * 60),
         readings: Cow::Borrowed(&[(1440, 25), (3045, 31)]),
         note: None,
+        precise: Vec::new(),
     },
     // One reading so far: too few for a pace.
     Window {
@@ -250,6 +256,7 @@ pub const WINDOWS: [Window; 4] = [
         start: Some(10 * 60),
         readings: Cow::Borrowed(&[(105, 12)]),
         note: None,
+        precise: Vec::new(),
     },
     Window {
         agent: "Codex",
@@ -259,6 +266,7 @@ pub const WINDOWS: [Window; 4] = [
         start: Some(-3 * 1440 + 22 * 60 + 10),
         readings: Cow::Borrowed(&[(1000, 33), (3695, 44)]),
         note: None,
+        precise: Vec::new(),
     },
 ];
 

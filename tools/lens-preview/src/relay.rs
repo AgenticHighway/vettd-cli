@@ -171,15 +171,34 @@ fn record(file: &Path, found: &[Record], now: i64) -> std::io::Result<()> {
 /// Rewrites the file without records older than 35 days, through a
 /// temporary file and a rename. A failure leaves the old file as it was.
 pub(crate) fn prune(file: &Path, now: i64) -> std::io::Result<()> {
+    prune_with(file, now, || {})
+}
+
+/// Other Claude sessions may append while the rewrite runs. Just before
+/// the rename, whatever they appended since the snapshot is copied over,
+/// so it isn't lost; only an append in the last instant before the rename
+/// can still be. `between` lets tests append at that point.
+fn prune_with(file: &Path, now: i64, between: impl FnOnce()) -> std::io::Result<()> {
     let text = std::fs::read_to_string(file)?;
-    let kept: String = text
-        .lines()
-        .filter_map(Record::parse)
-        .filter(|r| r.t >= now - KEEP_DAYS * DAY)
-        .map(|r| r.line())
-        .collect();
+    let kept = |text: &str| -> String {
+        text.lines()
+            .filter_map(Record::parse)
+            .filter(|r| r.t >= now - KEEP_DAYS * DAY)
+            .map(|r| r.line())
+            .collect()
+    };
     let tmp = file.with_extension(format!("jsonl.tmp-{}", std::process::id()));
-    let result = std::fs::write(&tmp, kept).and_then(|_| std::fs::rename(&tmp, file));
+    let result = std::fs::write(&tmp, kept(&text)).and_then(|_| {
+        between();
+        let latest = std::fs::read_to_string(file)?;
+        if let Some(appended) = latest.get(text.len()..).filter(|a| !a.is_empty()) {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp)?
+                .write_all(kept(appended).as_bytes())?;
+        }
+        std::fs::rename(&tmp, file)
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -189,11 +208,7 @@ pub(crate) fn prune(file: &Path, now: i64) -> std::io::Result<()> {
 /// Runs the person's own statusline command with the same stdin and
 /// returns its stdout.
 fn chain(command: &str, stdin: &str) -> std::io::Result<String> {
-    let mut child = if cfg!(windows) {
-        Command::new("cmd").args(["/C", command]).spawn_piped()?
-    } else {
-        Command::new("sh").args(["-c", command]).spawn_piped()?
-    };
+    let mut child = shell(command).spawn_piped()?;
     if let Some(mut input) = child.stdin.take() {
         // A command that ignores stdin may close it early; that's fine.
         let _ = input.write_all(stdin.as_bytes());
@@ -204,6 +219,26 @@ fn chain(command: &str, stdin: &str) -> std::io::Result<String> {
     }
     child.wait()?;
     Ok(out.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// cmd.exe parses its command line itself, so the command goes in as
+/// written: `/S /C "<command>"` strips exactly the outer quotes and keeps
+/// quoted paths such as `"C:\Program Files\..."` intact. Rust's usual
+/// argument escaping would turn those quotes into `\"`, which cmd.exe
+/// doesn't read.
+#[cfg(windows)]
+fn shell(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new("cmd");
+    cmd.raw_arg("/S /C").raw_arg(format!("\"{command}\""));
+    cmd
+}
+
+#[cfg(not(windows))]
+fn shell(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", command]);
+    cmd
 }
 
 trait SpawnPiped {
@@ -375,6 +410,52 @@ mod tests {
         let kept = records(&file).unwrap();
         assert!(kept.iter().all(|r| r.t >= NOW - 35 * DAY), "{kept:?}");
         assert_eq!(kept.len(), 3, "the recent record and this run's two");
+        cleanup(&file);
+    }
+
+    // Another session's append during a prune survives the rewrite.
+    #[test]
+    fn append_during_prune_is_kept() {
+        let file = tmp("race");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let rec = |t: i64, pct: f64| Record {
+            t,
+            w: "five_hour".into(),
+            pct,
+            resets_at: NOW + 3600,
+        };
+        std::fs::write(
+            &file,
+            rec(NOW - 40 * DAY, 1.0).line() + &rec(NOW, 2.0).line(),
+        )
+        .unwrap();
+        prune_with(&file, NOW, || {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap()
+                .write_all(rec(NOW + 1, 3.0).line().as_bytes())
+                .unwrap();
+        })
+        .unwrap();
+        let pcts: Vec<f64> = records(&file).unwrap().iter().map(|r| r.pct).collect();
+        assert_eq!(pcts, [2.0, 3.0]);
+        cleanup(&file);
+    }
+
+    // A status command with a quoted path (as under "Program Files") must
+    // reach the shell with its quotes intact.
+    #[test]
+    fn then_keeps_quoted_paths() {
+        let file = tmp("quoted");
+        let command = if cfg!(windows) {
+            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            format!(r#""{root}\System32\cmd.exe" /C echo main ok"#)
+        } else {
+            r#""/bin/sh" -c "echo main ok""#.to_string()
+        };
+        let (out, errors) = relay(BOTH, &file, NOW, Some(&command));
+        assert_eq!(out, "main ok", "{errors:?}");
         cleanup(&file);
     }
 
