@@ -2,6 +2,7 @@ use super::{
     comparable, content, cost_label, measure, priced, units, usd, Page, Row, Runtime, Session,
     View, COMPONENTS, PARTS,
 };
+use crate::data::{day_label, Data, Source};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -105,13 +106,13 @@ impl Theme {
     }
 }
 
-fn crumb(view: View, all: &[Session]) -> String {
+fn crumb(view: View, all: &Data) -> String {
     match view {
         View::Home => "Home".into(),
         View::Headroom => "Plan headroom".into(),
         View::Week => "Daily activity".into(),
         View::Find => "Lookup".into(),
-        View::Day(day) => format!("Nov {day}"),
+        View::Day(day) => day_label(day),
         View::Session(id) => all[id].name.into(),
         View::Tokens(_) => "Tokens".into(),
         View::Help => "Keys".into(),
@@ -120,7 +121,7 @@ fn crumb(view: View, all: &[Session]) -> String {
             "{} ({})",
             COMPONENTS[c].name,
             if s.from == s.to {
-                format!("Nov {}", s.from)
+                day_label(s.from)
             } else {
                 "week".into()
             }
@@ -133,7 +134,7 @@ fn crumb(view: View, all: &[Session]) -> String {
 }
 
 /// Keeps Home and the last levels that fit, so the current place is never cut.
-fn breadcrumb(stack: &[Page], all: &[Session], max: usize) -> String {
+fn breadcrumb(stack: &[Page], all: &Data, max: usize) -> String {
     let parts: Vec<_> = stack.iter().map(|p| crumb(p.view, all)).collect();
     let full = parts.join(" › ");
     if full.chars().count() <= max {
@@ -181,7 +182,7 @@ fn keys(pairs: &[(&str, &str)], theme: Theme) -> Line<'static> {
 
 /// What every part of a frame reads.
 struct Ctx<'a> {
-    all: &'a [Session],
+    all: &'a Data,
     count: bool,
     rows: &'a [Row],
     active: Option<(usize, (View, &'static str))>,
@@ -193,7 +194,7 @@ struct Ctx<'a> {
 pub fn draw(
     f: &mut Frame,
     stack: &[Page],
-    all: &[Session],
+    all: &Data,
     count: bool,
     (title, scope): (&str, &str),
     rows: &[Row],
@@ -268,7 +269,10 @@ fn draw_header(
         Paragraph::new(Line::from(vec![
             Span::styled(" LENS ", theme.panel().add_modifier(Modifier::BOLD)),
             Span::styled(
-                "  synthetic data · nothing leaves this machine",
+                match cx.all.source {
+                    Source::Fixture => "  synthetic data · nothing leaves this machine",
+                    Source::Local => "  local logs · read-only · nothing leaves this machine",
+                },
                 theme.fg(MUTED),
             ),
         ]))

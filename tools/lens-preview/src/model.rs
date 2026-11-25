@@ -1,6 +1,7 @@
 //! Scope, views, pages and the row helpers every view builds from.
 
-use crate::fixture::{Session, PERIOD};
+use crate::data::{day_label, period_label};
+use crate::fixture::Session;
 use std::collections::BTreeSet;
 
 /// The question a result answers: which workspace, agent and period.
@@ -38,9 +39,9 @@ impl Scope {
 
     pub(crate) fn period(&self) -> String {
         if self.from == self.to {
-            format!("Nov {} UTC", self.from)
+            format!("{} UTC", day_label(self.from))
         } else {
-            PERIOD.into()
+            period_label(self.from, self.to)
         }
     }
 
@@ -165,10 +166,7 @@ pub(crate) fn bar(amount: u32, max: u32, width: usize) -> String {
 }
 
 pub(crate) fn priced(s: &Session) -> usize {
-    s.requests
-        .iter()
-        .filter(|r| r.milli_usd_per_ktok.is_some())
-        .count()
+    s.requests.iter().filter(|r| r.priced()).count()
 }
 
 pub(crate) fn measure(s: &Session, count: bool) -> u32 {
@@ -187,12 +185,19 @@ pub(crate) fn units(value: u32, count: bool) -> String {
     }
 }
 
-pub(crate) fn cost_label(s: &Session) -> String {
+/// A session's dollar figure. On local data it is what the usage would
+/// cost on the API, which the person may not pay (a plan may cover it).
+pub(crate) fn cost_label(s: &Session, local: bool) -> String {
     let n = priced(s);
-    if n == 0 {
-        "No priced requests".into()
-    } else {
-        format!("{} USD ({n}/{} priced)", usd(s.cents()), s.requests.len())
+    match (n, local) {
+        (0, false) => "No priced requests".into(),
+        (0, true) => "No request has a rate".into(),
+        (_, false) => format!("{} USD ({n}/{} priced)", usd(s.cents()), s.requests.len()),
+        (_, true) => format!(
+            "{} USD API-equivalent ({n}/{} with a rate)",
+            usd(s.cents()),
+            s.requests.len()
+        ),
     }
 }
 
@@ -203,7 +208,7 @@ pub(crate) fn comparable(s: &Session, count: bool) -> bool {
 pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
     let measure = if count {
         format!("{} req", s.requests.len())
-    } else if s.requests.iter().all(|r| r.milli_usd_per_ktok.is_none()) {
+    } else if s.requests.iter().all(|r| !r.priced()) {
         "unpriced".into()
     } else {
         usd(s.cents())
@@ -211,7 +216,7 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
     link(
         format!(
             "{:<16} {:<4} {:<7} {:>8}{}",
-            s.name,
+            s.name.chars().take(16).collect::<String>(),
             s.workspace,
             s.agent,
             measure,

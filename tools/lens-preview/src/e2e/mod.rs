@@ -5,6 +5,7 @@
 //! the person back to where they were.
 
 use super::*;
+use crate::data::Data;
 use ratatui::{
     backend::TestBackend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -13,7 +14,7 @@ use ratatui::{
 
 struct User {
     app: App,
-    all: Vec<Session>,
+    all: Data,
     size: (u16, u16),
     mono: bool,
     quit: bool,
@@ -23,7 +24,7 @@ impl User {
     fn at(size: (u16, u16)) -> Self {
         Self {
             app: App::new(),
-            all: fixture::sessions(),
+            all: Data::fixture(),
             size,
             mono: false,
             quit: false,
