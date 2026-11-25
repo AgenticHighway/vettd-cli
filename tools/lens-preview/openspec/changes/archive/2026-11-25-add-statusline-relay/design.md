@@ -20,7 +20,8 @@ are marked **unverified**.
   The command runs in a shell, gets one JSON object on stdin, and its
   stdout becomes the status line.
 - `rate_limits.five_hour` and `rate_limits.seven_day`, each with
-  `used_percentage` (0–100, may be fractional) and `resets_at` (Unix epoch
+  `used_percentage` (0–100; whole numbers on the real feed checked
+  2026-11-25, fractional per the documentation) and `resets_at` (Unix epoch
   seconds). `rate_limits.spend_limit` is for gateway spend limits and is
   not a plan window.
 - `rate_limits` appears only for claude.ai Pro, Max and Ultra subscribers
@@ -38,10 +39,12 @@ are marked **unverified**.
 - **Unverified:** whether output is shown only on exit status 0, and the
   Windows-specific setup guidance.
 
-**Not checked on a real feed.** No `statusLine` is configured on the
-machine this was written on. That machine's plan isn't recorded in Claude's
-logs, so whether `rate_limits` would appear there is **unverified**. Every
-field name above comes from the documentation, not from observed input.
+**Checked on a real feed (2026-11-25, task 0.1).** A temporary probe
+recorded only key paths and value types from one signed-in subscriber
+session. `rate_limits.five_hour` and `rate_limits.seven_day` each carried
+`used_percentage` (an integer) and `resets_at` (a 10-digit integer, so
+epoch seconds), as documented. `rate_limits` was absent before the first
+response and while signed out. No `spend_limit` appeared.
 
 ## Goals / Non-Goals
 
@@ -144,11 +147,11 @@ blocks here.
   person wrote into their own settings, with the stdin Claude already gave
   the relay.
 
-## Open Questions
+## Resolved Questions
 
-1. **Relay output.** Print `5h 23% · 7d 41%` when `--then` isn't given, or
-   print nothing, so the relay is invisible?
-2. **Pruning window.** Is 35 days right, or should weekly history keep more
-   than 4 weeks?
-3. **File location.** Is `~/.vettd/lens/` acceptable, or should the relay
-   file live under the Lens preview's own folder until Lens leaves preview?
+The user settled these on 2026-11-25.
+
+1. **Relay output.** Without `--then`, it prints `5h 23% · 7d 41%` for the
+   windows present (Decision 6).
+2. **Pruning window.** 35 days (Decision 5).
+3. **File location.** `~/.vettd/lens/relay.jsonl` (Decision 3).

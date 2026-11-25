@@ -297,6 +297,7 @@ fn soonest_window_wins_over_the_largest_projection() {
         minutes: 7 * 1440,
         start: Some(-3 * 1440 + 22 * 60 + 10),
         readings: Cow::Borrowed(&[(1000, 20), (3695, 60)]),
+        note: None,
         precise: Vec::new(),
     };
     assert!(pace(&fast_weekly) > pace(claude));

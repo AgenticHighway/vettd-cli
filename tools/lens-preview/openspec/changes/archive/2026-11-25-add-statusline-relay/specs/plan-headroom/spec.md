@@ -22,7 +22,7 @@ added (tasks 3.1).
 - **WHEN** Plan headroom is built from the fixture
 - **THEN** it has one selectable row per window (4 in all), Claude rows end in "relay", and Codex rows end in "logs"
 
-#### Scenario: Claude rows without a relay file
+#### Scenario: Claude rows without the relay
 - **WHEN** Plan headroom is built with `--source local` and no relay file
 - **THEN** both Claude rows show "—" for used, pace and reset, say "relay not set up", and are not selectable
 
@@ -44,7 +44,7 @@ Covered by: `plan_headroom_reaches_its_trailing_explanation`
 - **WHEN** a person scrolls to the bottom of Plan headroom
 - **THEN** "Provider meters are the source of truth." is shown
 
-#### Scenario: Weekly history without a relay file
+#### Scenario: Weekly history without the relay
 - **WHEN** Plan headroom is shown with `--source local` and no relay file
 - **THEN** the weekly history row says it needs the statusline relay, and no Claude weekly percentage is shown
 

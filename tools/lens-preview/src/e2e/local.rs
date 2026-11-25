@@ -56,7 +56,7 @@ fn local_plan_headroom_is_reachable_and_names_the_missing_relay() {
     u.press(Enter)
         .sees("Codex · 5-hour")
         .sees("33%")
-        .sees("needs relay");
+        .sees("Claude 5-hour: relay not set up");
     assert_eq!(u.crumb(), "Home › Plan headroom");
     u.press(Esc);
     assert!(u.selected().starts_with("▸ Plan windows"));

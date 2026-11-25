@@ -8,6 +8,7 @@ mod local;
 mod model;
 mod plan;
 mod pricing;
+mod relay;
 mod screen;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,7 @@ use ratatui::{
     },
 };
 use std::io::{self, BufWriter};
+use std::path::PathBuf;
 
 struct Terminal;
 
@@ -98,16 +100,25 @@ fn export(data: &Data) -> serde_json::Value {
     })
 }
 
-/// `--json` and `--source <name>`, in any order. Errors go to stderr.
+/// `--json`, `--source <name>` and the relay options, in any order.
 struct Args {
     json: bool,
     source: Source,
+    relay: bool,
+    relay_file: Option<PathBuf>,
+    then: Option<String>,
+    /// A bad option. The relay ignores it: it must never fail.
+    error: Option<String>,
 }
 
-fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
     let mut parsed = Args {
         json: false,
         source: Source::Fixture,
+        relay: false,
+        relay_file: None,
+        then: None,
+        error: None,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -116,31 +127,45 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 parsed.json = true;
                 continue;
             }
+            "--relay" => {
+                parsed.relay = true;
+                continue;
+            }
+            "--relay-file" => {
+                parsed.relay_file = args.next().map(PathBuf::from);
+                continue;
+            }
+            "--then" => {
+                parsed.then = args.next();
+                continue;
+            }
             "--source" => args.next(),
             _ => match arg.strip_prefix("--source=") {
                 Some(value) => Some(value.to_string()),
                 None => continue,
             },
         };
-        parsed.source = value
-            .as_deref()
-            .and_then(Source::parse)
-            .ok_or("--source takes fixture or local")?;
+        match value.as_deref().and_then(Source::parse) {
+            Some(source) => parsed.source = source,
+            None => parsed.error = Some("--source takes fixture or local".into()),
+        }
     }
-    Ok(parsed)
+    parsed
 }
 
 fn main() -> io::Result<()> {
-    let args = match parse_args(std::env::args().skip(1)) {
-        Ok(args) => args,
-        Err(message) => {
-            eprintln!("vettd-lens-preview: {message}");
-            std::process::exit(2);
-        }
-    };
+    let args = parse_args(std::env::args().skip(1));
+    if args.relay {
+        relay::run(args.relay_file, args.then.as_deref());
+        return Ok(());
+    }
+    if let Some(message) = args.error {
+        eprintln!("vettd-lens-preview: {message}");
+        std::process::exit(2);
+    }
     let data = match args.source {
         Source::Fixture => Data::fixture(),
-        Source::Local => local::load(),
+        Source::Local => local::load(args.relay_file),
     };
     if args.json {
         let json = match data.source {

@@ -286,10 +286,12 @@ pub(crate) fn basis_points(tokens: &[u64]) -> Vec<u32> {
 pub(crate) struct Roots {
     pub(crate) claude: Option<PathBuf>,
     pub(crate) codex: Option<PathBuf>,
+    /// The statusline relay's file (`--relay-file`, else the default).
+    pub(crate) relay: Option<PathBuf>,
 }
 
 impl Roots {
-    fn from_env() -> Self {
+    fn from_env(relay: Option<PathBuf>) -> Self {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from);
@@ -302,12 +304,13 @@ impl Roots {
         Self {
             claude: pick("CLAUDE_CONFIG_DIR", ".claude"),
             codex: pick("CODEX_HOME", ".codex"),
+            relay: relay.or_else(crate::relay::default_file),
         }
     }
 }
 
 /// The hand-written logs under `tests/data/`, read as of 2026-11-25 12:00
-/// UTC.
+/// UTC with no relay file.
 #[cfg(test)]
 pub(crate) fn test_data() -> Data {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -316,20 +319,21 @@ pub(crate) fn test_data() -> Data {
     let roots = Roots {
         claude: Some(dir.join("claude")),
         codex: Some(dir.join("codex")),
+        relay: None,
     };
     let now = parse_ts("2026-11-25T12:00:00Z").unwrap();
     read(&roots, now, None, &mut Vec::new())
 }
 
 /// Reads local logs as of the system clock. Notes go to stderr.
-pub(crate) fn load() -> Data {
+pub(crate) fn load(relay_file: Option<PathBuf>) -> Data {
     eprintln!("Reading local logs…");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let cutoff = SystemTime::now().checked_sub(Duration::from_secs((HISTORY_DAYS * DAY) as u64));
     let mut notes = Vec::new();
-    let data = read(&Roots::from_env(), now, cutoff, &mut notes);
+    let data = read(&Roots::from_env(relay_file), now, cutoff, &mut notes);
     for note in notes {
         eprintln!("{note}");
     }
@@ -371,12 +375,35 @@ pub(crate) fn read(
         }
         hits.push((agent, found.limit_hits - before));
     }
-    assemble(found, hits, now, notes)
+    let relay = roots
+        .relay
+        .as_deref()
+        .and_then(crate::relay::records)
+        .map(|records| {
+            records
+                .into_iter()
+                .filter_map(|r| {
+                    let minutes = match r.w.as_str() {
+                        "five_hour" => 300,
+                        "seven_day" => 10_080,
+                        _ => return None,
+                    };
+                    Some(Reading {
+                        ts: r.t,
+                        minutes,
+                        percent: r.pct,
+                        resets_at: r.resets_at,
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+    assemble(found, hits, relay, now, notes)
 }
 
 fn assemble(
     found: Found,
     hits: Vec<(&'static str, u32)>,
+    relay: Option<Vec<Reading>>,
     now: i64,
     notes: &mut Vec<String>,
 ) -> Data {
@@ -494,11 +521,12 @@ fn assemble(
             tokens: Some(tokens),
         })
         .collect();
-    let mut windows = vec![
-        relay_window("5-hour", 300),
-        relay_window("weekly", 7 * 1440),
-    ];
+    let mut windows = claude_windows(relay.as_deref(), midnight);
     windows.extend(codex::windows(&readings, midnight, notes));
+    let weekly_ends = relay
+        .as_deref()
+        .map(|r| weekly_ends(r, now))
+        .filter(|e| !e.is_empty());
     Data {
         source: Source::Local,
         sessions,
@@ -506,7 +534,7 @@ fn assemble(
         today: today as u32,
         now: ((now - midnight) / 60) as i32,
         windows,
-        weekly_ends: None,
+        weekly_ends,
         limit_hits: hits.iter().map(|h| h.1).sum(),
         limit_hits_by_agent: Some(hits),
         token_sources,
@@ -514,18 +542,107 @@ fn assemble(
     }
 }
 
-/// Claude windows reach Lens only through the statusline relay, which
-/// this change doesn't add: no reading, no guess.
-fn relay_window(name: &'static str, minutes: u32) -> Window {
-    Window {
-        agent: "Claude",
-        name,
-        source: "needs relay",
-        minutes,
-        start: None,
-        readings: Cow::Owned(Vec::new()),
-        precise: Vec::new(),
+const NOT_SET_UP: &str = "relay not set up";
+const NO_READING: &str = "no relay reading yet";
+
+/// Claude windows come only from the statusline relay: with no relay file
+/// there is no reading and no guess.
+fn claude_windows(relay: Option<&[Reading]>, midnight: i64) -> Vec<Window> {
+    let mut windows = windows_for("Claude", "relay", relay.unwrap_or_default(), midnight);
+    for w in &mut windows {
+        if w.readings.is_empty() {
+            w.note = Some(if relay.is_some() {
+                NO_READING
+            } else {
+                NOT_SET_UP
+            });
+        }
     }
+    windows
+}
+
+/// The 5-hour and weekly rows for one agent. A window is found by its
+/// length. Its current instance ends at the latest `resets_at` (which
+/// drifts by seconds between events) and starts that many minutes earlier;
+/// every reading in that span counts, as a running maximum, because
+/// concurrent sessions report slightly older shares.
+pub(crate) fn windows_for(
+    agent: &'static str,
+    source: &'static str,
+    readings: &[Reading],
+    midnight: i64,
+) -> Vec<Window> {
+    [("5-hour", 300u32), ("weekly", 10_080)]
+        .into_iter()
+        .map(|(name, minutes)| {
+            let mine: Vec<&Reading> = readings.iter().filter(|r| r.minutes == minutes).collect();
+            let empty = Window {
+                agent,
+                name,
+                source,
+                minutes,
+                start: None,
+                readings: Cow::Owned(Vec::new()),
+                note: None,
+                precise: Vec::new(),
+            };
+            let Some(end) = mine.iter().map(|r| r.resets_at).max() else {
+                return empty;
+            };
+            let start = end - i64::from(minutes) * 60;
+            let mut current: Vec<&Reading> = mine
+                .into_iter()
+                .filter(|r| (start..=end).contains(&r.ts))
+                .collect();
+            current.sort_by_key(|r| r.ts);
+            // One minute grid: the start rounds up, so a reset is never
+            // shown early, and each reading keeps its own UTC minute and day.
+            let start_minute = (start - midnight).div_euclid(60)
+                + i64::from((start - midnight).rem_euclid(60) > 0);
+            let mut high = 0.0f64;
+            let grid = midnight + start_minute * 60;
+            let (points, precise): (Vec<_>, Vec<_>) = current
+                .iter()
+                .map(|r| {
+                    high = high.max(r.percent);
+                    let minute = (r.ts - midnight).div_euclid(60) - start_minute;
+                    let exact = ((r.ts - grid) as f64 / 60.0).max(0.0);
+                    ((minute.max(0) as u32, high.round() as u32), (exact, high))
+                })
+                .unzip();
+            Window {
+                start: Some(start_minute as i32),
+                readings: Cow::Owned(points),
+                precise,
+                ..empty
+            }
+        })
+        .collect()
+}
+
+/// How the last (up to) 4 Claude weekly windows that have ended finished:
+/// the highest share recorded before each reset, oldest first. Resets
+/// within an hour of each other are one window, since `resets_at` can
+/// drift by seconds.
+fn weekly_ends(relay: &[Reading], now: i64) -> Vec<u32> {
+    let mut weekly: Vec<&Reading> = relay.iter().filter(|r| r.minutes == 10_080).collect();
+    weekly.sort_by_key(|r| r.resets_at);
+    let mut ends: Vec<(i64, f64)> = Vec::new();
+    for r in weekly {
+        match ends.last_mut() {
+            Some((end, high)) if r.resets_at - *end < 3600 => {
+                *end = (*end).max(r.resets_at);
+                *high = high.max(r.percent);
+            }
+            _ => ends.push((r.resets_at, r.percent)),
+        }
+    }
+    let ended: Vec<u32> = ends
+        .into_iter()
+        .filter(|(end, _)| *end <= now)
+        .map(|(_, high)| high.round() as u32)
+        .collect();
+    ended[ended.len().saturating_sub(4)..].to_vec()
 }
 
 /// The local export: aggregates only. No titles, names, paths, prompts or
@@ -596,7 +713,7 @@ pub(crate) fn export(data: &Data) -> Value {
         "estimated_sections": ["token_sources", "sessions.skill_uses (Codex)"],
         "windows": data.windows,
         "now_minutes_from_nov_18": Value::Null,
-        "claude_weekly_ends_percent": Value::Null,
+        "claude_weekly_ends_percent": data.weekly_ends,
         "limit_hits": data.limit_hits,
         "limit_hits_by_agent": by_agent,
         "token_sources": token_sources,

@@ -16,6 +16,7 @@ fn roots() -> Roots {
     Roots {
         claude: Some(data_dir().join("claude")),
         codex: Some(data_dir().join("codex")),
+        relay: None,
     }
 }
 
@@ -309,7 +310,10 @@ fn codex_windows_group_by_time_with_a_running_maximum() {
     assert_eq!(claude.len(), 2);
     assert!(claude
         .iter()
-        .all(|r| r.open.is_none() && r.text.ends_with("needs relay")));
+        .all(|r| r.open.is_none() && r.text.ends_with("relay")));
+    assert!(rows
+        .iter()
+        .any(|r| r.text == "  Claude 5-hour: relay not set up"));
 }
 
 #[test]
@@ -333,6 +337,7 @@ fn missing_directory_is_a_note_not_an_error() {
     let roots = Roots {
         claude: roots().claude,
         codex: Some(data_dir().join("no-such-codex")),
+        relay: None,
     };
     let mut notes = Vec::new();
     let data = read(&roots, now(), None, &mut notes);
@@ -351,6 +356,7 @@ fn no_sessions_still_answers() {
     let empty = Roots {
         claude: None,
         codex: None,
+        relay: None,
     };
     let data = read(&empty, now(), None, &mut Vec::new());
     let (answer, _, _) = content(
@@ -370,6 +376,7 @@ fn period_across_a_month_end_sorts_by_date() {
         &Roots {
             claude: None,
             codex: None,
+            relay: None,
         },
         dec2,
         None,
@@ -410,6 +417,7 @@ fn files_older_than_28_days_are_not_opened() {
     let roots = Roots {
         claude: Some(tmp.clone()),
         codex: None,
+        relay: None,
     };
     let cutoff = run_at - day * 28;
     let since = parse_ts("2026-10-28T12:00:00Z").unwrap();
@@ -619,6 +627,162 @@ fn full_window_says_until_when() {
     );
 }
 
+/// A hand-written relay file in a temporary directory, from (when, window,
+/// share, reset) tuples given as timestamps.
+fn relay_file(name: &str, records: &[(&str, &str, f64, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lens-relay-read-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("relay.jsonl");
+    let text: String = records
+        .iter()
+        .map(|&(t, w, pct, resets)| {
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "t": parse_ts(t).unwrap(),
+                    "w": w,
+                    "pct": pct,
+                    "resets_at": parse_ts(resets).unwrap(),
+                })
+            )
+        })
+        .collect();
+    std::fs::write(&file, text + "{\"t\":17").unwrap();
+    file
+}
+
+fn with_relay(file: &Path) -> Data {
+    let roots = Roots {
+        relay: Some(file.to_path_buf()),
+        ..roots()
+    };
+    read(&roots, now(), None, &mut Vec::new())
+}
+
+#[test]
+fn relay_readings_feed_claude_windows_like_codex() {
+    let file = relay_file(
+        "feed",
+        &[
+            (
+                "2026-11-04T10:00:00Z",
+                "seven_day",
+                30.0,
+                "2026-11-11T00:00:00Z",
+            ),
+            (
+                "2026-11-10T10:00:00Z",
+                "seven_day",
+                38.0,
+                "2026-11-11T00:00:00Z",
+            ),
+            (
+                "2026-11-12T10:00:00Z",
+                "seven_day",
+                20.0,
+                "2026-11-18T00:00:00Z",
+            ),
+            (
+                "2026-11-17T10:00:00Z",
+                "seven_day",
+                55.0,
+                "2026-11-18T00:00:05Z",
+            ),
+            (
+                "2026-11-25T09:30:00Z",
+                "five_hour",
+                20.0,
+                "2026-11-25T14:00:00Z",
+            ),
+            (
+                "2026-11-25T10:30:00Z",
+                "five_hour",
+                40.0,
+                "2026-11-25T14:00:00Z",
+            ),
+        ],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let rows = crate::headroom(&data).2;
+    let five = rows
+        .iter()
+        .find(|r| r.text.starts_with("Claude · 5-hour"))
+        .unwrap();
+    assert!(
+        five.text.contains("40%") && five.text.contains('~'),
+        "{}",
+        five.text
+    );
+    assert!(
+        five.text.ends_with("relay") && five.open.is_some(),
+        "{}",
+        five.text
+    );
+    // The only weekly readings belong to a window that already reset.
+    let weekly = rows
+        .iter()
+        .find(|r| r.text.starts_with("Claude · weekly"))
+        .unwrap();
+    assert!(weekly.text.contains(" —  "), "{}", weekly.text);
+    assert!(weekly.open.is_none());
+    assert!(rows
+        .iter()
+        .any(|r| r.text == "  Claude weekly reset; no relay reading since"));
+    assert!(rows
+        .iter()
+        .any(|r| r.text == "Claude weekly ended at 38%, 55% (2 weeks of relay data)"));
+    assert!(!rows
+        .iter()
+        .any(|r| r.text.contains("relay; Lens doesn't guess")));
+    let json = export(&data);
+    assert_eq!(
+        json["claude_weekly_ends_percent"],
+        serde_json::json!([38, 55])
+    );
+    let claude5 = json["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["agent"] == "Claude" && w["name"] == "5-hour")
+        .unwrap();
+    assert_eq!(claude5["readings"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn relay_file_without_a_window_says_no_reading_yet() {
+    let file = relay_file(
+        "partial",
+        &[(
+            "2026-11-25T10:30:00Z",
+            "five_hour",
+            12.0,
+            "2026-11-25T14:00:00Z",
+        )],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let rows = crate::headroom(&data).2;
+    assert!(rows
+        .iter()
+        .any(|r| r.text == "  Claude weekly: no relay reading yet"));
+    assert!(rows
+        .iter()
+        .any(|r| r.text == "Claude weekly: no full week of relay data yet"));
+    assert!(export(&data)["claude_weekly_ends_percent"].is_null());
+}
+
+// The fixture never reads local files, the relay included.
+#[test]
+fn fixture_keeps_its_synthetic_claude_windows() {
+    let data = Data::fixture();
+    assert!(data
+        .windows
+        .iter()
+        .filter(|w| w.agent == "Claude")
+        .all(|w| w.readings.len() >= 2 && w.note.is_none()));
+}
+
 // Review fixes (PR #338).
 
 fn window_of(data: &Data, agent: &str, name: &str) -> Window {
@@ -660,6 +824,7 @@ fn copied_request_belongs_to_the_earlier_created_file() {
     let roots = Roots {
         claude: Some(tmp.clone()),
         codex: None,
+        relay: None,
     };
     let data = read(&roots, now(), None, &mut Vec::new());
     std::fs::remove_dir_all(&tmp).unwrap();
@@ -784,6 +949,7 @@ fn null_usage_is_missing_and_its_session_still_shows() {
     let roots = Roots {
         claude: Some(tmp.clone()),
         codex: Some(tmp.join("codex")),
+        relay: None,
     };
     let data = read(&roots, now(), None, &mut Vec::new());
     std::fs::remove_dir_all(&tmp).unwrap();
@@ -812,6 +978,85 @@ fn window_minutes_never_reset_early_or_shift_days() {
         0,
         "the reading is on Nov 25"
     );
+}
+
+// Review fixes (PR #339).
+
+// Two relay readings in one minute still have a trend, and a fractional
+// rise isn't rounded into a false fill.
+#[test]
+fn pace_uses_unrounded_relay_readings() {
+    let file = relay_file(
+        "precise",
+        &[
+            (
+                "2026-11-25T10:00:05Z",
+                "five_hour",
+                40.0,
+                "2026-11-25T14:00:00Z",
+            ),
+            (
+                "2026-11-25T10:00:50Z",
+                "five_hour",
+                40.4,
+                "2026-11-25T14:00:00Z",
+            ),
+        ],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let w = window_of(&data, "Claude", "5-hour");
+    assert_eq!(w.readings[0].0, w.readings[1].0, "both in one minute");
+    assert!(
+        crate::pace(&w).is_some(),
+        "same-minute readings keep a pace"
+    );
+    // Rounded, 40% -> 40% looks flat; 0.4 points in 45 s is a steep trend.
+    assert!(crate::pace(&w).unwrap() > 100);
+    let file = relay_file(
+        "fraction",
+        &[
+            (
+                "2026-11-25T10:00:00Z",
+                "five_hour",
+                0.4,
+                "2026-11-25T14:00:00Z",
+            ),
+            (
+                "2026-11-25T11:00:00Z",
+                "five_hour",
+                0.6,
+                "2026-11-25T14:00:00Z",
+            ),
+        ],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    // Rounded, 0% -> 1% in an hour would read as 1 point an hour; it is 0.2.
+    assert_eq!(crate::pace(&window_of(&data, "Claude", "5-hour")), Some(1));
+}
+
+// A window that has reset has no current reading, so its row opens
+// nothing.
+#[test]
+fn reset_relay_window_row_opens_nothing() {
+    let file = relay_file(
+        "expired",
+        &[(
+            "2026-11-17T10:00:00Z",
+            "seven_day",
+            55.0,
+            "2026-11-18T00:00:00Z",
+        )],
+    );
+    let data = with_relay(&file);
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    let rows = crate::headroom(&data).2;
+    let weekly = rows
+        .iter()
+        .find(|r| r.text.starts_with("Claude · weekly"))
+        .unwrap();
+    assert!(weekly.open.is_none(), "{}", weekly.text);
 }
 
 // Backported from the PR #339 review: pace and reset rows on Codex windows.
@@ -850,7 +1095,7 @@ fn pace_uses_unrounded_readings() {
 // A window that has reset has no current reading, so its row opens
 // nothing, even when the day of its last reading has sessions.
 #[test]
-fn reset_window_row_opens_nothing() {
+fn reset_codex_window_row_opens_nothing() {
     let mut data = load();
     let midnight = data.today as i64 * DAY;
     let readings = [Reading {

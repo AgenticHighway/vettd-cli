@@ -17,7 +17,6 @@ use crate::data::BUCKETS;
 use crate::fixture::Window;
 use crate::pricing::{self, Usage};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -381,50 +380,5 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
             "Codex: skipped {other} rate_limits readings of another window length"
         ));
     }
-    [("5-hour", 300u32), ("weekly", 10_080)]
-        .into_iter()
-        .map(|(name, minutes)| {
-            let mine: Vec<&Reading> = readings.iter().filter(|r| r.minutes == minutes).collect();
-            let Some(end) = mine.iter().map(|r| r.resets_at).max() else {
-                return Window {
-                    agent: AGENT,
-                    name,
-                    source: "logs",
-                    minutes,
-                    start: None,
-                    readings: Cow::Owned(Vec::new()),
-                    precise: Vec::new(),
-                };
-            };
-            let start = end - i64::from(minutes) * 60;
-            let mut current: Vec<&Reading> = mine
-                .into_iter()
-                .filter(|r| (start..=end).contains(&r.ts))
-                .collect();
-            current.sort_by_key(|r| r.ts);
-            let start_minute = (start - midnight).div_euclid(60)
-                + i64::from((start - midnight).rem_euclid(60) > 0);
-            let mut high = 0.0f64;
-            let grid = midnight + start_minute * 60;
-            let (points, precise): (Vec<_>, Vec<_>) = current
-                .iter()
-                .map(|r| {
-                    high = high.max(r.percent);
-                    let minute = (r.ts - midnight).div_euclid(60) - start_minute;
-                    let exact = ((r.ts - grid) as f64 / 60.0).max(0.0);
-                    ((minute.max(0) as u32, high.round() as u32), (exact, high))
-                })
-                .unzip();
-            let start_minute = start_minute as i32;
-            Window {
-                agent: AGENT,
-                name,
-                source: "logs",
-                minutes,
-                start: Some(start_minute),
-                readings: Cow::Owned(points),
-                precise,
-            }
-        })
-        .collect()
+    super::windows_for(AGENT, "logs", readings, midnight)
 }
