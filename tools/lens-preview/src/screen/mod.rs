@@ -1,5 +1,5 @@
 use super::{
-    comparable, content, cost_label, day_header, measure, priced, shorten, total, units, usd, Page,
+    cells, clip, comparable, content, cost_label, day_header, measure, priced, shorten, total, units, usd, Page,
     Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
 use crate::data::{day_label, Data, Source};
@@ -153,27 +153,56 @@ fn breadcrumb(stack: &[Page], all: &Data, max: usize) -> String {
 /// Scope parts become chips, so workspace, agent and period read as values.
 /// A chip that doesn't fit is shortened so the later chips still fit, which
 /// keeps the agent and cost in view. Only when even that leaves too little
-/// does it give way to "…", so chips are never cut mid-word.
+/// does it give way to "…", so chips are never cut mid-word. A figure chip
+/// (one starting with "$") may lose its note but never a digit: earlier
+/// chips shorten first to leave room for its amount.
 fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
     const MIN_VALUE: usize = 8;
+    let figure = |p: &str| p.starts_with('$');
+    // The least a chip's value can shrink to: a figure keeps its amount
+    // plus "…" for a dropped note; other chips can shorten to MIN_VALUE.
+    let least = |p: &str| {
+        let amount = p.split(' ').next().unwrap_or(p);
+        if !figure(p) {
+            cells(p).min(MIN_VALUE)
+        } else if amount.len() == p.len() {
+            cells(p)
+        } else {
+            cells(amount) + 1
+        }
+    };
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
     let parts: Vec<_> = scope.split(" | ").filter(|p| !p.is_empty()).collect();
     for (i, part) in parts.iter().enumerate() {
         let mut value = part.to_string();
         let more = if i + 1 < parts.len() { 2 } else { 0 };
-        if used + value.chars().count() + 2 + more > width {
-            // Each later chip needs its brackets (2) and a space (1).
-            let later: usize = parts[i + 1..].iter().map(|p| p.chars().count() + 3).sum();
-            let with_later = width.saturating_sub(used + 3 + later);
+        let later = &parts[i + 1..];
+        // Room for every later chip, each with brackets (2) and a space (1).
+        if !figure(part) && later.iter().any(|p| figure(p)) {
+            let reserve: usize = later.iter().map(|p| least(p) + 3).sum();
+            let room = width.saturating_sub(used + 3 + reserve);
+            if used + cells(part) + 3 + reserve > width && room >= MIN_VALUE {
+                value = shorten(part, room);
+            }
+        }
+        if used + cells(&value) + 2 + more > width {
+            let full: usize = later.iter().map(|p| cells(p) + 3).sum();
+            let with_later = width.saturating_sub(used + 3 + full);
             let alone = width.saturating_sub(used + 5);
-            if with_later >= MIN_VALUE {
-                value = shorten(part, with_later);
-            } else if alone >= MIN_VALUE {
-                value = shorten(part, alone);
-            } else {
-                spans.push(Span::styled("…", theme.fg(MUTED)));
-                break;
+            let fit = |room: usize| {
+                if figure(part) {
+                    (room >= least(part)).then(|| format!("{}…", clip(part, room - 1).trim_end()))
+                } else {
+                    (room >= MIN_VALUE).then(|| shorten(part, room))
+                }
+            };
+            match fit(with_later).or_else(|| fit(alone)) {
+                Some(shortened) => value = shortened,
+                None => {
+                    spans.push(Span::styled("…", theme.fg(MUTED)));
+                    break;
+                }
             }
         }
         let chip = if theme.mono {
@@ -181,7 +210,7 @@ fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
         } else {
             format!(" {value} ")
         };
-        used += chip.chars().count() + 1;
+        used += cells(&chip) + 1;
         spans.push(Span::styled(chip, theme.on(INK, PANEL)));
         spans.push(Span::raw(" "));
     }

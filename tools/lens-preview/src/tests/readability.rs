@@ -577,3 +577,72 @@ fn local_workspace_filter_stays_on_fixture_workspaces() {
         "stress cycles its own workspaces"
     );
 }
+
+// A cost chip may lose its note but never a digit. At 60 columns the
+// workspace chip used to keep its full width and leave "$18.7…" for the
+// cost, a wrong figure rather than a shorter one.
+#[test]
+fn session_cost_chip_keeps_every_digit_at_60_columns() {
+    let all = Data::stress();
+    let mut day: Vec<usize> = (0..all.len()).filter(|&i| all[i].day == 16).collect();
+    day.sort_by_key(|&i| std::cmp::Reverse(all[i].cents()));
+    for &id in day.iter().take(40) {
+        let s = &all[id];
+        if priced(s) == 0 {
+            continue;
+        }
+        let stack = [Page::new(View::Home), Page::new(View::Session(id))];
+        let buffer = stack_over(&all, &stack, (60, 24), true);
+        let chips = line(&grid(&buffer)[3]);
+        assert!(
+            chips.contains(&format!("[{}", usd(s.cents()))),
+            "{} in {} lost digits: {chips:?}",
+            s.name,
+            s.workspace
+        );
+    }
+}
+
+/// Characters that take two terminal cells must be counted as two, or the
+/// columns after them shift and the total is clipped at the list edge.
+#[test]
+fn wide_workspace_keeps_totals_whole_and_aligned() {
+    let mut all = Data::fixture();
+    let day = all.sessions[0].day;
+    let same_day: Vec<usize> = (0..all.sessions.len())
+        .filter(|&i| all.sessions[i].day == day)
+        .collect();
+    assert!(same_day.len() >= 2, "need two sessions on day {day}");
+    all.sessions[same_day[0]].workspace = "日本語のワークスペース";
+    all.sessions[same_day[1]].workspace = "billing-service";
+    assert_eq!(cells("日本語"), 6);
+    let stack = [Page::new(View::Home), Page::new(View::Day(day))];
+    let rows = content(stack.last().unwrap(), &all, false, screen::list_width(80), &Runtime::default()).2;
+    let ends: Vec<usize> = rows
+        .iter()
+        .filter(|r| r.open.is_some())
+        .map(|r| {
+            let total = r.text.trim_end_matches("  partial");
+            cells(total)
+        })
+        .collect();
+    assert!(ends.windows(2).all(|w| w[0] == w[1]), "totals end at {ends:?}");
+    assert!(
+        ends[0] + 3 <= usize::from(screen::list_width(80)),
+        "total ends at {} past the list",
+        ends[0]
+    );
+    for &i in &same_day {
+        let s = &all.sessions[i];
+        let row = rows.iter().find(|r| is_session(r, i)).unwrap();
+        assert!(row.text.contains(&usd(s.cents())), "{:?}", row.text);
+    }
+}
+
+#[test]
+fn shorten_counts_wide_characters_as_two_cells() {
+    assert_eq!(shorten("日本語のワークスペース", 7), "日…ス");
+    assert!(cells(&shorten("日本語のワークスペース", 8)) <= 8);
+    assert_eq!(pad("日本", 6), "日本  ");
+    assert_eq!(clip("日本語", 5), "日本");
+}

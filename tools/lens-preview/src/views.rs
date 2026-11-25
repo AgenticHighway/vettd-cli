@@ -171,7 +171,7 @@ pub(crate) fn day_ws_width(day: u32, all: &[Session], width: u16) -> usize {
     let longest = all
         .iter()
         .filter(|s| s.day == day)
-        .map(|s| s.workspace.chars().count())
+        .map(|s| cells(s.workspace))
         .max()
         .unwrap_or(0);
     longest.clamp(4, room.max(4))

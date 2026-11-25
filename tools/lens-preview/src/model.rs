@@ -156,23 +156,55 @@ pub(crate) fn link(text: impl Into<String>, view: View, action: &'static str) ->
     }
 }
 
-/// Cuts text to `max` characters, keeping its start and its end, because
-/// names often differ only at the ends. Counts chars so text is never split
-/// inside a character.
+/// Terminal cells `text` takes. Wide characters such as 日本語 take two
+/// each, so widths are counted in cells, never in characters.
+pub(crate) fn cells(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// The longest start of `text` that takes at most `max` cells.
+pub(crate) fn clip(text: &str, max: usize) -> String {
+    take_cells(text.chars(), max)
+}
+
+/// `text` padded with spaces to `width` cells. `format!`'s `{:<n}` pads by
+/// characters, which misaligns rows holding wide characters.
+pub(crate) fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(cells(text))))
+}
+
+fn take_cells(chars: impl Iterator<Item = char>, max: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for c in chars {
+        let w = cells(c.encode_utf8(&mut [0; 4]));
+        if used + w > max {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
+/// Cuts text to at most `max` cells, keeping its start and its end,
+/// because names often differ only at the ends. A wide character that
+/// would straddle the limit is left out, so the result may be a cell short;
+/// `pad` fills it.
 pub(crate) fn shorten(text: &str, max: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max {
+    if cells(text) <= max {
         return text.to_string();
     }
     match max {
         0 => String::new(),
         1 => "…".into(),
         _ => {
-            let head = max / 2;
-            let tail = (max - 1) / 2;
-            let start: String = chars[..head].iter().collect();
-            let end: String = chars[chars.len() - tail..].iter().collect();
-            format!("{start}…{end}")
+            let head = take_cells(text.chars(), max / 2);
+            let tail: String = take_cells(text.chars().rev(), (max - 1) / 2)
+                .chars()
+                .rev()
+                .collect();
+            format!("{head}…{tail}")
         }
     }
 }
@@ -258,9 +290,9 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row
     };
     link(
         format!(
-            "{:<16} {:<ws$} {:<7} {:>8}{}",
-            s.name.chars().take(16).collect::<String>(),
-            shorten(s.workspace, ws),
+            "{} {} {:<7} {:>8}{}",
+            pad(&clip(s.name, 16), 16),
+            pad(&shorten(s.workspace, ws), ws),
             s.agent,
             measure,
             if s.incomplete { "  partial" } else { "" }
