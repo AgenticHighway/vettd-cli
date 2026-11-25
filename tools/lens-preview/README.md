@@ -3,7 +3,8 @@
 This Rust development binary exercises the proposed Lens interaction with a
 deterministic synthetic corpus. Run the prebuilt Windows executable or build
 it from this directory with `cargo run --locked`. Pass `--json` to export the
-same corpus. The preview runs offline with no log discovery or per-run writes.
+same corpus. The preview runs offline with no per-run writes. By default it
+reads no logs; `--source local` (below) reads your own, read-only.
 
 The preview renders with [ratatui](https://ratatui.rs) on its crossterm
 backend, drawing on stderr so stdout stays free for machine output. It is
@@ -49,6 +50,48 @@ context attribution and grade evidence are illustrative fixture values.
 The fixture never treats partial skill signals as definitive usage totals.
 The chart toggle previews USD and request counts. Upstream count breakdowns
 by trigger, tool, class and MCP remain Phase 1 parity work.
+
+## Your own logs: `--source local`
+
+`--source fixture` (the default) is everything above. `--source local`
+builds Home, the daily and session views and Plan headroom from your own
+logs instead, and `--source local --json` exports them:
+
+- Claude Code: `~/.claude/projects/*/*.jsonl` and each session's
+  `subagents/*.jsonl` (`CLAUDE_CONFIG_DIR` replaces `~/.claude`).
+- Codex: `~/.codex/sessions/**/*.jsonl`, `~/.codex/archived_sessions/` and
+  `~/.codex/session_index.jsonl` for titles (`CODEX_HOME` replaces
+  `~/.codex`).
+
+The period is the 7 UTC days ending today. Files untouched for 28 days are
+never opened; newer ones also feed the 4-week limit-hit count. A missing
+directory is noted on stderr and gives that agent no sessions.
+
+What you see, and how sure it is:
+
+- Requests and tokens are read from usage fields, each request counted
+  once even when streamed over several lines or copied into a resumed
+  session.
+- Dollars are **API-equivalent**: published API rates from
+  `src/pricing.rs` (dated, with their source page), so what the usage
+  would cost on the API, not what a plan charges. A model with no rate is
+  "unpriced", never $0.
+- Codex 5-hour and weekly windows come from Codex's own `rate_limits`.
+  Claude windows say "needs relay": Claude writes them only to the
+  statusline.
+- "Where tokens went" and Codex skill uses are **estimated** (from block
+  sizes and `SKILL.md` reads) and say so. Token detail states the method
+  and what isn't counted.
+- The component inventory, copies, observations and change previews stay
+  synthetic, and carry a "synthetic" chip: no log records configured
+  copies or load order.
+
+It is read-only and offline: files are opened for reading only, nothing is
+written and no connection is made. Session titles appear only in the TUI.
+The export holds aggregates only, with no titles, prompts, paths, folder
+names, skill or MCP server names, or IDs. It prints to stdout only when
+asked. Reading a large history takes a few seconds; "Reading local logs…"
+shows on stderr meanwhile.
 
 ## Five phases
 
