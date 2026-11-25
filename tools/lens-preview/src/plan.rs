@@ -278,12 +278,13 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
             "See every plan window and its pace",
         ));
     }
-    if let Some((day, value)) = days
+    if let Some(((day, value), normal)) = days
         .iter()
         .filter(|d| !d.partial)
         .filter_map(|d| d.value.map(|v| (d.day, v)))
         .max_by_key(|&(_, v)| v)
-        .filter(|&(_, v)| normal > 0 && v > normal * 3)
+        .zip(normal.filter(|&n| n > 0))
+        .filter(|&((_, v), n)| v > n * 3)
     {
         rows.push(link(
             format!("{}: {}× a normal day", day_label(day), value / normal),
@@ -304,7 +305,12 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
             format!(
                 "{}: partial input{}",
                 day_label(all[id].day),
-                if all.local() { "" } else { ", unpriced" }
+                // Only say unpriced when a request really has no rate.
+                if all.local() || priced(&all[id]) == all[id].requests.len() {
+                    ""
+                } else {
+                    ", unpriced"
+                }
             ),
             View::Session(id),
             "Open the session",

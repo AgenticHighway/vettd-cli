@@ -106,6 +106,15 @@ impl Data {
         }
     }
 
+    /// The seeded stress corpus on the default plan windows and token
+    /// sources, which no stress session records.
+    pub(crate) fn stress() -> Self {
+        Self {
+            sessions: fixture::stress_sessions(),
+            ..Self::fixture()
+        }
+    }
+
     pub(crate) fn local(&self) -> bool {
         self.source == Source::Local
     }

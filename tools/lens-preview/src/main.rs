@@ -20,7 +20,7 @@ pub(crate) use plan::*;
 pub(crate) use views::*;
 
 use data::{Data, Source};
-use fixture::{Session, AGENTS, COMPONENTS, PARTS, WORKSPACES};
+use fixture::{Session, AGENTS, COMPONENTS, PARTS};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -73,9 +73,12 @@ fn run(all: &Data) -> io::Result<()> {
     Ok(())
 }
 
-/// The whole corpus, so every number a view shows can be rebuilt from the
-/// export: sessions, inventory, plan windows and the Home split.
-fn export(data: &Data) -> serde_json::Value {
+/// The whole synthetic corpus, so every number a view shows can be rebuilt
+/// from the export: sessions, inventory, plan windows and the Home split.
+/// The stress corpus reuses the default synthetic plan windows and token
+/// sources, since no session records them.
+fn export(data: &Data, corpus: &str) -> serde_json::Value {
+    let workspaces: std::collections::BTreeSet<&str> = data.iter().map(|s| s.workspace).collect();
     let token_sources: Vec<_> = data
         .token_sources
         .iter()
@@ -84,9 +87,10 @@ fn export(data: &Data) -> serde_json::Value {
     serde_json::json!({
         "source": data.source.name(),
         "synthetic": true,
+        "corpus": corpus,
         "period": data.period(),
         "snapshot": fixture::SNAPSHOT,
-        "workspaces": WORKSPACES,
+        "workspaces": workspaces,
         "agents": AGENTS,
         "components": COMPONENTS,
         "placements": fixture::PLACEMENTS,
@@ -100,21 +104,28 @@ fn export(data: &Data) -> serde_json::Value {
     })
 }
 
-/// `--json`, `--source <name>` and the relay options, in any order.
-struct Args {
-    json: bool,
-    source: Source,
-    relay: bool,
-    relay_file: Option<PathBuf>,
-    then: Option<String>,
+pub(crate) const CORPUS_ERROR: &str = "--corpus takes default or stress";
+pub(crate) const LOCAL_CORPUS_ERROR: &str = "--corpus needs --source fixture";
+
+/// `--json`, `--source <name>`, `--corpus <name>` and the relay options,
+/// in any order. Other arguments are ignored.
+pub(crate) struct Args {
+    pub(crate) json: bool,
+    pub(crate) source: Source,
+    /// The synthetic corpus, when `--corpus` was given.
+    pub(crate) corpus: Option<&'static str>,
+    pub(crate) relay: bool,
+    pub(crate) relay_file: Option<PathBuf>,
+    pub(crate) then: Option<String>,
     /// A bad option. The relay ignores it: it must never fail.
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
-fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
+pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
     let mut parsed = Args {
         json: false,
         source: Source::Fixture,
+        corpus: None,
         relay: false,
         relay_file: None,
         then: None,
@@ -139,6 +150,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
                 parsed.then = args.next();
                 continue;
             }
+            "--corpus" => {
+                match args.next().as_deref() {
+                    Some("default") => parsed.corpus = Some("default"),
+                    Some("stress") => parsed.corpus = Some("stress"),
+                    _ => parsed.error = Some(CORPUS_ERROR.into()),
+                }
+                continue;
+            }
             "--source" => args.next(),
             _ => match arg.strip_prefix("--source=") {
                 Some(value) => Some(value.to_string()),
@@ -149,6 +168,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
             Some(source) => parsed.source = source,
             None => parsed.error = Some("--source takes fixture or local".into()),
         }
+    }
+    // A corpus is synthetic; local data is not, so the pair is a mistake.
+    if parsed.source == Source::Local && parsed.corpus.is_some() && parsed.error.is_none() {
+        parsed.error = Some(LOCAL_CORPUS_ERROR.into());
     }
     parsed
 }
@@ -164,12 +187,13 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
     let data = match args.source {
+        Source::Fixture if args.corpus == Some("stress") => Data::stress(),
         Source::Fixture => Data::fixture(),
         Source::Local => local::load(args.relay_file),
     };
     if args.json {
         let json = match data.source {
-            Source::Fixture => export(&data),
+            Source::Fixture => export(&data, args.corpus.unwrap_or("default")),
             Source::Local => local::export(&data),
         };
         println!("{json}");

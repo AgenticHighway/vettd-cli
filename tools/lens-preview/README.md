@@ -3,7 +3,10 @@
 This Rust development binary exercises the proposed Lens interaction with a
 deterministic synthetic corpus. Run the prebuilt Windows executable or build
 it from this directory with `cargo run --locked`. Pass `--json` to export the
-same corpus. The preview runs offline with no per-run writes. By default it
+same corpus. Add `--corpus stress` (anywhere on the command line) to load a
+seeded ~2,000-session stress corpus instead of the default 12-session fixture;
+any other `--corpus` value, or any `--corpus` with `--source local`, exits with
+code 2. The preview runs offline with no per-run writes. By default it
 reads no logs; `--source local` (below) reads your own, read-only.
 
 The preview renders with [ratatui](https://ratatui.rs) on its crossterm
@@ -171,6 +174,8 @@ For a human walkthrough, start at Home with no instructions. See whether
 the developer can predict what Enter will open from the chart and whether
 the maintainer can find a known skill without choosing a date. Ask each
 person to go Back after opening evidence and describe the scope they land in.
+The full protocol, its tasks and the gate decision rule are in
+[docs/screen-test.md](docs/screen-test.md).
 
 ## Component inventory
 

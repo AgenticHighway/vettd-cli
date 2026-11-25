@@ -23,7 +23,7 @@ stdout, and a non-zero exit.
 ### Requirement: Source and corpus don't mix
 `--corpus` SHALL be accepted only with `--source fixture`. `--source local`
 together with any `--corpus` SHALL be rejected with a message on stderr,
-nothing on stdout, and a non-zero exit. This applies once `--corpus` exists.
+nothing on stdout, and a non-zero exit.
 
 #### Scenario: Local with a corpus
 - **WHEN** the preview runs with `--source local --corpus stress`

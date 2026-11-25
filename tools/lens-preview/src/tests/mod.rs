@@ -4,6 +4,9 @@ use super::components::{apply, resolve, Resolution};
 use super::*;
 use crate::data::Data;
 
+mod corpus;
+mod stress;
+
 fn rows(view: View, rt: &Runtime) -> Vec<Row> {
     content(&Page::new(view), &Data::fixture(), false, 80, rt).2
 }

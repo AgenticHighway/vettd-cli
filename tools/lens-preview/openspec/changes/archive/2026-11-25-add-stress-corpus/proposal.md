@@ -17,7 +17,8 @@ record of what the real aggregates measure and what they don't.
 - Add a `--corpus default|stress` option. `default` stays the current fixture,
   and an unknown value is rejected with a message on stderr and a non-zero exit.
 - `--json` exports whichever corpus is selected. Repeated runs give
-  byte-identical output. The default corpus export is unchanged apart from one
+  byte-identical output. The stress export reuses the default synthetic
+  plan-window and token-source data. The default corpus export is unchanged apart from one
   added `corpus` field.
 - The interactive preview starts on the selected corpus. Slice 0 only promises
   that it loads. Making the screens read well at stress scale belongs to
@@ -38,10 +39,13 @@ None. No specs exist yet.
 
 ## Impact
 
-- `src/fixture.rs`: adds the stress generator. The current fixture stays as it
-  is.
+- `src/fixture/stress.rs` (new, re-exported from `src/fixture/mod.rs`): the
+  stress generator. `src/fixture/sessions.rs` stays as it is.
 - `src/main.rs`: argument parsing, export of either corpus, and passing the
-  selected corpus to the TUI.
+  selected corpus to the TUI. The plan-window and token-source export fields
+  are reused unchanged for the stress corpus.
+- `src/tests/`: stress shape, determinism, golden and load tests;
+  `tests/golden/default-export.json` pins today's default export.
 - Other modules change only where they need the selected corpus passed in
   instead of calling the default fixture directly.
 - No new dependencies. The random generator is a small inline function.

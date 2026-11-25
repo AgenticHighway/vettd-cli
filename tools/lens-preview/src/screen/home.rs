@@ -14,7 +14,8 @@ pub struct Day {
 }
 
 /// Each day's total in the current unit, and the median complete day.
-pub fn daily(all: &Data, count: bool) -> (Vec<Day>, u32) {
+/// `None` means no day is complete, so there is no normal to compare with.
+pub fn daily(all: &Data, count: bool) -> (Vec<Day>, Option<u32>) {
     let days: Vec<Day> = all
         .days
         .iter()
@@ -34,10 +35,11 @@ pub fn daily(all: &Data, count: bool) -> (Vec<Day>, u32) {
         .filter_map(|d| d.value)
         .collect();
     values.sort_unstable();
-    let normal = values.get(values.len() / 2).copied().unwrap_or(0);
+    let normal = values.get(values.len() / 2).copied();
     (days, normal)
 }
 
+/// u64: a few thousand sessions already pass 3B tokens, near u32's limit.
 pub fn total_tokens(all: &[Session]) -> u64 {
     all.iter()
         .flat_map(|s| &s.requests)
@@ -46,8 +48,10 @@ pub fn total_tokens(all: &[Session]) -> u64 {
         .sum()
 }
 
+/// At most six characters below 1,000B, so it fits Home's token column.
 pub fn compact(tokens: u64) -> String {
-    if tokens >= 1_000_000_000 {
+    // 999.95M would round up to a seven-character "1000.0M".
+    if tokens >= 999_950_000 {
         format!("{:.1}B", tokens as f64 / 1e9)
     } else if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1e6)
@@ -84,19 +88,52 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let (days, normal) = daily(cx.all, cx.count);
     let peak = days.iter().filter_map(|d| d.value).max().unwrap_or(0);
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
+    let with_data = || days.iter().filter(|d| d.value.is_some());
+    let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
+    // No complete day means no normal: say so rather than show a zero.
+    let normal_text = normal.map_or("normal: no complete day".into(), |n| {
+        format!("normal ≈ {}", label(n))
+    });
+    let unit = if cx.count { "REQUESTS" } else { "SPEND" };
+    let one_note = format!("DAILY {unit}  ·  {normal_text}  ·  every day partial (≥)");
+    // The title doesn't wrap. Say "every day partial" once only when it fits
+    // whole (with the block's two padding spaces); otherwise every bar keeps
+    // its own ≥, so no floor ever reads as an exact total.
+    let noted = all_partial && one_note.chars().count() + 2 <= usize::from(chart.width);
+    let gap = 1u16;
+    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
+        .saturating_sub(gap)
+        .clamp(3, 9);
+    // A caption wider than its bar is cut, dropping digits. Fall back to
+    // whole dollars (rounded down, so a floor stays a floor), then to the
+    // day alone.
+    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
     let bars: Vec<Bar> = days
         .iter()
         .map(|d| {
-            let outlier = d.value.is_some_and(|v| v == peak && v > normal * 3);
+            let outlier = d
+                .value
+                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
             // No-data days show "·", never a zero-height bar that reads as $0.
             // Partial days show "≥": the total is a floor, not the day's cost.
-            let floor = if d.partial { "≥" } else { "" };
+            // When every day is partial and the title fits, it says so once.
+            let floor = if d.partial && !noted { "≥" } else { "" };
             // The day of the month: the chart's seven bars are consecutive.
             let label_day = day_label(d.day);
             let dom = label_day.rsplit(' ').next().unwrap_or_default();
             let caption = match d.value {
                 None => format!("{dom} ·"),
-                Some(v) if wide => format!("{dom} {floor}{}", label(v)),
+                Some(v) if wide => {
+                    let full = format!("{dom} {floor}{}", label(v));
+                    let whole = format!("{dom} {floor}${}", v / 100);
+                    if fits(&full) {
+                        full
+                    } else if !cx.count && fits(&whole) {
+                        whole
+                    } else {
+                        format!("{dom}{floor}")
+                    }
+                }
                 Some(_) => format!("{dom}{floor}"),
             };
             Bar::default()
@@ -106,20 +143,18 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
-    let gap = 1u16;
-    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
-        .saturating_sub(gap)
-        .clamp(3, 9);
-    let title = format!(
-        "DAILY {}  ·  normal ≈ {}{}",
-        if cx.count { "REQUESTS" } else { "SPEND" },
-        label(normal),
-        if days.iter().any(|d| d.partial) {
-            "  ·  ≥ partial"
-        } else {
-            ""
-        }
-    );
+    let title = if noted {
+        one_note
+    } else {
+        format!(
+            "DAILY {unit}  ·  {normal_text}{}",
+            if days.iter().any(|d| d.partial) {
+                "  ·  ≥ partial"
+            } else {
+                ""
+            }
+        )
+    };
     f.render_widget(
         BarChart::default()
             .block(panel_block(&title, cx.theme))
