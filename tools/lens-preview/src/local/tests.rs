@@ -601,7 +601,8 @@ fn five_hour_row_opens_its_latest_reading_day() {
 }
 
 // A window that already reached 100% says when it frees up, not a "full
-// by" time that has passed.
+// by" time that has passed. The test reset is 14:00:03; minutes round
+// up, so a reset is never shown before it happens.
 #[test]
 fn full_window_says_until_when() {
     let mut data = load();
@@ -613,7 +614,201 @@ fn full_window_says_until_when() {
     five.readings = Cow::Owned(vec![(10, 40), (60, 100)]);
     let (answer, _, _) = crate::headroom(&data);
     assert!(
-        answer.ends_with("is 100% used. It's full until 14:00."),
+        answer.ends_with("is 100% used. It's full until 14:01."),
         "{answer}"
+    );
+}
+
+// Review fixes (PR #338).
+
+fn window_of(data: &Data, agent: &str, name: &str) -> Window {
+    data.windows
+        .iter()
+        .find(|w| w.agent == agent && w.name == name)
+        .unwrap()
+        .clone()
+}
+
+// The synthetic inventory describes the fixture's sessions. Feeding it
+// real sessions would show components that were never observed.
+#[test]
+fn synthetic_component_screens_keep_their_history_on_local_data() {
+    let data = load();
+    let rows = texts(&data, View::Component(0, crate::Scope::WEEK));
+    assert!(rows.iter().any(|t| t.starts_with("Nov 16")), "{rows:?}");
+}
+
+// A fork copies requests with their timestamps. On a tie, the file
+// created first (the original) owns them, whatever the names sort as.
+#[test]
+fn copied_request_belongs_to_the_earlier_created_file() {
+    let tmp = std::env::temp_dir().join(format!("lens-fork-{}", std::process::id()));
+    let project = tmp.join("projects").join("p");
+    std::fs::create_dir_all(&project).unwrap();
+    let line = |sid: &str, cwd: &str| {
+        format!(
+            r#"{{"type":"assistant","sessionId":"{sid}","cwd":"{cwd}","timestamp":"2026-11-25T10:00:00Z","requestId":"rq","message":{{"model":"claude-opus-5-5","usage":{{"input_tokens":5,"output_tokens":5}}}}}}"#
+        )
+    };
+    let original = project.join("z-original.jsonl");
+    let fork = project.join("a-fork.jsonl");
+    std::fs::write(&original, line("z-original", "/w/orig")).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::write(&fork, line("a-fork", "/w/fork")).unwrap();
+    let created = |f: &Path| std::fs::metadata(f).and_then(|m| m.created()).ok();
+    let ordered = created(&original).is_some() && created(&original) < created(&fork);
+    let roots = Roots {
+        claude: Some(tmp.clone()),
+        codex: None,
+    };
+    let data = read(&roots, now(), None, &mut Vec::new());
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert_eq!(data.len(), 1, "the copied request counts once");
+    // Where the platform records no creation time, file names decide.
+    let owner = if ordered { "orig" } else { "fork" };
+    assert_eq!(data[0].workspace, owner);
+}
+
+// A forecast whose time passed with no newer reading says nothing about
+// now; only a reading of 100% says a window is full.
+#[test]
+fn elapsed_forecast_is_not_full_and_a_full_reading_is() {
+    let mut data = load();
+    let now = data.now;
+    let mut w = window_of(&data, "Codex", "5-hour");
+    // 20% then 60% project 100% within the hour, long before now, but
+    // the last reading is 60%.
+    w.readings = Cow::Owned(vec![(10, 20), (30, 60)]);
+    assert!(crate::plan::full_at(&w).unwrap() < now);
+    assert!(crate::soonest(std::slice::from_ref(&w), now).is_none());
+    // One reading of 100%, no trend: full now.
+    w.readings = Cow::Owned(vec![(60, 100)]);
+    let (_, share) = crate::soonest(std::slice::from_ref(&w), now).unwrap();
+    assert_eq!(share, 100);
+    data.windows = vec![w];
+    let (answer, _, _) = crate::headroom(&data);
+    assert!(answer.contains("full until"), "{answer}");
+}
+
+#[test]
+fn no_rate_at_all_reads_unpriced_never_zero() {
+    let mut data = load();
+    data.sessions.retain(|s| s.name == "09:12");
+    let (answer, _, _) = content(
+        &Page::new(View::Home),
+        &data,
+        false,
+        80,
+        &Runtime::default(),
+    );
+    assert!(answer.ends_with("unpriced API-equivalent"), "{answer}");
+    let (week, _, rows) = content(
+        &Page::new(View::Week),
+        &data,
+        false,
+        80,
+        &Runtime::default(),
+    );
+    assert!(week.contains("unpriced"), "{week}");
+    let nov25 = rows.iter().find(|r| r.text.starts_with("Nov 25")).unwrap();
+    assert!(
+        nov25.text.contains("unpriced") && nov25.text.ends_with("partial"),
+        "{}",
+        nov25.text
+    );
+}
+
+fn tiny_session(group: usize) -> Session {
+    Session {
+        day: nov(25),
+        name: "tiny",
+        workspace: "api",
+        agent: "Claude",
+        incomplete: false,
+        requests: vec![Request {
+            worker: "Main",
+            model: "m",
+            tokens: [0; 4],
+            milli_usd_per_ktok: None,
+            exact: Some([0.4, 0.0, 0.0, 0.0]),
+        }],
+        observed: Vec::new(),
+        group,
+        used: Vec::new(),
+        sources: vec![0; BUCKETS.len()],
+    }
+}
+
+// Many sessions under half a cent each still add up.
+#[test]
+fn dollar_totals_round_once() {
+    let mut data = load();
+    data.sessions = (0..4).map(tiny_session).collect();
+    assert!(data.iter().all(|s| s.cents() == 0));
+    assert_eq!(crate::total(data.iter(), false), 2);
+    let (answer, _, _) = content(
+        &Page::new(View::Home),
+        &data,
+        false,
+        80,
+        &Runtime::default(),
+    );
+    assert!(answer.contains("$0.02"), "{answer}");
+}
+
+// A request whose usage is null or cut short is missing, not zero, and
+// its session still shows, as incomplete.
+#[test]
+fn null_usage_is_missing_and_its_session_still_shows() {
+    let tmp = std::env::temp_dir().join(format!("lens-null-{}", std::process::id()));
+    let project = tmp.join("projects").join("p");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s-null.jsonl"),
+        r#"{"type":"assistant","sessionId":"s-null","timestamp":"2026-11-25T10:00:00Z","requestId":"rq","message":{"model":"claude-opus-5-5","usage":null}}"#,
+    )
+    .unwrap();
+    let codex = tmp.join("codex").join("sessions");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("rollout-null.jsonl"),
+        concat!(
+            r#"{"type":"session_meta","timestamp":"2026-11-25T09:00:00Z","payload":{"id":"th-null","cwd":"/w/x"}}"#,
+            "\n",
+            r#"{"type":"token_usage_record","timestamp":"2026-11-25T09:05:00Z","payload":{"response_id":"r","usage":{"input_tokens":5}}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let roots = Roots {
+        claude: Some(tmp.clone()),
+        codex: Some(tmp.join("codex")),
+    };
+    let data = read(&roots, now(), None, &mut Vec::new());
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert_eq!(data.len(), 2, "both sessions show");
+    assert!(data.iter().all(|s| s.incomplete && s.requests.is_empty()));
+}
+
+// Readings sit on one minute grid: a reset at 04:00:30 hasn't happened at
+// 04:00:10, and a reading just after midnight stays on its own day.
+#[test]
+fn window_minutes_never_reset_early_or_shift_days() {
+    let midnight = parse_ts("2026-11-25T00:00:00Z").unwrap();
+    let readings = [Reading {
+        ts: parse_ts("2026-11-25T00:00:20Z").unwrap(),
+        minutes: 300,
+        percent: 10.0,
+        resets_at: parse_ts("2026-11-25T04:00:30Z").unwrap(),
+    }];
+    let w = codex::windows(&readings, midnight, &mut Vec::new()).remove(0);
+    let at = |hms: &str| ((parse_ts(hms).unwrap() - midnight) / 60) as i32;
+    assert!(!has_reset(&w, at("2026-11-25T04:00:10Z")));
+    assert!(has_reset(&w, at("2026-11-25T04:01:00Z")));
+    let reading_minute = w.start.unwrap() + w.readings[0].0 as i32;
+    assert_eq!(
+        reading_minute.div_euclid(1440),
+        0,
+        "the reading is on Nov 25"
     );
 }

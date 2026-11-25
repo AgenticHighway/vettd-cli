@@ -54,7 +54,7 @@ pub(super) fn preview(
 fn day_preview(day: u32, all: &[Session], count: bool) -> (String, Vec<String>) {
     let current: Vec<_> = all.iter().filter(|s| s.day == day).collect();
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
-    let total: u32 = current.iter().map(|s| measure(s, count)).sum();
+    let total: u32 = total(current.iter().copied(), count);
     let mut preview = vec![
         headline(&current, total, count),
         format!("{} sessions", current.len()),
@@ -108,7 +108,7 @@ fn comparison(
             .map(|r| r.cents()[i])
             .sum()
     };
-    let previous: u32 = prior.iter().map(|s| s.cents()).sum();
+    let previous: u32 = super::total(prior.iter().copied(), false);
     let delta =
         |a: u32, b: u32| format!("{}{}", if a >= b { "+" } else { "−" }, usd(a.abs_diff(b)));
     let mut lines = vec![

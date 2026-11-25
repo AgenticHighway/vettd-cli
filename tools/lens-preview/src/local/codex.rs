@@ -10,8 +10,8 @@
 //! partial.
 
 use super::{
-    intern, jsonl_in, read_lines, split, subdirs, text_chars, ts_of, u64_at, workspace_of, Found,
-    History, Reading, Req, UseEvent,
+    intern, jsonl_in, read_lines, split, subdirs, text_chars, ts_of, u64_at, usage_with,
+    workspace_of, Found, History, Reading, Req, UseEvent,
 };
 use crate::data::BUCKETS;
 use crate::fixture::Window;
@@ -68,6 +68,7 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
     let mut responses: HashSet<String> = HashSet::new();
     let mut calls: HashSet<String> = HashSet::new();
     let mut hit_turns: HashSet<String> = HashSet::new();
+    let mut missing: Vec<(String, i64)> = Vec::new();
 
     for path in &files {
         let (lines, broken) = read_lines(path);
@@ -157,8 +158,13 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
                         partial.insert(id.clone());
                         continue;
                     };
-                    let (Some(u), Some(ts)) = (p.get("usage"), ts_of(line)) else {
+                    let counts = ["input_tokens", "output_tokens", "total_tokens"];
+                    let (Some(u), Some(ts)) = (usage_with(p.get("usage"), &counts), ts_of(line))
+                    else {
                         partial.insert(id.clone());
+                        if let Some(ts) = ts_of(line) {
+                            missing.push((id.clone(), ts));
+                        }
                         continue;
                     };
                     let input = u64_at(u, "input_tokens");
@@ -252,6 +258,9 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
             meta.workspace = info.cwd.as_deref().and_then(workspace_of);
             meta.title = titles.get(thread).map(|t| t.1.clone());
         }
+    }
+    for (thread, ts) in missing {
+        found.meta(AGENT, &root_of(&thread)).missing_at(Some(ts));
     }
     for Pending { thread, mut req } in pending {
         req.session = root_of(&thread);
@@ -392,20 +401,24 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
                 .filter(|r| (start..=end).contains(&r.ts))
                 .collect();
             current.sort_by_key(|r| r.ts);
+            let start_minute = (start - midnight).div_euclid(60)
+                + i64::from((start - midnight).rem_euclid(60) > 0);
             let mut high = 0.0f64;
             let points = current
                 .iter()
                 .map(|r| {
                     high = high.max(r.percent);
-                    (((r.ts - start) / 60) as u32, high.round() as u32)
+                    let minute = (r.ts - midnight).div_euclid(60) - start_minute;
+                    (minute.max(0) as u32, high.round() as u32)
                 })
                 .collect();
+            let start_minute = start_minute as i32;
             Window {
                 agent: AGENT,
                 name,
                 source: "logs",
                 minutes,
-                start: Some((start - midnight).div_euclid(60) as i32),
+                start: Some(start_minute),
                 readings: Cow::Owned(points),
             }
         })
