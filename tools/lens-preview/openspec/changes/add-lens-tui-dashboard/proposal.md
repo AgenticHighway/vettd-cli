@@ -46,8 +46,9 @@ describes `--json`. See design.md, "Overlap with add-stress-corpus".
 
 ## Impact
 
-- Documentation only: `openspec/changes/add-lens-tui-dashboard/`.
-- No source, test, workflow or README file changes.
+- Documentation only: `openspec/changes/add-lens-tui-dashboard/`, plus two
+  README walkthrough lines that still pointed at "Activity" instead of Home.
+- No source, test or workflow file changes.
 - Out of scope: screens that exist only in the design proposal (Cache, Risky
   commands, Unused skills, Update every copy, Relay setup), reading real logs
   or the Claude statusline, and the main vettd-cli crate.

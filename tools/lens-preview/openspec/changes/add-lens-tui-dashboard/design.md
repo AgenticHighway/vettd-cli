@@ -128,6 +128,6 @@ These are known gaps. They are not requirements.
   copy of review-kit (`api/.claude/skills/...`, 1.5) wins over the user copy
   (`~/.claude/skills/...`, 1.4). That is the reverse of Claude's documented
   load order.
-- **README walkthrough is stale.** `README.md` still says to "start at
-  Activity" and to "Press i from Activity". The first screen is now Home.
+- **README walkthrough was stale (fixed in this change).** `README.md` said to
+  "start at Activity" and "Press i from Activity". Both now say Home.
 - **Partial-session text says "unpriced" unconditionally.** See difference 3.
