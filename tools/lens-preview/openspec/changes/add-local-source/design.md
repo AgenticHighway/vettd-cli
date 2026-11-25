@@ -127,12 +127,50 @@ These shape the requirements, because Lens must not guess any of them.
 | 5-hour / weekly used % | absent (relay only) | present |
 | Window start | absent | derived: `resets_at − window_minutes` |
 | Limit hits | rejections only | `usage_limit_exceeded` |
-| Token source (file reads, skills, …) | absent | absent |
+| Token source (file reads, skills, …) | not recorded; **estimated** from block sizes | not recorded; **estimated**, with `exec` as one bucket |
 | Fresh vs cached input | separate fields | cached is inside `input_tokens` (totals reconcile) |
 | Reasoning in output | `thinking_tokens` (whether inside `output_tokens` is **unknown**, and not needed for pricing) | inside `output_tokens` |
 | Cache writes | 5-minute / 1-hour split | **unknown** whether inside `input_tokens` (always 0 here) |
 | `resets_at` unit | — | Unix seconds, drifting by seconds |
-| Which copy of a skill ran | absent | absent |
+| Which copy of a skill ran | absent | **estimated** from the `SKILL.md` path `exec` read; no version or hash |
+
+### Derivability check (2026-11-25)
+
+Every "stays synthetic" or "not in the logs" claim was checked against the
+log structure again. The scripts printed only tool names, block and
+attachment types, key names, sizes in characters, path *classes* (such as
+`.agents/skills`), and counts. They printed no content, skill names, MCP
+server names or paths. Codex figures include `archived_sessions/` (69
+files).
+
+**Calibrating size against tokens.** Each request's context growth is its
+input, cache-read and cache-write tokens, minus the previous request's
+context and output. Comparing that growth with (characters added since the
+previous request) / 4 gives a ratio:
+- Claude, counting tool results, user text and attachments: median 1.28,
+  interquartile range 0.84–1.55, over 12,693 requests.
+- Codex, counting tool output and user and developer messages: median
+  0.97, range 0.85–1.22, over 4,143 requests.
+
+So sizes can split tokens into sources, but only as an estimate, and the
+uncertainty per request is wide.
+
+| Claim | Verdict | How | Still unknown | Evidence |
+|---|---|---|---|---|
+| Token-source split: "no log records where tokens came from" | **Derivable as an estimate.** No log records attribution, but every block entering context is recorded with its tool name and size. | Split each request's context growth across the blocks added since the previous request, in proportion to their characters. Then bucket by tool or attachment type (Decision 13). | Whether some attachment types reach the model at all. The real tokens per character for each source. A finer split of Codex `exec` output (file reads versus shell) without reading command text. | Claude tool-result characters: Read 67.5%, Bash 14.8%, MCP 13.2% (of 393M). Codex: `exec` is 95.4% of tool output (87M). Calibration as above. |
+| Hooks add no tokens (fixture: "they run outside the model") | **Contradicted for Claude.** Hooks can add context. | `hook_additional_context` attachments count as Hooks. | Whether `hook_success` output is sent to the model (**unverified**). | 402 `hook_additional_context` (208k chars). 17,051 `hook_success` (4.6M chars). |
+| Skills that ran | **Derivable for Claude, estimated for Codex.** | Claude: `Skill` tool calls and `invoked_skills` attachments, by skill name. Codex: an `exec` call whose input reads a `SKILL.md` path counts as an estimated use. | Codex skills used without reading `SKILL.md` (**unverified** whether that happens). What Codex's `cloud_skills.usage` counts mean (**unverified**, not used). | Claude: 62 `Skill` calls (23 distinct skills, input keys `skill` and `args`). 167 `invoked_skills` attachments in 8 sessions (10 distinct). 6,203 lines with `attributionSkill`. Codex: 184 `exec` reads of `SKILL.md`. |
+| Which copy of a skill ran | **Claude: absent. Codex: estimated by path class.** | Codex: the path class of the `SKILL.md` that `exec` read (user, `.agents/skills`, plugin). | Claude: no copy at all. Both: version and artifact identity. A path doesn't say which bytes were read, and hashing the file now may not match what was read then. | Claude: 0 of 62 `Skill` results hold a path. 176 of 179 `invoked_skills` paths are bare names, 3 are plugin. Codex `exec` `SKILL.md` reads: 153 `.agents/skills`, 16 plugin, 8 `~/.codex/skills`, 7 other. |
+| Component inventory | **Partly derivable from logs, as "offered in a session"**: tools, MCP servers, skill counts, instruction files. A configured-copy inventory (locator, scope, version, hash) is not in the logs. It needs a disk scan, which is out of scope. | Claude: `prompt_snapshot.tools[]` (`name`, `server`), `skill_listing.skillCount`, `instructions.files[]` (`type`, `path`). Codex: `additional_tools.tools[]`, `world_state.state.agents_md`. | Versions, hashes and disabled state of every copy. Whether `prompt_snapshot` is what the model saw, or a debug record (**unverified**). | 9,829 Claude snapshot tool entries with a `server`, 12,476 without. 481 `skill_listing` attachments. `instructions` file types: Project 766, AutoMem 368, Local 6. Codex: 73 `additional_tools` items (266 groups), 71 `agents_md`. |
+| Load order (which copy wins) | **Absent for skills on both agents.** Instruction files show the order they were sent. | Claude `instructions.files[]` order. | Skill precedence between user, workspace and plugin copies. The documented order is **unverified** here. The fixture's workspace-over-user order is **unverified**. | No log line records two copies of one skill, or which one won. |
+
+Which attachments count as context is itself **unverified**. Decision 13
+counts only types that plainly carry text the model reads (tool results,
+user text, `invoked_skills`, `skill_listing`, `instructions`, `file`,
+`hook_additional_context`). It leaves out records such as
+`prompt_snapshot` (101.7M chars), `deferred_tools_*`, `hook_success` and
+reminders, and names them on the Token detail view as "not counted
+(unverified)".
 
 ## Goals / Non-Goals
 
@@ -146,12 +184,16 @@ These shape the requirements, because Lens must not guess any of them.
 
 **Non-Goals:**
 - The Claude statusline relay. It is a later change (Decision 4).
-- Real token-source attribution, a real component inventory, copies or load
-  order.
+- A configured-copy inventory (locator, scope, version, hash), copy
+  identity for Claude, and skill load order. The logs don't hold them (see
+  "Derivability check"). Real token sources and skills used are in scope,
+  as estimates where they are derived.
 - Watching files while the TUI runs. Logs are read once at start.
 - Claude's `cost-state` totals and attribution fields. The attribution
-  fields tag whole requests, not where tokens came from, so they can't fill
-  "Where tokens went" (Decision 10).
+  fields tag whole requests, not where tokens came from (Decision 13).
+- Fields whose meaning is unverified: Codex `cloud_skills.usage` and
+  `allocation`, `rate_limit_reached_type`, and Claude's `prompt_snapshot`
+  as context.
 - The main vettd-cli crate.
 
 ## Decisions
@@ -273,15 +315,19 @@ These shape the requirements, because Lens must not guess any of them.
 10. **What stays synthetic on local data, and how it is labelled.**
     - Top bar: "local logs · read-only · nothing leaves this machine", in
       place of "synthetic data · …".
-    - Home's "Where tokens went" table is hidden on local data, and its rows
-      go to the findings. Claude's `attribution*` fields were checked on
-      2026-11-25 (by token count only). They tag a whole request, most of
-      whose tokens are re-read cache, and 78.4% of tokens carry no tag.
-      They can't say where tokens came from.
+    - Home's "Where tokens went" table is shown on local data as "Where
+      tokens went (estimated)", built as in Decision 13. This reverses the
+      earlier "hidden" answer to Resolved Question 4. That answer rested on
+      Claude's `attribution*` fields, which do tag a whole request (78.4% of
+      tokens carry no skill, MCP or plugin tag, re-checked 2026-11-25). The
+      block sizes checked since do support an estimate.
+    - A local session's component rows list the skills and MCP tools it
+      used, from the logs (Decision 14). They don't link to the synthetic
+      inventory.
     - The component inventory, component, copy, observation, change and
-      apply views keep fixture data and add a "synthetic" scope chip. Local
-      sessions have no `observed` uses, so a local session's component rows
-      are empty rather than borrowed from the fixture.
+      apply views keep fixture data and add a "synthetic" scope chip. A
+      configured-copy inventory needs a disk scan, which this change doesn't
+      add.
     - The fixed "review-kit: unknown load in Codex" finding is only shown
       on the fixture.
 11. **Missing data says so.** A missing `~/.claude/projects` or
@@ -297,6 +343,33 @@ These shape the requirements, because Lens must not guess any of them.
     midnight, a misfiled subagent, a drifting `resets_at`, an out-of-order
     reading and the null `rate_limits` sides. No line is copied from a
     real log. All current tests keep running on `--source fixture`.
+13. **Token sources are estimated from block sizes.** For each request,
+    the context growth (Decision 3's tokens, minus the previous request's
+    context and output) is split across the blocks added since the previous
+    request, in proportion to their characters. The first request's whole
+    context is split the same way. Buckets:
+    - Claude: Read, Grep and Glob → File reads. Bash and PowerShell → Shell
+      output. `mcp__*` → MCP tools. `Skill` results plus `invoked_skills`
+      and `skill_listing` → Skills. `instructions` and `file` → Instructions
+      and files. `hook_additional_context` → Hooks. User text → Prompts and
+      replies. Any other tool → Other tools.
+    - Codex: `exec` and `js` output → Tool output. Developer messages and
+      base instructions → Instructions and files. User messages → Prompts
+      and replies. Agent tools (`spawn_agent`, `wait`, …) → Other tools.
+    - Shares are rounded to basis points that sum to 10,000.
+    - Every figure is labelled "estimated", and the method is stated on the
+      Token detail view. Attachment types not counted are listed there as
+      "not counted (unverified)".
+    - Reasoning and output are not sources. They are left out of the split.
+14. **Skills and MCP tools used come from the logs.**
+    - Claude: one skill use per `Skill` call or `invoked_skills` entry,
+      deduplicated by the request it belongs to. One MCP use per `mcp__*`
+      tool call, grouped by server.
+    - Codex: one estimated skill use per `exec` call that reads a
+      `SKILL.md` path, labelled "estimated". Its copy is shown only as the
+      path class (user, workspace `.agents/skills`, plugin, other). Claude
+      skill uses show the copy as "unknown".
+    - Names appear only in the TUI. The export holds per-session counts.
 
 ## Ordering
 
@@ -336,6 +409,14 @@ first, this change's MODIFIED blocks must be rebased onto its final text.
 - [Mixed real and synthetic screens could mislead] → Every synthetic
   surface on local data carries a label (Decision 10), and the fixed
   review-kit finding is removed.
+- [Token-source estimates read as measurements] → Each share says
+  "estimated". Token detail states the method and lists what isn't
+  counted. The calibration (median 1.28 for Claude, 0.97 for Codex, with a
+  wide spread per request) is recorded under "Derivability check". The
+  totals still match the usage fields, because only the split is estimated.
+- [Codex skill uses are missed] → A use counts only when `exec` reads a
+  `SKILL.md`. Whether Codex can use a skill without reading it is
+  unverified, so the count is a floor and is marked "estimated".
 - [Startup time on large histories] → Only files modified in the last 28
   days are opened, and the preview prints "Reading local logs…" on stderr while
   it reads. No hard time limit is set until it is measured on the stress
@@ -377,7 +458,9 @@ The user settled these on 2026-11-25.
    Codex titles from `session_index.jsonl` (Decision 8).
 3. **Codex pricing?** Priced at published API rates like Claude, with all
    local dollars labelled "API-equivalent" (Decision 7).
-4. **Token-source table on local data?** Hidden (Decision 10).
+4. **Token-source table on local data?** First answered "hidden". That is
+   superseded on 2026-11-25 by the request to use real data where possible:
+   it is shown as "estimated" (Decisions 10 and 13).
 5. **Claude relay timing?** It gets its own change, `add-statusline-relay`,
    next. Until then the rows say "needs relay" (Decision 4).
 6. **Archived Codex sessions?** Included, each session counted once

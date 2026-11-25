@@ -244,6 +244,89 @@ SHALL be named by its start time. Titles SHALL appear only in the TUI.
 - **WHEN** a Codex root thread has no `session_index.jsonl` entry
 - **THEN** its session is named by its start time, such as "09:12"
 
+### Requirement: Token sources estimated from block sizes
+On local data, each request's context growth SHALL be split across the
+blocks added since the previous request, in proportion to their characters,
+and bucketed by tool or attachment type. Reasoning and output SHALL NOT be
+sources. The shares SHALL be rounded to basis points that sum to 10,000.
+
+#### Scenario: Two blocks share the growth
+- **WHEN** a request's context grew by 1,000 tokens after a 3,000-character Read result and a 1,000-character Bash result
+- **THEN** File reads gets an estimated 750 tokens and Shell output 250
+
+### Requirement: Claude token buckets
+Claude Read, Grep and Glob results SHALL count as File reads, Bash and
+PowerShell as Shell output, `mcp__*` as MCP tools, `Skill` results and the
+`invoked_skills` and `skill_listing` attachments as Skills, `instructions`
+and `file` attachments as Instructions and files, `hook_additional_context`
+as Hooks, user text as Prompts and replies, and other tools as Other tools.
+
+#### Scenario: Hook context counted
+- **WHEN** a request follows a `hook_additional_context` attachment
+- **THEN** part of its growth is estimated under Hooks
+
+### Requirement: Codex token buckets
+Codex `exec` and `js` output SHALL count as Tool output, developer messages
+and base instructions as Instructions and files, user messages as Prompts
+and replies, and agent tools as Other tools. `exec` output SHALL NOT be
+split further, because that needs the command text.
+
+#### Scenario: exec stays one bucket
+- **WHEN** a Codex session's tool output is all `exec`
+- **THEN** its estimate shows one Tool output share, not File reads or Shell output
+
+### Requirement: Unverified context is not counted
+Claude attachment types not known to reach the model SHALL NOT be counted:
+`prompt_snapshot`, `deferred_tools_*`, `hook_success`, and reminders. The
+Token detail view SHALL list them as "not counted (unverified)", with the
+estimate method.
+
+#### Scenario: Snapshot left out
+- **WHEN** a session holds a `prompt_snapshot` attachment
+- **THEN** it adds nothing to any bucket, and Token detail lists `prompt_snapshot` as not counted (unverified)
+
+### Requirement: Estimated figures say so
+Every figure derived rather than read from a log field SHALL carry the word
+"estimated" wherever it is shown: token-source shares, Codex skill uses and
+Codex copy classes. A read figure SHALL NOT carry it.
+
+#### Scenario: Token detail on local data
+- **WHEN** Token detail is opened with `--source local`
+- **THEN** each source share is marked "estimated", while the four token parts read from usage are not
+
+### Requirement: Skills and MCP tools used
+On local data, a session's component rows SHALL list the skills and MCP
+servers it used, with counts. Claude skill uses SHALL come from `Skill` calls
+and `invoked_skills` entries, once per request. Codex skill uses SHALL be
+`exec` reads of a `SKILL.md` path, labelled "estimated". The rows SHALL NOT
+link to the synthetic inventory.
+
+#### Scenario: Claude skill counted once
+- **WHEN** one Claude request has a `Skill` call and an `invoked_skills` entry for the same skill
+- **THEN** the session lists that skill with 1 use
+
+#### Scenario: Codex skill estimated
+- **WHEN** a Codex `exec` call reads `.agents/skills/lint-guide/SKILL.md`
+- **THEN** the session lists lint-guide with 1 use, marked "estimated"
+
+### Requirement: Which copy ran
+For Codex skill uses, the copy SHALL be shown as the path class of the
+`SKILL.md` read (user, workspace, plugin, other), marked "estimated". For
+Claude skill uses, the copy SHALL read "unknown", because no log records
+it. No version or artifact identity SHALL be shown for either.
+
+#### Scenario: Claude copy unknown
+- **WHEN** a Claude session used a skill through the `Skill` tool
+- **THEN** its copy reads "unknown", never a path, version or hash
+
+### Requirement: Unverified fields are not used
+Fields whose meaning is unverified SHALL NOT feed any figure: Codex
+`cloud_skills.usage` and `allocation`, and `rate_limit_reached_type`.
+
+#### Scenario: cloud_skills present
+- **WHEN** a Codex log holds `world_state.state.cloud_skills.usage`
+- **THEN** no skill-use count changes because of it
+
 ### Requirement: Unreadable input is partial
 A session SHALL be marked incomplete when any of its lines fails to parse,
 its last line is cut off, or a request it holds lacks usage. Its readable
@@ -263,9 +346,10 @@ SHALL write no file, and SHALL make no network connection.
 
 ### Requirement: Export holds aggregates only
 A local export SHALL hold only aggregates: per session, its days, workspace
-label, agent and incomplete flag, and per request the day, model and token
-counts. It SHALL NOT hold prompts, replies, tool data, titles, paths, folder
-names, git, account or plan data, or any session, request or thread ID.
+label, agent, incomplete flag and counts of skill and MCP uses, and per
+request the day, model and token counts. It SHALL NOT hold prompts,
+replies, tool data, titles, skill or MCP server names, paths, folder names,
+git, account or plan data, or any session, request or thread ID.
 
 #### Scenario: No identifiers in the export
 - **WHEN** `--source local --json` runs on hand-written test logs with known IDs, paths and prompt text

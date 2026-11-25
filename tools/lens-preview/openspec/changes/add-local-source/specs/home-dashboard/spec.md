@@ -29,10 +29,10 @@ Covered by: `home_dashboard_shows_usage_before_findings_at_80x24`
 - **THEN** the answer reads "No sessions in the last 7 days" and the preview keeps running
 
 ### Requirement: Where tokens went
-On the fixture, Home SHALL show a "Where tokens went" table by source. Its
-shares SHALL add up to 100%, and Hooks SHALL be listed with 0 tokens rather
-than left out. On local data the table SHALL NOT be shown, because no log
-records where tokens came from, and Home SHALL give its rows to the findings.
+Home SHALL show a "Where tokens went" table by source, with shares adding up
+to 100% and Hooks always listed. On the fixture, Hooks SHALL show 0. On
+local data the shares are estimated from block sizes, and the title SHALL
+read "Where tokens went (estimated)".
 
 Covered by: `token_source_shares_sum_to_whole` and
 `home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs),
@@ -42,9 +42,9 @@ plus a local-data test to be added (tasks 4.3).
 - **WHEN** Home is shown at 80×24
 - **THEN** the table lists Hooks after File reads, and the source basis points sum to 10,000
 
-#### Scenario: Hidden on local data
+#### Scenario: Estimated on local data
 - **WHEN** Home is shown at 80×24 with `--source local`
-- **THEN** no "Where tokens went" table is drawn
+- **THEN** the table title reads "Where tokens went (estimated)", Hooks is listed, and the shares sum to 10,000 basis points
 
 ### Requirement: Findings in order of urgency
 Home SHALL list its "Worth a look" findings most urgent first, each shown only

@@ -21,6 +21,8 @@ must keep passing on `--source fixture` after each group.
 - [ ] 2.7 Read `~/.codex/archived_sessions/` too, counting each session once by `session_meta.payload.id`
 - [ ] 2.8 Session titles for the TUI: Claude's latest `custom-title` / `ai-title`, Codex's latest `session_index.jsonl` entry for the root thread, else the start time. Never exported
 - [ ] 2.9 Print "Reading local logs…" on stderr while reading
+- [ ] 2.10 Estimate token sources: split each request's context growth across new blocks by characters, with the Claude and Codex buckets in design.md Decision 13. Leave out unverified attachment types. Test with hand-written blocks of known sizes
+- [ ] 2.11 Skills and MCP uses per session: Claude `Skill` calls and `invoked_skills` once per request, and `mcp__*` calls by server. Codex `exec` reads of `SKILL.md` as estimated uses with a path class. Ignore `cloud_skills`
 
 ## 3. Pricing
 
@@ -33,13 +35,14 @@ must keep passing on `--source fixture` after each group.
 - [ ] 4.1 Top bar text per source (render test at 80×24 for both)
 - [ ] 4.2 "synthetic" scope chip on inventory, component, copy, observation, change and apply views on local data
 - [ ] 4.5 Session, day and token views: "API-equivalent" on dollar figures and titles as session names on local data
-- [ ] 4.3 Home: the empty-period answer, no "Where tokens went" table, "API-equivalent" on every local dollar figure, and no review-kit finding on local data
+- [ ] 4.3 Home: the empty-period answer, "Where tokens went (estimated)", "API-equivalent" on every local dollar figure, and no review-kit finding on local data
+- [ ] 4.6 Token detail: "estimated" on source shares, the method, and the list of attachment types not counted (unverified). Session view: skills and MCP servers used, Codex uses and copy classes marked "estimated", Claude copy "unknown"
 - [ ] 4.4 Plan headroom: Claude rows "—" / "needs relay" and not selectable, the answer only counting windows with readings, the relay note, per-agent limit hits, the weekly-history row needing the relay, and 5-hour rows opening the day of their latest reading
 
 ## 5. Export and privacy
 
-- [ ] 5.1 Export `source`. On local data, keep shared field types (`synthetic` false, `limit_hits` a number, null fixture-only fields) and add `now`, `synthetic_sections` and `limit_hits_by_agent`
-- [ ] 5.2 Test that a local export from hand-written logs contains none of their IDs, paths, project folder names, titles or prompt text
+- [ ] 5.1 Export `source`. On local data, keep shared field types (`synthetic` false, `limit_hits` a number, null fixture-only fields) and add `now`, `synthetic_sections`, `estimated_sections` and `limit_hits_by_agent`. `token_sources` holds the estimated shares, and sessions hold skill and MCP use counts without names
+- [ ] 5.2 Test that a local export from hand-written logs contains none of their IDs, paths, project folder names, titles, skill or MCP server names, or prompt text
 - [ ] 5.3 Hand-written test logs under the preview's test data, covering streamed Claude lines, a request copied into a resumed session, a session across midnight, a misfiled subagent, a drifting `resets_at`, an out-of-order reading, a reset window, null `rate_limits` sides, swapped sides and a truncated last line. No real log lines
 - [ ] 5.4 Verify by grep that the local path only opens files read-only and has no network or write use
 

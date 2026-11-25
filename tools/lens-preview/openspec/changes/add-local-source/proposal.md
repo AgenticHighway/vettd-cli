@@ -47,10 +47,14 @@ This is the proposal only. It changes no code.
 - **Session titles.** The TUI names each session by its latest title
   (Claude's title lines, Codex's `session_index.jsonl`), or its start time
   when it has none. Titles are never exported.
+- **Estimated where derived.** "Where tokens went" is estimated from the
+  size of each block that enters context, bucketed by tool. Claude skill
+  and MCP uses come from tool calls. Codex skill uses, and which copy ran,
+  are estimated from `SKILL.md` reads. Each derived figure says
+  "estimated", and fields whose meaning is unverified aren't used.
 - **Labels.** The top bar names the source. Data that stays synthetic on
-  local is labelled as synthetic where it is shown:
-  the component inventory, copies and load order. "Where tokens went" is
-  hidden on local, because no log records it, and the fixed review-kit
+  local is labelled as synthetic where it is shown: the configured-copy
+  inventory and load order, which no log holds. The fixed review-kit
   finding is dropped.
 - **Privacy.** Offline and read-only. The export, tests and docs hold
   aggregates only, never prompts, tool output, paths, folder names,
@@ -60,16 +64,16 @@ This is the proposal only. It changes no code.
 
 ### New Capabilities
 - `local-source`: the source option, which files are read, how sessions,
-  requests, Codex windows and limit hits are derived, pricing, failure
-  handling and the privacy guarantees.
+  requests, Codex windows, limit hits, estimated token sources and skill
+  uses are derived, pricing, failure handling and the privacy guarantees.
 
 ### Modified Capabilities
 These are specs introduced by the open change `add-lens-tui-dashboard`. They
 must be archived first, as described in design.md under "Ordering".
 - `tui-shell`: the top bar names the data source.
 - `home-dashboard`: the answer line covers the selected source, the
-  token-source table is hidden on local data, and the
-  review-kit finding is fixture-only.
+  token-source table is estimated on local data, and the review-kit finding
+  is fixture-only.
 - `plan-headroom`: window rows on local data, Claude rows without the relay,
   history rows from logs, and where window data comes from.
 - `json-export`: a `source` field and an aggregates-only local export.
