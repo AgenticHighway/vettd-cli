@@ -107,51 +107,8 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
     let with_data = || days.iter().filter(|d| d.value.is_some());
     let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
-    let gap = 1u16;
-    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
-        .saturating_sub(gap)
-        .clamp(3, 9);
-    // A caption wider than its bar is cut, dropping digits. Fall back to
-    // whole dollars (rounded down, so a floor stays a floor), then to the
-    // day alone.
-    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
     // Bars start above the floor, so small differences between days show.
     let base = baseline(&days, cx.count);
-    let bars: Vec<Bar> = days
-        .iter()
-        .map(|d| {
-            let outlier = d
-                .value
-                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
-            // No-data days show "·", never a zero-height bar that reads as $0.
-            // Partial days show "≥": the total is a floor, not the day's cost.
-            // When every day is partial the title says so once instead.
-            let floor = if d.partial && !all_partial { "≥" } else { "" };
-            // The day of the month: the chart's seven bars are consecutive.
-            let label_day = day_label(d.day);
-            let dom = label_day.rsplit(' ').next().unwrap_or_default();
-            let caption = match d.value {
-                None => format!("{dom} ·"),
-                Some(v) if wide => {
-                    let full = format!("{dom} {floor}{}", label(v));
-                    let whole = format!("{dom} {floor}${}", v / 100);
-                    if fits(&full) {
-                        full
-                    } else if !cx.count && fits(&whole) {
-                        whole
-                    } else {
-                        format!("{dom}{floor}")
-                    }
-                }
-                Some(_) => format!("{dom}{floor}"),
-            };
-            Bar::default()
-                .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
-                .text_value(String::new())
-                .label(Line::from(caption))
-                .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
-        })
-        .collect();
     // No complete day means no normal: say so rather than show a zero.
     let unit = if cx.count {
         ("DAILY REQUESTS", "REQUESTS")
@@ -185,6 +142,53 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
         axis_part.as_ref(),
         usize::from(chart.width),
     );
+    // The title doesn't wrap. When every day is partial, the bars drop their
+    // own ≥ only while the title still says so (full or short); if the note
+    // had to go, every bar keeps its ≥, so no floor reads as an exact total.
+    let noted = all_partial && (title.contains("every day partial") || title.contains("all partial"));
+    let gap = 1u16;
+    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
+        .saturating_sub(gap)
+        .clamp(3, 9);
+    // A caption wider than its bar is cut, dropping digits. Fall back to
+    // whole dollars (rounded down, so a floor stays a floor), then to the
+    // day alone.
+    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
+    let bars: Vec<Bar> = days
+        .iter()
+        .map(|d| {
+            let outlier = d
+                .value
+                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
+            // No-data days show "·", never a zero-height bar that reads as $0.
+            // Partial days show "≥": the total is a floor, not the day's cost.
+            // When every day is partial and the title fits, it says so once.
+            let floor = if d.partial && !noted { "≥" } else { "" };
+            // The day of the month: the chart's seven bars are consecutive.
+            let label_day = day_label(d.day);
+            let dom = label_day.rsplit(' ').next().unwrap_or_default();
+            let caption = match d.value {
+                None => format!("{dom} ·"),
+                Some(v) if wide => {
+                    let full = format!("{dom} {floor}{}", label(v));
+                    let whole = format!("{dom} {floor}${}", v / 100);
+                    if fits(&full) {
+                        full
+                    } else if !cx.count && fits(&whole) {
+                        whole
+                    } else {
+                        format!("{dom}{floor}")
+                    }
+                }
+                Some(_) => format!("{dom}{floor}"),
+            };
+            Bar::default()
+                .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
+                .text_value(String::new())
+                .label(Line::from(caption))
+                .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
+        })
+        .collect();
     f.render_widget(
         BarChart::default()
             .block(panel_block(&title, cx.theme))

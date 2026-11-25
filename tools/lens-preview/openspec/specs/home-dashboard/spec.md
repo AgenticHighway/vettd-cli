@@ -54,14 +54,20 @@ Covered by: `partial_day_reads_as_floor_and_stays_out_of_normal`
 ### Requirement: Empty and partial days are marked
 A day with no input SHALL be labelled "·" and SHALL NOT be drawn as a $0 bar.
 A partial day SHALL show "≥" before its total. A day is partial when any of
-its input is incomplete or, in USD mode only, unpriced.
+its input is incomplete or, in USD mode only, unpriced. No partial total
+SHALL read as exact.
 
 Covered by: `home_dashboard_shows_usage_before_findings_at_80x24` and
-`partial_day_reads_as_floor_and_stays_out_of_normal` (src/tests/render.rs).
+`partial_day_reads_as_floor_and_stays_out_of_normal` (src/tests/render.rs),
+and `narrow_stress_chart_keeps_lower_bound_markers` (src/tests/corpus.rs).
 
 #### Scenario: No-input and partial days
 - **WHEN** Home is shown at 80×24 in USD
 - **THEN** the chart shows "13 ·" for Nov 13 and "18 ≥$0.54" for Nov 18, never "18 $0.54"
+
+#### Scenario: Every day partial on a narrow terminal
+- **WHEN** Home is shown with `--corpus stress` at 50×24, where every day is partial
+- **THEN** either the title reads "every day partial (≥)" in full, in place of the per-bar markers, or every day's bar is marked "≥"
 
 ### Requirement: Where tokens went
 Home SHALL show a "Where tokens went" table by source, with shares adding up
@@ -88,12 +94,17 @@ complete day, when it is more than 3× normal; (3) the
 known gap in which copy of review-kit loads in Codex; (4) the first session
 with partial input; (5) a link to every day and its sessions.
 
-Covered by: `home_leads_with_the_filling_window` and
-`home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs).
+Covered by: `home_leads_with_the_filling_window`,
+`home_dashboard_shows_usage_before_findings_at_80x24` and two
+`incomplete_*_called_unpriced` tests.
 
 #### Scenario: Order in USD
 - **WHEN** Home is shown at 80×24 in USD
 - **THEN** the findings are, in order: "Claude 5-hour: 62%, full by 13:22", "Nov 16: 10× a normal day", "review-kit: unknown load in Codex", "Nov 18: partial input, unpriced", and "Every day and its sessions"
+
+#### Scenario: Partial input is not always unpriced
+- **WHEN** the first session with partial input has every request priced
+- **THEN** its finding reads "<day>: partial input" with no ", unpriced"; it says ", unpriced" only when a request has no rate
 
 ### Requirement: Review-kit finding only on the fixture
 The review-kit finding SHALL be shown only on the fixture. Home on local

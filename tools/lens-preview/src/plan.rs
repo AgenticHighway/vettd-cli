@@ -305,7 +305,12 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
             format!(
                 "{}: partial input{}",
                 day_label(all[id].day),
-                if all.local() { "" } else { ", unpriced" }
+                // Only say unpriced when a request really has no rate.
+                if all.local() || priced(&all[id]) == all[id].requests.len() {
+                    ""
+                } else {
+                    ", unpriced"
+                }
             ),
             View::Session(id),
             "Open the session",

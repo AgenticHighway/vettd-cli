@@ -36,8 +36,25 @@ const MODELS: [&str; 3] = [
 
 const RATES: [[u32; 4]; 3] = [[5, 1, 8, 20], [15, 2, 20, 60], [5, 1, 0, 20]];
 
-const SKILL_SIGNALS: &[(&str, u32)] = &[("Skill tool", 1)];
-const TOOL_SIGNALS: &[(&str, u32)] = &[("Tool call", 1)];
+/// One signal per use, accounting for all of its calls: index `count - 1`.
+const SKILL_SIGNALS: [&[(&str, u32)]; 5] = [
+    &[("Skill tool", 1)],
+    &[("Skill tool", 2)],
+    &[("Skill tool", 3)],
+    &[("Skill tool", 4)],
+    &[("Skill tool", 5)],
+];
+const TOOL_SIGNALS: [&[(&str, u32)]; 5] = [
+    &[("Tool call", 1)],
+    &[("Tool call", 2)],
+    &[("Tool call", 3)],
+    &[("Tool call", 4)],
+    &[("Tool call", 5)],
+];
+
+/// Components a session can call directly. The qa-pack plugin manifest (5)
+/// is left out: its use is recorded on its children, lint-guide and triage.
+const CALLABLE: [usize; 9] = [0, 1, 2, 3, 4, 6, 7, 8, 9];
 
 /// splitmix64: a tiny generator whose output depends only on `SEED`.
 struct Rng(u64);
@@ -132,7 +149,7 @@ fn request(rng: &mut Rng, main: bool) -> Request {
 }
 
 fn observed_use(rng: &mut Rng) -> Use {
-    let component = rng.below(10) as usize;
+    let component = rng.pick(&CALLABLE);
     let skill = COMPONENTS[component].kind == "skill";
     let (artifact, version) = if skill && rng.below(10) == 0 {
         let (artifact, version) = placement_copy(rng, component);
@@ -140,13 +157,15 @@ fn observed_use(rng: &mut Rng) -> Use {
     } else {
         (None, None)
     };
+    let count = 1 + rng.below(5) as u32;
+    let signals = if skill { SKILL_SIGNALS } else { TOOL_SIGNALS };
     Use {
         component,
         version,
         artifact,
-        count: 1 + rng.below(5) as u32,
+        count,
         context_cents: rng.below(10) as u32,
-        signals: if skill { SKILL_SIGNALS } else { TOOL_SIGNALS },
+        signals: signals[count as usize - 1],
     }
 }
 

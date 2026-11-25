@@ -275,6 +275,13 @@ pub(crate) fn cost_label(s: &Session, local: bool) -> String {
     }
 }
 
+/// Input is partial and some requests have no rate, so the context
+/// estimates of its uses are unknown. Partial input whose requests are all
+/// priced still has recorded estimates, as floors.
+pub(crate) fn estimate_missing(s: &Session) -> bool {
+    s.incomplete && priced(s) < s.requests.len()
+}
+
 pub(crate) fn comparable(s: &Session, count: bool) -> bool {
     !s.incomplete && (count || priced(s) == s.requests.len())
 }

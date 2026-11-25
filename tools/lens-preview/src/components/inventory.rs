@@ -90,7 +90,7 @@ fn usage_summary(uses: &[(usize, usize)], all: &[Session]) -> Vec<Row> {
     let calls: u32 = uses.iter().map(|k| usage(k).count).sum();
     let cents: u32 = uses
         .iter()
-        .filter(|(s, _)| !all[*s].incomplete)
+        .filter(|(s, _)| !estimate_missing(&all[*s]))
         .map(|k| usage(k).context_cents)
         .sum();
     let identified: u32 = uses
@@ -103,9 +103,21 @@ fn usage_summary(uses: &[(usize, usize)], all: &[Session]) -> Vec<Row> {
         line(format!("{calls} calls | {} est. context", usd(cents))),
         line(format!("{identified}/{calls} calls with artifact identity")),
     ];
-    let unpriced = uses.iter().filter(|(s, _)| all[*s].incomplete).count();
+    let unpriced = uses
+        .iter()
+        .filter(|(s, _)| estimate_missing(&all[*s]))
+        .count();
     if unpriced > 0 {
         rows.push(line(format!("{unpriced} observation(s) in unpriced input")));
+    }
+    let partial = uses
+        .iter()
+        .filter(|(s, _)| all[*s].incomplete && !estimate_missing(&all[*s]))
+        .count();
+    if partial > 0 {
+        rows.push(line(format!(
+            "{partial} observation(s) in partial input: their estimates are floors"
+        )));
     }
     rows
 }
