@@ -28,6 +28,23 @@ to be added (tasks 4.4).
 - **WHEN** Plan headroom is built with `--source local` and no relay data
 - **THEN** both Claude rows show "—" for used, pace and reset, end in "needs relay", and are not selectable
 
+### Requirement: Window rows open their sessions
+A 5-hour window's row SHALL open the sessions of the day of its latest
+reading, which is Nov 18 on the fixture. A weekly window's row SHALL open the
+daily view. A row without readings SHALL open nothing.
+
+Covered by: `plan_journey_goes_deep_and_comes_back_to_the_same_finding`
+(src/e2e/mod.rs). The weekly case is verified in `plan.rs::window_row`. The
+local case needs a test to be added (tasks 4.4).
+
+#### Scenario: A 5-hour row opens today
+- **WHEN** Enter is pressed on the Claude 5-hour row on the fixture
+- **THEN** the breadcrumb is "Home › Plan headroom › Nov 18"
+
+#### Scenario: Codex 5-hour row on local data
+- **WHEN** the Codex 5-hour window's latest reading is on Dec 2 and Enter is pressed on its row
+- **THEN** the Dec 2 sessions open
+
 ### Requirement: Answer names the soonest fill
 The answer SHALL name the window that fills soonest, meaning the earliest
 fill time and not the largest projection, with its used share and when it
