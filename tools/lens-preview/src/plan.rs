@@ -128,22 +128,34 @@ fn window_rows(w: &Window, data: &Data) -> Vec<Row> {
     };
     let mut rows = vec![row];
     if reset {
-        rows.push(line(format!(
-            "  {} {} reset; no reading since",
-            w.agent, w.name
-        )));
+        let since = if w.source == "relay" {
+            "no relay reading since"
+        } else {
+            "no reading since"
+        };
+        rows.push(line(format!("  {} {} reset; {since}", w.agent, w.name)));
+    }
+    if let Some(note) = w.note {
+        rows.push(line(format!("  {} {}: {note}", w.agent, w.name)));
     }
     rows
 }
 
 /// How recent weeks ended, and how to read the pace column.
 fn history_rows(data: &Data) -> Vec<Row> {
+    // The relay may have seen fewer than 4 weeks; it says so, never pads.
     let weekly = match &data.weekly_ends {
         Some(ends) => {
-            let ends: Vec<String> = ends.iter().map(|e| format!("{e}%")).collect();
-            format!("Claude weekly ended at {}", ends.join(", "))
+            let shown: Vec<String> = ends.iter().map(|e| format!("{e}%")).collect();
+            let seen = match ends.len() {
+                4 => String::new(),
+                1 => " (1 week of relay data)".into(),
+                n => format!(" ({n} weeks of relay data)"),
+            };
+            format!("Claude weekly ended at {}{seen}", shown.join(", "))
         }
-        None => "Claude weekly endings: needs relay".into(),
+        None if relay_missing(data) => "Claude weekly endings need the statusline relay".into(),
+        None => "Claude weekly: no full week of relay data yet".into(),
     };
     let hits = match &data.limit_hits_by_agent {
         None => format!("5-hour limit stopped work {}×", data.limit_hits),
@@ -153,7 +165,7 @@ fn history_rows(data: &Data) -> Vec<Row> {
         }
     };
     let mut rows = vec![line("── Last 4 weeks ──"), line(weekly), line(hits)];
-    if data.local() {
+    if relay_missing(data) {
         rows.push(line("Claude windows need the statusline"));
         rows.push(line("relay; Lens doesn't guess them."));
     }
@@ -164,6 +176,16 @@ fn history_rows(data: &Data) -> Vec<Row> {
         line("Provider meters are the source of truth."),
     ]);
     rows
+}
+
+/// Local data with no relay file: Claude readings can't exist.
+fn relay_missing(data: &Data) -> bool {
+    data.local()
+        && data.weekly_ends.is_none()
+        && data
+            .windows
+            .iter()
+            .any(|w| w.note == Some("relay not set up"))
 }
 
 /// Plan headroom: each provider window's used share, its pace to reset,

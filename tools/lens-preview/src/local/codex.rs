@@ -17,7 +17,6 @@ use crate::data::BUCKETS;
 use crate::fixture::Window;
 use crate::pricing::{self, Usage};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -372,42 +371,5 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
             "Codex: skipped {other} rate_limits readings of another window length"
         ));
     }
-    [("5-hour", 300u32), ("weekly", 10_080)]
-        .into_iter()
-        .map(|(name, minutes)| {
-            let mine: Vec<&Reading> = readings.iter().filter(|r| r.minutes == minutes).collect();
-            let Some(end) = mine.iter().map(|r| r.resets_at).max() else {
-                return Window {
-                    agent: AGENT,
-                    name,
-                    source: "logs",
-                    minutes,
-                    start: None,
-                    readings: Cow::Owned(Vec::new()),
-                };
-            };
-            let start = end - i64::from(minutes) * 60;
-            let mut current: Vec<&Reading> = mine
-                .into_iter()
-                .filter(|r| (start..=end).contains(&r.ts))
-                .collect();
-            current.sort_by_key(|r| r.ts);
-            let mut high = 0.0f64;
-            let points = current
-                .iter()
-                .map(|r| {
-                    high = high.max(r.percent);
-                    (((r.ts - start) / 60) as u32, high.round() as u32)
-                })
-                .collect();
-            Window {
-                agent: AGENT,
-                name,
-                source: "logs",
-                minutes,
-                start: Some((start - midnight).div_euclid(60) as i32),
-                readings: Cow::Owned(points),
-            }
-        })
-        .collect()
+    super::windows_for(AGENT, "logs", readings, midnight)
 }

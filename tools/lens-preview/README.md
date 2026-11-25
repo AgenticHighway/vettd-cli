@@ -77,8 +77,8 @@ What you see, and how sure it is:
   would cost on the API, not what a plan charges. A model with no rate is
   "unpriced", never $0.
 - Codex 5-hour and weekly windows come from Codex's own `rate_limits`.
-  Claude windows say "needs relay": Claude writes them only to the
-  statusline.
+  Claude windows come from the opt-in statusline relay (below), since
+  Claude writes them only to the statusline.
 - "Where tokens went" and Codex skill uses are **estimated** (from block
   sizes and `SKILL.md` reads) and say so. Token detail states the method
   and what isn't counted.
@@ -92,6 +92,43 @@ The export holds aggregates only, with no titles, prompts, paths, folder
 names, skill or MCP server names, or IDs. It prints to stdout only when
 asked. Reading a large history takes a few seconds; "Reading local logs…"
 shows on stderr meanwhile.
+
+### Claude windows: the statusline relay
+
+Claude Code writes its 5-hour and weekly usage only to a statusline
+command's stdin, never to its logs. To show them, opt in to the relay:
+`--relay` reads that stdin, appends the readings to
+`~/.vettd/lens/relay.jsonl` and prints `5h 23% · 7d 41%`. `--source local`
+then reads the file.
+
+1. Build the binary: `cargo build --release --locked` in this folder.
+2. Add a `statusLine` entry to `~/.claude/settings.json` yourself (Lens
+   never edits Claude's settings), with the binary's absolute path:
+
+   ```json
+   "statusLine": {
+     "type": "command",
+     "command": "/absolute/path/to/vettd-lens-preview --relay"
+   }
+   ```
+
+3. To keep an existing status line, chain it: `--relay --then "<your
+   current command>"`. The relay records first, then prints your
+   command's output instead of its own.
+
+Each line in the file holds only `t` (when, Unix seconds), `w`
+(`five_hour` or `seven_day`), `pct` and `resets_at`. Nothing else from the
+statusline input is kept: no session, path, model or cost. An unchanged
+reading isn't written again, and records older than 35 days are pruned at
+most once a day. The relay always exits 0 and reports problems on stderr
+only, so it can't break your status line. `--relay-file <path>` moves the
+file, for both the relay and `--source local`. Remove the `statusLine`
+entry and the file to stop.
+
+Without a relay file, the Claude rows on Plan headroom say "relay not set
+up". With one, they follow the same rules as Codex windows, and "Claude
+weekly ended at" lists how the last weekly windows ended, saying how many
+weeks the relay has seen when that is fewer than 4.
 
 ## Five phases
 

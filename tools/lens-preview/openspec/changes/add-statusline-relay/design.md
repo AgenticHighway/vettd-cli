@@ -144,11 +144,11 @@ blocks here.
   person wrote into their own settings, with the stdin Claude already gave
   the relay.
 
-## Open Questions
+## Resolved Questions
 
-1. **Relay output.** Print `5h 23% · 7d 41%` when `--then` isn't given, or
-   print nothing, so the relay is invisible?
-2. **Pruning window.** Is 35 days right, or should weekly history keep more
-   than 4 weeks?
-3. **File location.** Is `~/.vettd/lens/` acceptable, or should the relay
-   file live under the Lens preview's own folder until Lens leaves preview?
+The user settled these on 2026-11-25.
+
+1. **Relay output.** Without `--then`, it prints `5h 23% · 7d 41%` for the
+   windows present (Decision 6).
+2. **Pruning window.** 35 days (Decision 5).
+3. **File location.** `~/.vettd/lens/relay.jsonl` (Decision 3).
