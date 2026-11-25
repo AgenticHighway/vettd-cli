@@ -1,18 +1,13 @@
 //! Builds each view's answer, scope and rows.
 
-use crate::fixture::{Session, COMPONENTS, PARTS, PERIOD};
+use crate::data::{day_label, Data, BUCKETS, NOT_COUNTED};
+use crate::fixture::{Request, Session, COMPONENTS, PARTS};
 use crate::*;
 
 /// A view's answer line, scope chips and rows.
 pub(crate) type Content = (String, String, Vec<Row>);
 
-pub(crate) fn content(
-    page: &Page,
-    all: &[Session],
-    count: bool,
-    width: u16,
-    rt: &Runtime,
-) -> Content {
+pub(crate) fn content(page: &Page, all: &Data, count: bool, width: u16, rt: &Runtime) -> Content {
     let bar_width = usize::from(width.saturating_sub(30).min(34));
     match page.view {
         View::Inventory
@@ -21,15 +16,34 @@ pub(crate) fn content(
         | View::Observation(..)
         | View::Signal(..)
         | View::Change(..)
-        | View::Apply(..) => components::rows(page, all, rt),
+        | View::Apply(..) => {
+            // Their copies and observations are fixture data, so on local
+            // data they read the fixture's sessions, not real ones.
+            if all.local() {
+                let fixture = crate::fixture::sessions();
+                synthetic(components::rows(page, &fixture, rt), all)
+            } else {
+                components::rows(page, all, rt)
+            }
+        }
         View::Home => home(all, count),
-        View::Headroom => headroom(),
+        View::Headroom => headroom(all),
         View::Help => help(),
         View::Week => week(all, count, bar_width),
-        View::Find => find(&page.filter),
+        View::Find => synthetic(find(&page.filter), all),
         View::Day(day) => day_sessions(day, all, count),
-        View::Session(id) => session(id, &all[id], bar_width),
-        View::Tokens(id) => tokens(&all[id]),
+        View::Session(id) => session(id, &all[id], bar_width, all.local()),
+        View::Tokens(id) => tokens(&all[id], all.local()),
+    }
+}
+
+/// On local data the inventory and everything it opens stays fixture
+/// data: no log records configured copies. The scope chips say so.
+fn synthetic((title, scope, rows): Content, all: &Data) -> Content {
+    if all.local() {
+        (title, format!("synthetic | {scope}"), rows)
+    } else {
+        (title, scope, rows)
     }
 }
 
@@ -57,30 +71,45 @@ fn help() -> Content {
     )
 }
 
-fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
-    let days: Vec<_> = (12..=18)
-        .map(|day| {
+fn week(all: &Data, count: bool, bar_width: usize) -> Content {
+    let days: Vec<_> = all
+        .days
+        .iter()
+        .map(|&day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
-            let value = sessions.iter().map(|s| measure(s, count)).sum();
-            let partial = sessions.iter().any(|s| s.incomplete);
-            (day, value, sessions.len(), partial)
+            let value = total(sessions.iter().copied(), count);
+            // A day with unpriced requests is a floor in dollars.
+            let partial = sessions.iter().any(|s| !comparable(s, count));
+            let unpriced = !count && !sessions.is_empty() && !any_priced(sessions.iter().copied());
+            (day, value, sessions.len(), partial, unpriced)
         })
         .collect();
     let peak = days.iter().map(|day| day.1).max().unwrap_or(1);
     let with_input = days.iter().filter(|d| d.2 > 0).count();
-    let total: u32 = days.iter().map(|d| d.1).sum();
+    let unknown = !count && with_input > 0 && days.iter().all(|d| d.2 == 0 || d.4);
+    let sum: u32 = days.iter().map(|d| d.1).sum();
     // An answer, not a label: how many days had input and what they add to.
     let answer = format!(
         "{with_input} of {} days had input · {}{}",
         days.len(),
-        units(total, count),
-        if count { "" } else { " priced" }
+        if unknown {
+            "unpriced".into()
+        } else {
+            units(sum, count)
+        },
+        if count {
+            String::new()
+        } else {
+            format!(" {}", all.dollars())
+        }
     );
     let rows = days
         .into_iter()
-        .map(|(day, value, n, partial)| {
+        .map(|(day, value, n, partial, unpriced)| {
             let label = if n == 0 {
                 "No input".into()
+            } else if unpriced {
+                "unpriced".into()
             } else if count {
                 value.to_string()
             } else {
@@ -88,7 +117,8 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
             };
             link(
                 format!(
-                    "Nov {day}  {label:>8}  {}{}",
+                    "{:<6}  {label:>8}  {}{}",
+                    day_label(day),
                     bar(value, peak, bar_width),
                     if partial { "  partial" } else { "" }
                 ),
@@ -100,8 +130,9 @@ fn week(all: &[Session], count: bool, bar_width: usize) -> Content {
     (
         answer,
         format!(
-            "{PERIOD} | All workspaces | {} per day",
-            if count { "Requests" } else { "Priced USD" }
+            "{} | All workspaces | {} per day",
+            all.period(),
+            all.unit(count)
         ),
         rows,
     )
@@ -126,19 +157,19 @@ fn find(filter: &str) -> Content {
         .collect();
     (
         "Find a component".into(),
-        format!("{PERIOD} | Search: {filter}_"),
+        format!("{} | Search: {filter}_", Scope::WEEK.period()),
         rows,
     )
 }
 
-fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
+fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
     let mut sessions: Vec<_> = all
         .iter()
         .enumerate()
         .filter(|(_, s)| s.day == day)
         .collect();
     sessions.sort_by_key(|(_, s)| std::cmp::Reverse(measure(s, count)));
-    let total: u32 = sessions.iter().map(|(_, s)| measure(s, count)).sum();
+    let total: u32 = total(sessions.iter().map(|(_, s)| *s), count);
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
     let comparison = if sessions.is_empty()
         || prior.is_empty()
@@ -147,7 +178,7 @@ fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
     {
         "No comparable previous day".into()
     } else {
-        let previous = prior.iter().map(|s| measure(s, count)).sum::<u32>();
+        let previous = crate::total(prior.iter().copied(), count);
         format!(
             "Prior day {} | {}{} change",
             units(previous, count),
@@ -155,11 +186,17 @@ fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
             units(total.abs_diff(previous), count)
         )
     };
+    let label = day_label(day);
     (
-        format!("Nov {day} sessions"),
+        format!("{label} sessions"),
         format!(
-            "Nov {day} UTC | All workspaces | {} | {comparison}",
-            units(total, count)
+            "{label} UTC | All workspaces | {}{} | {comparison}",
+            units(total, count),
+            if count || !all.local() {
+                ""
+            } else {
+                " API-equivalent"
+            }
         ),
         sessions
             .into_iter()
@@ -168,13 +205,13 @@ fn day_sessions(day: u32, all: &[Session], count: bool) -> Content {
     )
 }
 
-fn session_scope(s: &Session) -> String {
+fn session_scope(s: &Session, local: bool) -> String {
     format!(
-        "Nov {} UTC | Workspace {} | {} | {}",
-        s.day,
+        "{} UTC | Workspace {} | {} | {}",
+        day_label(s.day),
         s.workspace,
         s.agent,
-        cost_label(s)
+        cost_label(s, local)
     )
 }
 
@@ -186,28 +223,88 @@ fn incomplete_rows(s: &Session) -> Vec<Row> {
     }
 }
 
-fn tokens(s: &Session) -> Content {
-    let mut rows = incomplete_rows(s);
+/// Requests grouped by worker and model, in the order they first appear.
+/// A local session can hold thousands of requests; the fixture's groups
+/// each hold one, so its rows are unchanged.
+fn groups(s: &Session) -> Vec<(&'static str, &'static str, Vec<&Request>)> {
+    let mut groups: Vec<(&'static str, &'static str, Vec<&Request>)> = Vec::new();
     for r in &s.requests {
-        rows.push(line(format!("{} / {}", r.worker, r.model)));
-        rows.extend(
-            PARTS
-                .iter()
-                .zip(r.tokens)
-                .map(|(part, tokens)| line(format!("{part:<14} {tokens:>8} tokens"))),
-        );
+        match groups
+            .iter_mut()
+            .find(|g| g.0 == r.worker && g.1 == r.model)
+        {
+            Some(g) => g.2.push(r),
+            None => groups.push((r.worker, r.model, vec![r])),
+        }
+    }
+    groups
+}
+
+fn tokens(s: &Session, local: bool) -> Content {
+    let mut rows = incomplete_rows(s);
+    for (worker, model, requests) in groups(s) {
+        rows.push(line(if requests.len() == 1 {
+            format!("{worker} / {model}")
+        } else {
+            format!("{worker} / {model} ({} requests)", requests.len())
+        }));
+        rows.extend(PARTS.iter().enumerate().map(|(i, part)| {
+            let tokens: u64 = requests.iter().map(|r| u64::from(r.tokens[i])).sum();
+            line(format!("{part:<14} {tokens:>8} tokens"))
+        }));
+        if local {
+            rows.push(line(match crate::pricing::lookup(model) {
+                Some(rate) => format!("Rates checked {} at {}", rate.checked, rate.source),
+                None => "No published rate: unpriced".into(),
+            }));
+        }
+    }
+    if local {
+        rows.extend(source_rows(s));
     }
     (
         format!("{} / token and cache detail", s.name),
-        session_scope(s),
+        session_scope(s, local),
         rows,
     )
 }
 
-/// Cost by part (only when something is priced) and by request.
+/// Where this session's context came from, estimated, with the method
+/// and what the estimate leaves out.
+fn source_rows(s: &Session) -> Vec<Row> {
+    let mut rows = vec![line("── Where tokens came from (estimated) ──")];
+    let total: u64 = s.sources.iter().sum();
+    if total == 0 {
+        rows.push(line("No context growth to split"));
+    }
+    for (name, &tokens) in BUCKETS.iter().zip(&s.sources) {
+        if tokens > 0 {
+            rows.push(line(format!(
+                "{name:<20} {:>8} tokens  {:>3}% estimated",
+                tokens,
+                tokens * 100 / total.max(1)
+            )));
+        }
+    }
+    rows.extend([
+        line("Method: each request's context growth"),
+        line("split across the blocks added since the"),
+        line("previous request, by their characters."),
+        line(format!("Not counted (unverified): {NOT_COUNTED}")),
+    ]);
+    rows
+}
+
+/// Cost by part (only when something is priced) and by worker and model.
 fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
     let mut rows = Vec::new();
-    let parts: [u32; 4] = std::array::from_fn(|i| s.requests.iter().map(|r| r.cents()[i]).sum());
+    let parts: [u32; 4] = std::array::from_fn(|i| {
+        s.requests
+            .iter()
+            .map(|r| r.cents_exact()[i])
+            .sum::<f64>()
+            .round() as u32
+    });
     if priced(s) > 0 {
         rows.extend(PARTS.iter().zip(parts).map(|(part, cost)| {
             line(format!(
@@ -217,18 +314,44 @@ fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
             ))
         }));
     }
-    rows.extend(s.requests.iter().map(|r| {
-        let cost = if r.milli_usd_per_ktok.is_some() {
-            usd(r.cents().iter().sum())
-        } else {
-            "unpriced".into()
+    rows.extend(groups(s).into_iter().map(|(worker, model, requests)| {
+        let unpriced = requests.iter().filter(|r| !r.priced()).count();
+        let cents: f64 = requests.iter().flat_map(|r| r.cents_exact()).sum();
+        let cost = match unpriced {
+            0 => usd(cents.round() as u32),
+            n if n == requests.len() => "unpriced".into(),
+            n => format!("{} + {n} unpriced", usd(cents.round() as u32)),
         };
-        line(format!("{} / {}   {cost}", r.worker, r.model))
+        line(format!("{worker} / {model}   {cost}"))
     }));
     rows
 }
 
-fn session(id: usize, s: &Session, bar_width: usize) -> Content {
+/// Skills and MCP servers a local session used, from its logs. They name
+/// what ran, not a configured copy, so they open nothing.
+fn used_rows(s: &Session) -> Vec<Row> {
+    let mut rows = vec![line("── Skills and MCP used ──")];
+    if s.used.is_empty() {
+        rows.push(line("None recorded"));
+    }
+    rows.extend(s.used.iter().map(|u| {
+        let copy = if u.kind == "skill" {
+            format!(" copy {}", u.copy)
+        } else {
+            String::new()
+        };
+        line(format!(
+            "{:<5} {:<16} x{}{copy}{}",
+            u.kind,
+            u.name.chars().take(16).collect::<String>(),
+            u.count,
+            if u.estimated { " (estimated)" } else { "" }
+        ))
+    }));
+    rows
+}
+
+fn session(id: usize, s: &Session, bar_width: usize, local: bool) -> Content {
     let mut rows = incomplete_rows(s);
     rows.extend(cost_rows(s, bar_width));
     rows.push(link(
@@ -236,24 +359,28 @@ fn session(id: usize, s: &Session, bar_width: usize) -> Content {
         View::Tokens(id),
         "See token counts by model and worker",
     ));
-    rows.push(line("── Components observed ──"));
-    rows.extend(s.observed.iter().map(|u| {
-        let c = &COMPONENTS[u.component];
-        link(
-            format!(
-                "{:<5} {:<13} {:<4} x{}",
-                c.kind,
-                c.name,
-                u.version.unwrap_or("?"),
-                u.count
-            ),
-            View::Component(u.component, Scope::of(s)),
-            "Inspect component in this session's scope",
-        )
-    }));
+    if local {
+        rows.extend(used_rows(s));
+    } else {
+        rows.push(line("── Components observed ──"));
+        rows.extend(s.observed.iter().map(|u| {
+            let c = &COMPONENTS[u.component];
+            link(
+                format!(
+                    "{:<5} {:<13} {:<4} x{}",
+                    c.kind,
+                    c.name,
+                    u.version.unwrap_or("?"),
+                    u.count
+                ),
+                View::Component(u.component, Scope::of(s)),
+                "Inspect component in this session's scope",
+            )
+        }));
+    }
     (
         format!("{} / cost components", s.name),
-        session_scope(s),
+        session_scope(s, local),
         rows,
     )
 }

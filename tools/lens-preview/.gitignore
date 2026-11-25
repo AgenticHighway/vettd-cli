@@ -1,0 +1,4 @@
+# Hand-written test logs that mimic Claude Code and Codex shapes. They
+# hold no real records; the repository-wide *.jsonl ignore still guards
+# everything else.
+!tests/data/**/*.jsonl

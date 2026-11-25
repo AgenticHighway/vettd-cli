@@ -20,6 +20,7 @@ Paths are relative to `tools/lens-preview/`.
 
 - [x] 3.1 In `src/main.rs`, replace the `args().nth(1)` check with parsing for `--json` and `--corpus default|stress` anywhere on the command line, per design decision 9, and pass the selected corpus to `run`. An unknown or missing value prints `error: --corpus must be default or stress` to stderr and exits 2. Verify manually that `--corpus other` and a trailing `--corpus` exit 2 with empty stdout, and that `--json --corpus stress` and `--corpus stress --json` give the same output
   - Evidence: `--corpus other` and `--json --corpus` → exit 2, 0 stdout bytes, exact stderr message; both flag orders hash `d6b8d5c3…197469`.
+  - 2026-11-25: on merging `add-local-source` and `add-statusline-relay`, parsing moved into their `Args`, and the message became `vettd-lens-preview: --corpus takes default or stress` to match `--source` errors (task 5.1).
 - [x] 3.2 In `src/main.rs`, make `export` take the corpus name, add `corpus`, and take `workspaces` from the selected corpus (sorted and distinct), keeping the plan and source fields unchanged, per design decisions 10–11. Update the existing caller in `src/tests/render.rs`. Verify with `--corpus stress --json` showing 6 workspaces and the same `windows` as the default export
   - Evidence: Stress export lists 6 sorted workspaces; plan fields equal default (test). `render.rs` caller updated.
 - [x] 3.3 Add a golden test: the default export, minus `corpus`, equals `tests/golden/default-export.json` as a `serde_json::Value`. Add a test that the export function gives identical strings on repeated calls for both corpora, and a test that the stress export's plan and source fields equal the default export's. Verify with `cargo test`
@@ -39,3 +40,12 @@ Paths are relative to `tools/lens-preview/`.
   - Evidence: Ten release runs (ms): 46, 41, 50, 50, 46, 48, 43, 45, 44, 43; worst 50 ms.
 - [x] 4.4 Write `docs/coverage-note.md`, one page using aggregate figures only. Record the real figures and their source, state that copy coverage is unmeasured, map each stress parameter to a real figure or an assumption (including the reused plan fields), and include the measured timings. Verify that no raw record, path or identifier from the local logs appears in it
   - Evidence: `docs/coverage-note.md` written; figures checked against the aggregate report; no paths or identifiers from local logs.
+
+## 5. Reconcile with add-local-source and add-statusline-relay
+
+- [x] 5.1 Merge the source and relay changes. Parse `--corpus` in their `Args`, build the stress corpus as `Data::stress()` (the default plan windows and token sources on stress sessions, each its own session `group`), and export with `source` and `corpus`. Port the Home fixes (unknown normal, every-day-partial title, caption fallback, six-cell token figures) onto the day-label chart. Verify with `cargo test`
+  - Evidence: 140 tests pass, including every corpus, stress and golden test.
+- [x] 5.2 Reject `--source local` with any `--corpus` on stderr with a non-zero exit, per the `local-source` requirement "Source and corpus don't mix". Verify by test and by running the binary
+  - Evidence: `corpus_with_local_source_is_an_error`; `--source local --corpus stress --json` prints `vettd-lens-preview: --corpus needs --source fixture`, writes nothing to stdout and exits 2.
+- [x] 5.3 Allow both `source` and `corpus` in "Default corpus unchanged", and check the default `--json` against the stack head before this merge
+  - Evidence: the golden test drops `source` and `corpus`; the default export equals the pre-merge head's (`f681a0e`) plus `corpus` alone. The stress export is byte-identical on repeat runs (2,011 sessions).

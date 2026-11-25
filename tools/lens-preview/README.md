@@ -5,8 +5,9 @@ deterministic synthetic corpus. Run the prebuilt Windows executable or build
 it from this directory with `cargo run --locked`. Pass `--json` to export the
 same corpus. Add `--corpus stress` (anywhere on the command line) to load a
 seeded ~2,000-session stress corpus instead of the default 12-session fixture;
-any other `--corpus` value exits with code 2. The preview runs offline with no
-log discovery or per-run writes.
+any other `--corpus` value, or any `--corpus` with `--source local`, exits with
+code 2. The preview runs offline with no per-run writes. By default it
+reads no logs; `--source local` (below) reads your own, read-only.
 
 The preview renders with [ratatui](https://ratatui.rs) on its crossterm
 backend, drawing on stderr so stdout stays free for machine output. It is
@@ -53,6 +54,85 @@ The fixture never treats partial skill signals as definitive usage totals.
 The chart toggle previews USD and request counts. Upstream count breakdowns
 by trigger, tool, class and MCP remain Phase 1 parity work.
 
+## Your own logs: `--source local`
+
+`--source fixture` (the default) is everything above. `--source local`
+builds Home, the daily and session views and Plan headroom from your own
+logs instead, and `--source local --json` exports them:
+
+- Claude Code: `~/.claude/projects/*/*.jsonl` and each session's
+  `subagents/*.jsonl` (`CLAUDE_CONFIG_DIR` replaces `~/.claude`).
+- Codex: `~/.codex/sessions/**/*.jsonl`, `~/.codex/archived_sessions/` and
+  `~/.codex/session_index.jsonl` for titles (`CODEX_HOME` replaces
+  `~/.codex`).
+
+The period is the 7 UTC days ending today. Files untouched for 28 days are
+never opened; newer ones also feed the 4-week limit-hit count. A missing
+directory is noted on stderr and gives that agent no sessions.
+
+What you see, and how sure it is:
+
+- Requests and tokens are read from usage fields, each request counted
+  once even when streamed over several lines or copied into a resumed
+  session.
+- Dollars are **API-equivalent**: published API rates from
+  `src/pricing.rs` (dated, with their source page), so what the usage
+  would cost on the API, not what a plan charges. A model with no rate is
+  "unpriced", never $0.
+- Codex 5-hour and weekly windows come from Codex's own `rate_limits`.
+  Claude windows come from the opt-in statusline relay (below), since
+  Claude writes them only to the statusline.
+- "Where tokens went" and Codex skill uses are **estimated** (from block
+  sizes and `SKILL.md` reads) and say so. Token detail states the method
+  and what isn't counted.
+- The component inventory, copies, observations and change previews stay
+  synthetic, and carry a "synthetic" chip: no log records configured
+  copies or load order.
+
+It is read-only and offline: files are opened for reading only, nothing is
+written and no connection is made. Session titles appear only in the TUI.
+The export holds aggregates only, with no titles, prompts, paths, folder
+names, skill or MCP server names, or IDs. It prints to stdout only when
+asked. Reading a large history takes a few seconds; "Reading local logs…"
+shows on stderr meanwhile.
+
+### Claude windows: the statusline relay
+
+Claude Code writes its 5-hour and weekly usage only to a statusline
+command's stdin, never to its logs. To show them, opt in to the relay:
+`--relay` reads that stdin, appends the readings to
+`~/.vettd/lens/relay.jsonl` and prints `5h 23% · 7d 41%`. `--source local`
+then reads the file.
+
+1. Build the binary: `cargo build --release --locked` in this folder.
+2. Add a `statusLine` entry to `~/.claude/settings.json` yourself (Lens
+   never edits Claude's settings), with the binary's absolute path:
+
+   ```json
+   "statusLine": {
+     "type": "command",
+     "command": "/absolute/path/to/vettd-lens-preview --relay"
+   }
+   ```
+
+3. To keep an existing status line, chain it: `--relay --then "<your
+   current command>"`. The relay records first, then prints your
+   command's output instead of its own.
+
+Each line in the file holds only `t` (when, Unix seconds), `w`
+(`five_hour` or `seven_day`), `pct` and `resets_at`. Nothing else from the
+statusline input is kept: no session, path, model or cost. An unchanged
+reading isn't written again, and records older than 35 days are pruned at
+most once a day. The relay always exits 0 and reports problems on stderr
+only, so it can't break your status line. `--relay-file <path>` moves the
+file, for both the relay and `--source local`. Remove the `statusLine`
+entry and the file to stop.
+
+Without a relay file, the Claude rows on Plan headroom say "relay not set
+up". With one, they follow the same rules as Codex windows, and "Claude
+weekly ended at" lists how the last weekly windows ended, saying how many
+weeks the relay has seen when that is fewer than 4.
+
 ## Five phases
 
 1. Local Lens in Vettd. Preserve the existing TUI capabilities, ingest
@@ -90,7 +170,7 @@ chart labels and Enter hint still identify focus and the pending action.
 `NO_COLOR` uses reverse video for selection. All views derive their figures
 from the same synthetic corpus that the JSON export returns.
 
-For a human walkthrough, start at Activity with no instructions. See whether
+For a human walkthrough, start at Home with no instructions. See whether
 the developer can predict what Enter will open from the chart and whether
 the maintainer can find a known skill without choosing a date. Ask each
 person to go Back after opening evidence and describe the scope they land in.
@@ -99,7 +179,7 @@ The full protocol, its tasks and the gate decision rule are in
 
 ## Component inventory
 
-Press i from Activity to browse installed skills, native tools and MCP
+Press i from Home to browse installed skills, native tools and MCP
 servers. Slash lookup opens the same component detail. From review-kit,
 compare the workspace and user copies, then inspect observed versions and
 signals. The synthetic 1.5 workspace copy has no matching scan. The 1.4
