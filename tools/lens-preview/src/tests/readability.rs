@@ -13,7 +13,7 @@ fn day(value: Option<u32>) -> screen::Day {
 }
 
 /// Renders Home over an explicit corpus, as render.rs does for the default one.
-fn home_over(all: &[Session], (w, h): (u16, u16)) -> Buffer {
+fn home_over(all: &Data, (w, h): (u16, u16)) -> Buffer {
     let rt = Runtime::default();
     let stack = [Page::new(View::Home)];
     let page = stack.last().unwrap();
@@ -107,7 +107,7 @@ fn bar_heights(grid: &[Vec<char>], title: usize, caption: usize) -> Vec<usize> {
 
 #[test]
 fn stress_bars_show_the_spread_between_days() {
-    let grid = grid(&home_over(&fixture::stress_sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::stress(), (80, 24)));
     let title = title_row(&grid);
     let heights = bar_heights(&grid, title, caption_row(&grid, title));
     let min = *heights.iter().min().unwrap();
@@ -119,7 +119,7 @@ fn stress_bars_show_the_spread_between_days() {
 
 #[test]
 fn stress_title_names_the_floor_in_whole_dollars() {
-    let grid = grid(&home_over(&fixture::stress_sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::stress(), (80, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     let after = title
         .split("from $")
@@ -132,7 +132,7 @@ fn stress_title_names_the_floor_in_whole_dollars() {
 
 #[test]
 fn stress_title_stays_whole_when_narrow() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let grid = grid(&home_over(&all, (60, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     // Stacked at 60 columns the full wording does not fit, so the short
@@ -145,7 +145,7 @@ fn stress_title_stays_whole_when_narrow() {
 // axis stay, because a raised axis that isn't named misleads.
 #[test]
 fn stress_title_keeps_unit_and_axis_when_very_narrow() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let (days, _) = screen::daily(&all, false);
     let base = screen::baseline(&days, false);
     let grid = grid(&home_over(&all, (40, 24)));
@@ -160,7 +160,7 @@ fn stress_title_keeps_unit_and_axis_when_very_narrow() {
 
 #[test]
 fn default_title_keeps_its_full_wording_without_an_axis() {
-    let grid = grid(&home_over(&fixture::sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::fixture(), (80, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     assert!(title.starts_with("DAILY SPEND  ·  normal ≈"), "{title:?}");
     assert!(!title.contains("from $"), "{title:?}");
@@ -168,7 +168,7 @@ fn default_title_keeps_its_full_wording_without_an_axis() {
 
 #[test]
 fn stress_floor_is_whole_dollars_below_the_lowest_day() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let (days, _) = screen::daily(&all, false);
     let base = screen::baseline(&days, false);
     let lowest = days.iter().filter_map(|d| d.value).min().unwrap();
@@ -179,7 +179,7 @@ fn stress_floor_is_whole_dollars_below_the_lowest_day() {
 
 #[test]
 fn default_corpus_has_no_floor_in_dollars() {
-    let (days, _) = screen::daily(&fixture::sessions(), false);
+    let (days, _) = screen::daily(&Data::fixture(), false);
     assert_eq!(screen::baseline(&days, false), 0);
 }
 
@@ -223,7 +223,7 @@ fn no_data_has_no_floor() {
 
 /// Renders any stack over an explicit corpus, with each page's own selection
 /// and scroll, as the app draws it.
-fn stack_over(all: &[Session], stack: &[Page], (w, h): (u16, u16), mono: bool) -> Buffer {
+fn stack_over(all: &Data, stack: &[Page], (w, h): (u16, u16), mono: bool) -> Buffer {
     let rt = Runtime::default();
     let page = stack.last().unwrap();
     let (title, scope, rows) = content(page, all, false, screen::list_width(w), &rt);
@@ -320,7 +320,7 @@ fn day_header_keeps_the_narrow_column_for_default_corpus() {
 // Each stress day's rows share one workspace column, so the totals line up.
 #[test]
 fn stress_day_totals_end_in_one_column_inside_the_list() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let stack = [Page::new(View::Home), Page::new(View::Day(16))];
     for (w, h) in [(80u16, 24u16), (60, 24)] {
         let buffer = stack_over(&all, &stack, (w, h), false);
@@ -351,7 +351,7 @@ fn stress_day_totals_end_in_one_column_inside_the_list() {
 // shortened to exactly the column; at 60 wide it keeps its start and end.
 #[test]
 fn long_workspace_is_shortened_to_the_day_column() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.day == 16 && s.workspace.chars().count() == 94)
@@ -378,7 +378,7 @@ fn long_workspace_is_shortened_to_the_day_column() {
 // chip rather than dropping every chip after it.
 #[test]
 fn long_scope_keeps_agent_and_cost_chips() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.workspace.chars().count() == 94)
@@ -391,7 +391,7 @@ fn long_scope_keeps_agent_and_cost_chips() {
         assert!(chips.contains(&format!("Nov {} UTC", s.day)), "{chips:?}");
         assert!(chips.contains('…'), "{chips:?}");
         assert!(chips.contains(s.agent), "{chips:?}");
-        assert!(chips.contains(&cost_label(s)), "{chips:?}");
+        assert!(chips.contains(&cost_label(s, false)), "{chips:?}");
         assert!(!chips.trim_end().ends_with('…'), "{chips:?}");
     }
 }
@@ -400,7 +400,7 @@ fn long_scope_keeps_agent_and_cost_chips() {
 // and in the token detail, at both widths.
 #[test]
 fn long_model_session_rows_end_with_their_cost() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.requests.iter().any(|r| r.model.chars().count() == 63))
@@ -428,7 +428,7 @@ fn long_model_session_rows_end_with_their_cost() {
 // with the cost too.
 #[test]
 fn long_model_session_preview_ends_with_its_cost() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.requests.iter().any(|r| r.model.chars().count() == 63))
@@ -466,7 +466,7 @@ fn long_model_session_preview_ends_with_its_cost() {
 // the shortening arithmetic must still never underflow or panic there.
 #[test]
 fn stress_views_draw_at_the_smallest_size() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let long = all
         .iter()
         .position(|s| s.workspace.chars().count() > 80)
@@ -501,7 +501,7 @@ fn assert_selection_reversed(buffer: &Buffer) {
 // is still marked by reverse video.
 #[test]
 fn no_color_home_title_names_the_floor_in_whole_dollars() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let buffer = stack_over(&all, &[Page::new(View::Home)], (80, 24), true);
     let grid = grid(&buffer);
     let title = title_of(&grid[title_row(&grid)]);
@@ -519,7 +519,7 @@ fn no_color_home_title_names_the_floor_in_whole_dollars() {
 // session is reverse video.
 #[test]
 fn no_color_day_totals_end_in_one_column() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let stack = [Page::new(View::Home), Page::new(View::Day(16))];
     let (w, h) = (80u16, 24u16);
     let buffer = stack_over(&all, &stack, (w, h), true);
@@ -540,7 +540,7 @@ fn no_color_day_totals_end_in_one_column() {
 // cost as bracketed chips, and shortens only the workspace chip.
 #[test]
 fn no_color_long_session_chips_stay_in_bracket_form() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.workspace.chars().count() == 94)
@@ -552,6 +552,9 @@ fn no_color_long_session_chips_stay_in_bracket_form() {
     assert!(chips.contains(&format!("[Nov {} UTC]", s.day)), "{chips:?}");
     assert!(chips.contains('…'), "{chips:?}");
     assert!(chips.contains(&format!("[{}]", s.agent)), "{chips:?}");
-    assert!(chips.contains(&format!("[{}]", cost_label(s))), "{chips:?}");
+    assert!(
+        chips.contains(&format!("[{}]", cost_label(s, false))),
+        "{chips:?}"
+    );
     assert_selection_reversed(&buffer);
 }

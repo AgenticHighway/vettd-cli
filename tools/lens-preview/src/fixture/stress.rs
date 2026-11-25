@@ -66,7 +66,12 @@ pub fn stress_sessions() -> Vec<Session> {
     for day in 12..=18 {
         let n = 272 + rng.below(28);
         for _ in 0..n {
-            sessions.push(session(&mut rng, day));
+            // Each stress session is its own session: none spans days.
+            let group = sessions.len();
+            sessions.push(Session {
+                group,
+                ..session(&mut rng, day)
+            });
         }
     }
     sessions
@@ -98,6 +103,9 @@ fn session(rng: &mut Rng, day: u32) -> Session {
         incomplete,
         requests,
         observed,
+        group: 0,
+        used: Vec::new(),
+        sources: Vec::new(),
     }
 }
 
@@ -119,6 +127,7 @@ fn request(rng: &mut Rng, main: bool) -> Request {
         model,
         tokens,
         milli_usd_per_ktok,
+        exact: None,
     }
 }
 

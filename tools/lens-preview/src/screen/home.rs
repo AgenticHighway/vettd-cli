@@ -2,7 +2,6 @@
 //! findings worth opening. Only the findings take the selection.
 
 use super::*;
-use crate::fixture::SOURCE_SHARES;
 use ratatui::widgets::{Bar, BarChart, BarGroup, Cell, Padding, Row as TRow, Table};
 
 /// One day on the chart. `value` is None when there was no input at all;
@@ -16,14 +15,15 @@ pub struct Day {
 
 /// Each day's total in the current unit, and the median complete day.
 /// `None` means no day is complete, so there is no normal to compare with.
-pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, Option<u32>) {
-    let days: Vec<Day> = (12..=18)
-        .map(|day| {
+pub fn daily(all: &Data, count: bool) -> (Vec<Day>, Option<u32>) {
+    let days: Vec<Day> = all
+        .days
+        .iter()
+        .map(|&day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
             Day {
                 day,
-                value: (!sessions.is_empty())
-                    .then(|| sessions.iter().map(|s| measure(s, count)).sum()),
+                value: (!sessions.is_empty()).then(|| total(sessions.iter().copied(), count)),
                 partial: sessions.iter().any(|s| !comparable(s, count)),
             }
         })
@@ -108,7 +108,7 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let with_data = || days.iter().filter(|d| d.value.is_some());
     let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
     let gap = 1u16;
-    let bar_width = (chart.width.saturating_sub(2) / 7)
+    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
         .saturating_sub(gap)
         .clamp(3, 9);
     // A caption wider than its bar is cut, dropping digits. Fall back to
@@ -127,20 +127,23 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
             // Partial days show "≥": the total is a floor, not the day's cost.
             // When every day is partial the title says so once instead.
             let floor = if d.partial && !all_partial { "≥" } else { "" };
+            // The day of the month: the chart's seven bars are consecutive.
+            let label_day = day_label(d.day);
+            let dom = label_day.rsplit(' ').next().unwrap_or_default();
             let caption = match d.value {
-                None => format!("{} ·", d.day),
+                None => format!("{dom} ·"),
                 Some(v) if wide => {
-                    let full = format!("{} {floor}{}", d.day, label(v));
-                    let whole = format!("{} {floor}${}", d.day, v / 100);
+                    let full = format!("{dom} {floor}{}", label(v));
+                    let whole = format!("{dom} {floor}${}", v / 100);
                     if fits(&full) {
                         full
                     } else if !cx.count && fits(&whole) {
                         whole
                     } else {
-                        format!("{}{floor}", d.day)
+                        format!("{dom}{floor}")
                     }
                 }
-                Some(_) => format!("{}{floor}", d.day),
+                Some(_) => format!("{dom}{floor}"),
             };
             Bar::default()
                 .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
@@ -268,18 +271,26 @@ fn chart_title(
 fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
     let theme = cx.theme;
     let total = total_tokens(cx.all);
-    let bar_cells = usize::from(sources.width.saturating_sub(36)).clamp(4, 14);
-    let table_rows: Vec<TRow> = SOURCE_SHARES
-        .iter()
-        .map(|&(name, bp)| {
+    // Local source names are longer ("Instructions and files").
+    let name_width: u16 = if cx.all.local() { 22 } else { 19 };
+    let bar_cells = usize::from(sources.width.saturating_sub(17 + name_width)).clamp(4, 14);
+    // Local data has more sources than the table has rows: the largest
+    // six are shown, and Token detail and the export hold the rest.
+    let mut shares: Vec<_> = cx.all.token_sources.iter().collect();
+    if cx.all.local() {
+        shares.sort_by_key(|s| std::cmp::Reverse(s.basis_points));
+        shares.truncate(6);
+    }
+    let table_rows: Vec<TRow> = shares
+        .into_iter()
+        .map(|share| {
+            let (name, bp) = (share.name, share.basis_points);
             let filled = (bp as usize * bar_cells).div_ceil(10_000);
             let (amount, share) = if bp == 0 {
                 ("0".to_string(), "—".to_string())
             } else {
-                (
-                    compact(total / 10_000 * u64::from(bp)),
-                    format!("{}%", bp / 100),
-                )
+                let tokens = share.tokens.unwrap_or(total / 10_000 * u64::from(bp));
+                (compact(tokens), format!("{}%", bp / 100))
             };
             TRow::new(vec![
                 Cell::from(name),
@@ -291,7 +302,7 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
         })
         .collect();
     let widths = [
-        Constraint::Length(19),
+        Constraint::Length(name_width),
         Constraint::Length(6),
         Constraint::Length(5),
         Constraint::Fill(1),
@@ -300,7 +311,14 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
         Table::new(table_rows, widths)
             .header(TRow::new(["SOURCE", "TOKENS", "SHARE", ""]).style(theme.fg(MUTED)))
             .column_spacing(1)
-            .block(panel_block("WHERE TOKENS WENT", theme)),
+            .block(panel_block(
+                if cx.all.local() {
+                    "WHERE TOKENS WENT (ESTIMATED)"
+                } else {
+                    "WHERE TOKENS WENT"
+                },
+                theme,
+            )),
         sources,
     );
 }
