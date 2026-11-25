@@ -1039,7 +1039,7 @@ fn pace_uses_unrounded_relay_readings() {
 // A window that has reset has no current reading, so its row opens
 // nothing.
 #[test]
-fn reset_window_row_opens_nothing() {
+fn reset_relay_window_row_opens_nothing() {
     let file = relay_file(
         "expired",
         &[(
