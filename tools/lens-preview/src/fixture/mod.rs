@@ -1,6 +1,6 @@
 use serde::Serialize;
+use std::borrow::Cow;
 
-pub const PERIOD: &str = "Nov 12-18, 2026 UTC";
 pub const SNAPSHOT: &str = "Snapshot Nov 18 09:00 UTC";
 pub const PARTS: [&str; 4] = ["Fresh input", "Cache read", "Cache write", "Output"];
 pub const WORKSPACES: [&str; 2] = ["api", "web"];
@@ -206,16 +206,21 @@ pub const NOW: i32 = 11 * 60 + 45;
 /// to its session logs (`rate_limits.primary` / `secondary`); Claude sends
 /// them only to the statusline (`rate_limits.five_hour` / `seven_day`), so
 /// they reach Lens through the opt-in relay.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Window {
     pub agent: &'static str,
     pub name: &'static str,
     pub source: &'static str,
     pub minutes: u32,
-    /// Window start, in minutes from Nov 18 00:00.
-    pub start: i32,
+    /// Window start, in minutes from "today" 00:00 (Nov 18 on the
+    /// fixture). None when no reading has arrived to place it.
+    pub start: Option<i32>,
     /// (minutes since start, used percent) as each reading arrived.
-    pub readings: &'static [(u32, u32)],
+    pub readings: Cow<'static, [(u32, u32)]>,
+    /// Local data: the same readings unrounded, as (minutes since start,
+    /// running-maximum share). Pace uses these when present.
+    #[serde(skip)]
+    pub precise: Vec<(f64, f64)>,
 }
 
 pub const WINDOWS: [Window; 4] = [
@@ -224,16 +229,18 @@ pub const WINDOWS: [Window; 4] = [
         name: "5-hour",
         source: "relay",
         minutes: 300,
-        start: 9 * 60,
-        readings: &[(30, 9), (90, 31), (165, 62)],
+        start: Some(9 * 60),
+        readings: Cow::Borrowed(&[(30, 9), (90, 31), (165, 62)]),
+        precise: Vec::new(),
     },
     Window {
         agent: "Claude",
         name: "weekly",
         source: "relay",
         minutes: 7 * 1440,
-        start: -2 * 1440 + 9 * 60,
-        readings: &[(1440, 25), (3045, 31)],
+        start: Some(-2 * 1440 + 9 * 60),
+        readings: Cow::Borrowed(&[(1440, 25), (3045, 31)]),
+        precise: Vec::new(),
     },
     // One reading so far: too few for a pace.
     Window {
@@ -241,16 +248,18 @@ pub const WINDOWS: [Window; 4] = [
         name: "5-hour",
         source: "logs",
         minutes: 300,
-        start: 10 * 60,
-        readings: &[(105, 12)],
+        start: Some(10 * 60),
+        readings: Cow::Borrowed(&[(105, 12)]),
+        precise: Vec::new(),
     },
     Window {
         agent: "Codex",
         name: "weekly",
         source: "logs",
         minutes: 7 * 1440,
-        start: -3 * 1440 + 22 * 60 + 10,
-        readings: &[(1000, 33), (3695, 44)],
+        start: Some(-3 * 1440 + 22 * 60 + 10),
+        readings: Cow::Borrowed(&[(1000, 33), (3695, 44)]),
+        precise: Vec::new(),
     },
 ];
 

@@ -5,6 +5,7 @@
 //! the person back to where they were.
 
 use super::*;
+use crate::data::Data;
 use ratatui::{
     backend::TestBackend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -13,17 +14,25 @@ use ratatui::{
 
 struct User {
     app: App,
-    all: Vec<Session>,
+    all: Data,
     size: (u16, u16),
     mono: bool,
     quit: bool,
 }
 
 impl User {
+    /// A person running `--source local` on the hand-written test logs.
+    fn local(size: (u16, u16)) -> Self {
+        Self {
+            all: crate::local::test_data(),
+            ..Self::at(size)
+        }
+    }
+
     fn at(size: (u16, u16)) -> Self {
         Self {
             app: App::new(),
-            all: fixture::sessions(),
+            all: Data::fixture(),
             size,
             mono: false,
             quit: false,
@@ -355,4 +364,5 @@ fn daily_view_answers_instead_of_labelling() {
 // Rows without an action must still be reachable. In a 38x10 terminal only
 // a few rows fit, so arrow and page keys scroll once there is no selectable
 // row to move to.
+mod local;
 mod scrolling;

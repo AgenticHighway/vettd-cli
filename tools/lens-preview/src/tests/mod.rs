@@ -2,9 +2,10 @@
 
 use super::components::{apply, resolve, Resolution};
 use super::*;
+use crate::data::Data;
 
 fn rows(view: View, rt: &Runtime) -> Vec<Row> {
-    content(&Page::new(view), &fixture::sessions(), false, 80, rt).2
+    content(&Page::new(view), &Data::fixture(), false, 80, rt).2
 }
 
 fn texts(view: View, rt: &Runtime) -> Vec<String> {
@@ -17,7 +18,7 @@ fn opens_placement(rows: &[Row], pid: usize) -> bool {
 }
 
 fn find_use(day: u32, ws: &str, component: usize) -> (usize, usize) {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let sid = all
         .iter()
         .position(|s| s.day == day && s.workspace == ws)
@@ -32,7 +33,7 @@ fn find_use(day: u32, ws: &str, component: usize) -> (usize, usize) {
 
 #[test]
 fn spike_reconciles_and_subagent_is_counted_once() {
-    let sessions = fixture::sessions();
+    let sessions = Data::fixture();
     let day: Vec<_> = sessions.iter().filter(|s| s.day == 16).collect();
     assert_eq!(day.len(), 2);
     assert_eq!(day.iter().map(|s| s.cents()).sum::<u32>(), 852);
@@ -41,7 +42,7 @@ fn spike_reconciles_and_subagent_is_counted_once() {
 
 #[test]
 fn unpriced_session_keeps_tokens_without_zero_cost_bars() {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let i = all.iter().position(|s| s.incomplete).unwrap();
     let rt = Runtime::default();
     let (_, scope, rows) = content(&Page::new(View::Session(i)), &all, false, 80, &rt);
@@ -133,7 +134,7 @@ fn change_preview_predicts_fallback_or_states_unknown() {
 
 #[test]
 fn session_scope_stays_on_its_day_and_workspace_until_widened() {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let rt = Runtime::default();
     let (sid, _) = find_use(16, "api", 0);
     let day = View::Component(0, Scope::of(&all[sid]));
@@ -165,7 +166,7 @@ fn inventory_state_fits_row_and_surfaces_unknown() {
 fn empty_inventory_filter_reports_zero_results() {
     let mut page = Page::new(View::Inventory);
     page.filters = [4, 0, 2, 0];
-    let (_, scope, rows) = content(&page, &fixture::sessions(), false, 80, &Runtime::default());
+    let (_, scope, rows) = content(&page, &Data::fixture(), false, 80, &Runtime::default());
     assert!(rows.is_empty());
     assert!(scope.starts_with("0 of 10 |"));
 }

@@ -1,11 +1,13 @@
 //! Render tests: what each screen shows at real terminal sizes.
 
 use super::*;
+use crate::data::Data;
 use crate::fixture::Window;
 use ratatui::{backend::TestBackend, buffer::Buffer, style::Modifier};
+use std::borrow::Cow;
 
 fn render(stack: &[Page], (w, h): (u16, u16), mono: bool) -> Buffer {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let rt = Runtime::default();
     let page = stack.last().unwrap();
     let (title, scope, rows) = content(page, &all, false, screen::list_width(w), &rt);
@@ -142,7 +144,7 @@ fn too_small_terminal_says_what_it_needs() {
 // every size Lens accepts, not just at 80x24.
 #[test]
 fn selected_home_finding_is_drawn_at_every_size() {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let rows = content(&Page::new(View::Home), &all, false, 80, &Runtime::default()).2;
     for size in [(80, 24), (60, 24), (80, 12), (50, 16), (38, 10)] {
         for (i, row) in rows.iter().enumerate() {
@@ -163,7 +165,7 @@ fn selected_home_finding_is_drawn_at_every_size() {
 // must not pull down what "normal" means.
 #[test]
 fn partial_day_reads_as_floor_and_stays_out_of_normal() {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let (days, normal) = screen::daily(&all, false);
     let nov18 = days.iter().find(|d| d.day == 18).unwrap();
     assert!(nov18.partial);
@@ -189,22 +191,23 @@ fn answer_wraps_instead_of_cutting_its_numbers() {
     }
 }
 
-fn window(agent: &str, name: &str) -> &'static Window {
+fn window(agent: &str, name: &str) -> Window {
     fixture::WINDOWS
         .iter()
         .find(|w| w.agent == agent && w.name == name)
         .unwrap()
+        .clone()
 }
 
 // One reading has no pace. Showing a projection from it would invent a
 // trend, so the window shows "—" instead of a number.
 #[test]
 fn pace_needs_two_readings() {
-    let codex = window("Codex", "5-hour");
+    let codex = &window("Codex", "5-hour");
     assert_eq!(codex.readings.len(), 1);
     assert_eq!(pace(codex), None);
-    assert_eq!(full_by(codex), None);
-    let row = headroom()
+    assert_eq!(full_by(codex, 18), None);
+    let row = headroom(&Data::fixture())
         .2
         .into_iter()
         .find(|r| r.text.starts_with("Codex · 5-hour"))
@@ -217,20 +220,20 @@ fn pace_needs_two_readings() {
 // 97 minutes after the last reading, before the 14:00 reset.
 #[test]
 fn pace_extrapolates_to_reset_and_names_when_it_fills() {
-    let claude = window("Claude", "5-hour");
+    let claude = &window("Claude", "5-hour");
     assert_eq!(pace(claude), Some(115));
-    assert_eq!(full_by(claude).as_deref(), Some("13:22"));
+    assert_eq!(full_by(claude, 18).as_deref(), Some("13:22"));
     // A window on pace to stay under its limit has no fill time.
-    let weekly = window("Claude", "weekly");
+    let weekly = &window("Claude", "weekly");
     assert!(pace(weekly).unwrap() < 100);
-    assert_eq!(full_by(weekly), None);
+    assert_eq!(full_by(weekly, 18), None);
 }
 
 // The answer names the window that will stop work first, and every row
 // says where its number came from, because the two sources differ.
 #[test]
 fn headroom_answers_with_the_filling_window_and_cites_sources() {
-    let (answer, _, rows) = headroom();
+    let (answer, _, rows) = headroom(&Data::fixture());
     assert_eq!(
         answer,
         "Claude 5-hour window is 62% used. At this pace it's full by 13:22."
@@ -253,7 +256,7 @@ fn headroom_answers_with_the_filling_window_and_cites_sources() {
 fn home_leads_with_the_filling_window() {
     let rows = content(
         &Page::new(View::Home),
-        &fixture::sessions(),
+        &Data::fixture(),
         false,
         80,
         &Runtime::default(),
@@ -286,18 +289,19 @@ fn headroom_rows_fit_80_columns() {
 // largest projection.
 #[test]
 fn soonest_window_wins_over_the_largest_projection() {
-    let claude = window("Claude", "5-hour");
+    let claude = &window("Claude", "5-hour");
     let fast_weekly = Window {
         agent: "Codex",
         name: "weekly",
         source: "logs",
         minutes: 7 * 1440,
-        start: -3 * 1440 + 22 * 60 + 10,
-        readings: &[(1000, 20), (3695, 60)],
+        start: Some(-3 * 1440 + 22 * 60 + 10),
+        readings: Cow::Borrowed(&[(1000, 20), (3695, 60)]),
+        precise: Vec::new(),
     };
     assert!(pace(&fast_weekly) > pace(claude));
-    let windows = [fast_weekly, Window { ..*claude }];
-    let (w, used) = soonest(&windows).unwrap();
+    let windows = [fast_weekly, claude.clone()];
+    let (w, used) = soonest(&windows, fixture::NOW).unwrap();
     assert_eq!((w.agent, w.name, used), ("Claude", "5-hour", 62));
 }
 
@@ -305,7 +309,7 @@ fn soonest_window_wins_over_the_largest_projection() {
 // export, or scripts and the TUI can disagree.
 #[test]
 fn export_carries_home_and_headroom_data() {
-    let json = export(&fixture::sessions());
+    let json = export(&Data::fixture());
     let bp: u64 = json["token_sources"]
         .as_array()
         .unwrap()
@@ -320,6 +324,15 @@ fn export_carries_home_and_headroom_data() {
         4
     );
     assert_eq!(json["now_minutes_from_nov_18"], fixture::NOW);
+    assert_eq!(json["source"], "fixture");
+    for local_only in [
+        "now",
+        "synthetic_sections",
+        "estimated_sections",
+        "limit_hits_by_agent",
+    ] {
+        assert!(json.get(local_only).is_none(), "{local_only}");
+    }
 }
 
 // A wrapped answer keeps its indent under the marker instead of starting
