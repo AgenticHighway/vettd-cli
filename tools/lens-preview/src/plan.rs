@@ -47,7 +47,7 @@ pub(crate) fn clock(today: u32, minutes: i32) -> String {
 /// that has passed would read as a forecast.
 fn full_until(w: &Window, data: &Data) -> Option<String> {
     let end = ends(w)?;
-    (full_at(w)? <= data.now).then(|| clock(data.today, end))
+    (used(w, data.now)? >= 100).then(|| clock(data.today, end))
 }
 
 /// When the window resets, in minutes from "today" 00:00.
@@ -74,13 +74,24 @@ pub(crate) fn used(w: &Window, now: i32) -> Option<u32> {
 /// window at 155% that fills in two days matters less than a 5-hour window
 /// at 115% that fills this afternoon. Windows without a current reading
 /// are left out.
+///
+/// A window whose last reading is 100% is full now, trend or not. A
+/// forecast whose time has passed without a reading confirming it says
+/// nothing about now, so it doesn't count.
 pub(crate) fn soonest(windows: &[Window], now: i32) -> Option<(&Window, u32)> {
     windows
         .iter()
-        .filter(|w| !has_reset(w, now))
-        .filter_map(|w| full_at(w).map(|at| (w, at)))
-        .min_by_key(|&(_, at)| at)
-        .map(|(w, _)| (w, used(w, now).unwrap_or(0)))
+        .filter_map(|w| {
+            let share = used(w, now)?;
+            let at = if share >= 100 {
+                now
+            } else {
+                full_at(w).filter(|&at| at > now)?
+            };
+            Some((w, at, share))
+        })
+        .min_by_key(|&(_, at, _)| at)
+        .map(|(w, _, share)| (w, share))
 }
 
 pub(crate) fn filling(data: &Data) -> Option<(&Window, u32)> {
@@ -291,7 +302,11 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
 /// It describes the week; judgments live on the screens the findings open.
 pub(crate) fn home(all: &Data, count: bool) -> Content {
     let requests: usize = all.iter().map(|s| s.requests.len()).sum();
-    let cents: u32 = all.iter().map(Session::cents).sum();
+    let cents = if any_priced(all.iter()) {
+        usd(total(all.iter(), false))
+    } else {
+        "unpriced".into()
+    };
     let mut rows = findings(all, count);
     rows.push(link(
         "Every day and its sessions",
@@ -305,7 +320,7 @@ pub(crate) fn home(all: &Data, count: bool) -> Content {
             "{} sessions · {requests} requests · {} tokens · {} {}",
             all.session_count(),
             screen::compact(screen::total_tokens(all)),
-            usd(cents),
+            cents,
             all.dollars()
         )
     };

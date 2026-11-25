@@ -1,6 +1,6 @@
 use super::{
-    comparable, content, cost_label, measure, priced, units, usd, Page, Row, Runtime, Session,
-    View, COMPONENTS, PARTS,
+    comparable, content, cost_label, measure, priced, total, units, usd, Page, Row, Runtime,
+    Session, View, COMPONENTS, PARTS,
 };
 use crate::data::{day_label, Data, Source};
 use ratatui::{

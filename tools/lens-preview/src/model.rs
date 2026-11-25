@@ -177,6 +177,27 @@ pub(crate) fn measure(s: &Session, count: bool) -> u32 {
     }
 }
 
+/// Several sessions' requests or cents. Cents are summed unrounded and
+/// rounded once, so many sub-cent sessions don't add up to $0.00.
+pub(crate) fn total<'a>(sessions: impl IntoIterator<Item = &'a Session>, count: bool) -> u32 {
+    let sessions: Vec<&Session> = sessions.into_iter().collect();
+    if count {
+        sessions.iter().map(|s| s.requests.len() as u32).sum()
+    } else {
+        sessions
+            .iter()
+            .map(|s| s.cents_exact())
+            .sum::<f64>()
+            .round() as u32
+    }
+}
+
+/// Whether any of these sessions has a request with a rate. A dollar total
+/// with none is unknown, not $0.00.
+pub(crate) fn any_priced<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> bool {
+    sessions.into_iter().any(|s| priced(s) > 0)
+}
+
 pub(crate) fn units(value: u32, count: bool) -> String {
     if count {
         format!("{value} req")

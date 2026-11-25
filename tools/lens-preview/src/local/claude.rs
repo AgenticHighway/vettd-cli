@@ -9,8 +9,8 @@
 //! the response streams.
 
 use super::{
-    intern, jsonl_in, read_lines, split, subdirs, text_chars, ts_of, u64_at, workspace_of, Found,
-    History, Req, UseEvent,
+    intern, jsonl_in, read_lines, split, subdirs, text_chars, ts_of, u64_at, usage_with,
+    workspace_of, Found, History, Req, UseEvent,
 };
 use crate::data::BUCKETS;
 use crate::pricing::{self, Usage};
@@ -94,6 +94,11 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
         .chain(subagents.into_iter().map(|(f, id)| (f, id, true)))
         .filter(|(f, _, _)| history.opens(f))
         .collect();
+    let mut files = files;
+    files.sort_by_cached_key(|(f, _, subagent)| {
+        let created = std::fs::metadata(f).and_then(|m| m.created()).ok();
+        (*subagent, created, f.clone())
+    });
 
     let mut best: HashMap<String, Best> = HashMap::new();
     let mut events: Vec<Vec<Event>> = Vec::new();
@@ -412,11 +417,14 @@ fn assistant(
         return None;
     }
     let (Some(key), Some(ts)) = (key, ts) else {
-        found.meta(AGENT, session).partial = true;
+        found.meta(AGENT, session).missing_at(ts);
         return None;
     };
-    let Some(usage) = line.pointer("/message/usage") else {
-        found.meta(AGENT, session).partial = true;
+    let Some(usage) = usage_with(
+        line.pointer("/message/usage"),
+        &["input_tokens", "output_tokens"],
+    ) else {
+        found.meta(AGENT, session).missing_at(Some(ts));
         return None;
     };
     let output = u64_at(usage, "output_tokens");

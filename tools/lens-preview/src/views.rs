@@ -16,7 +16,16 @@ pub(crate) fn content(page: &Page, all: &Data, count: bool, width: u16, rt: &Run
         | View::Observation(..)
         | View::Signal(..)
         | View::Change(..)
-        | View::Apply(..) => synthetic(components::rows(page, all, rt), all),
+        | View::Apply(..) => {
+            // Their copies and observations are fixture data, so on local
+            // data they read the fixture's sessions, not real ones.
+            if all.local() {
+                let fixture = crate::fixture::sessions();
+                synthetic(components::rows(page, &fixture, rt), all)
+            } else {
+                components::rows(page, all, rt)
+            }
+        }
         View::Home => home(all, count),
         View::Headroom => headroom(all),
         View::Help => help(),
@@ -68,19 +77,26 @@ fn week(all: &Data, count: bool, bar_width: usize) -> Content {
         .iter()
         .map(|&day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
-            let value = sessions.iter().map(|s| measure(s, count)).sum();
-            let partial = sessions.iter().any(|s| s.incomplete);
-            (day, value, sessions.len(), partial)
+            let value = total(sessions.iter().copied(), count);
+            // A day with unpriced requests is a floor in dollars.
+            let partial = sessions.iter().any(|s| !comparable(s, count));
+            let unpriced = !count && !sessions.is_empty() && !any_priced(sessions.iter().copied());
+            (day, value, sessions.len(), partial, unpriced)
         })
         .collect();
     let peak = days.iter().map(|day| day.1).max().unwrap_or(1);
     let with_input = days.iter().filter(|d| d.2 > 0).count();
-    let total: u32 = days.iter().map(|d| d.1).sum();
+    let unknown = !count && with_input > 0 && days.iter().all(|d| d.2 == 0 || d.4);
+    let sum: u32 = days.iter().map(|d| d.1).sum();
     // An answer, not a label: how many days had input and what they add to.
     let answer = format!(
         "{with_input} of {} days had input · {}{}",
         days.len(),
-        units(total, count),
+        if unknown {
+            "unpriced".into()
+        } else {
+            units(sum, count)
+        },
         if count {
             String::new()
         } else {
@@ -89,9 +105,11 @@ fn week(all: &Data, count: bool, bar_width: usize) -> Content {
     );
     let rows = days
         .into_iter()
-        .map(|(day, value, n, partial)| {
+        .map(|(day, value, n, partial, unpriced)| {
             let label = if n == 0 {
                 "No input".into()
+            } else if unpriced {
+                "unpriced".into()
             } else if count {
                 value.to_string()
             } else {
@@ -151,7 +169,7 @@ fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
         .filter(|(_, s)| s.day == day)
         .collect();
     sessions.sort_by_key(|(_, s)| std::cmp::Reverse(measure(s, count)));
-    let total: u32 = sessions.iter().map(|(_, s)| measure(s, count)).sum();
+    let total: u32 = total(sessions.iter().map(|(_, s)| *s), count);
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
     let comparison = if sessions.is_empty()
         || prior.is_empty()
@@ -160,7 +178,7 @@ fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
     {
         "No comparable previous day".into()
     } else {
-        let previous = prior.iter().map(|s| measure(s, count)).sum::<u32>();
+        let previous = crate::total(prior.iter().copied(), count);
         format!(
             "Prior day {} | {}{} change",
             units(previous, count),

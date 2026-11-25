@@ -22,8 +22,7 @@ pub fn daily(all: &Data, count: bool) -> (Vec<Day>, u32) {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
             Day {
                 day,
-                value: (!sessions.is_empty())
-                    .then(|| sessions.iter().map(|s| measure(s, count)).sum()),
+                value: (!sessions.is_empty()).then(|| total(sessions.iter().copied(), count)),
                 partial: sessions.iter().any(|s| !comparable(s, count)),
             }
         })

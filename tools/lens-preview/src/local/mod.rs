@@ -39,6 +39,9 @@ pub(crate) struct Meta {
     pub(crate) workspace: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) partial: bool,
+    /// The latest request that had no usable usage: the session is shown
+    /// on its day, incomplete, even with no counted request.
+    pub(crate) missing: Option<i64>,
 }
 
 pub(crate) struct UseEvent {
@@ -187,6 +190,21 @@ pub(crate) fn text_chars(v: &Value) -> u64 {
 
 pub(crate) fn u64_at(v: &Value, key: &str) -> u64 {
     v.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// A usage object with every named count present as a number. A null or
+/// partial usage is missing, not zero.
+pub(crate) fn usage_with<'a>(usage: Option<&'a Value>, keys: &[&str]) -> Option<&'a Value> {
+    usage.filter(|u| keys.iter().all(|k| u.get(*k).is_some_and(Value::is_u64)))
+}
+
+impl Meta {
+    pub(crate) fn missing_at(&mut self, ts: Option<i64>) {
+        self.partial = true;
+        if let Some(ts) = ts {
+            self.missing = Some(self.missing.map_or(ts, |m| m.max(ts)));
+        }
+    }
 }
 
 /// A file's lines, and whether any failed to parse (a cut-off last line
@@ -406,6 +424,14 @@ fn assemble(
         let e = start.entry((r.agent, &r.session)).or_insert(r.ts);
         *e = (*e).min(r.ts);
     }
+    let missing: Vec<((&str, &str), i64)> = metas
+        .iter()
+        .filter_map(|((agent, session), m)| Some(((*agent, session.as_str()), m.missing?)))
+        .filter(|&(_, ts)| in_period(ts))
+        .collect();
+    for &(key, ts) in &missing {
+        start.entry(key).or_insert(ts);
+    }
     // Sessions sorted by start, so their order (and group numbers) don't
     // depend on file order.
     let mut keys: Vec<(&str, &str)> = start.keys().copied().collect();
@@ -414,31 +440,41 @@ fn assemble(
         keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
     // One slice per session and UTC day.
     let mut slices: BTreeMap<(i64, usize), Session> = BTreeMap::new();
+    let slice = |agent: &'static str, session: &str, day: i64| {
+        let meta = metas.get(&(agent, session.to_string()));
+        Session {
+            day: day as u32,
+            name: intern(
+                &meta
+                    .and_then(|m| m.title.clone())
+                    .unwrap_or_else(|| hhmm(start[&(agent, session)])),
+            ),
+            workspace: intern(
+                meta.and_then(|m| m.workspace.as_deref())
+                    .unwrap_or("unknown"),
+            ),
+            agent,
+            incomplete: meta.is_some_and(|m| m.partial),
+            requests: Vec::new(),
+            observed: Vec::new(),
+            group: group[&(agent, session)],
+            used: Vec::new(),
+            sources: vec![0; BUCKETS.len()],
+        }
+    };
+    for &((agent, session), ts) in &missing {
+        let day = ts.div_euclid(DAY);
+        let agent = if agent == "Claude" { "Claude" } else { "Codex" };
+        slices
+            .entry((day, group[&(agent, session)]))
+            .or_insert_with(|| slice(agent, session, day));
+    }
     for r in requests.iter().filter(|r| in_period(r.ts)) {
         let g = group[&(r.agent, r.session.as_str())];
         let day = r.ts.div_euclid(DAY);
-        let s = slices.entry((day, g)).or_insert_with(|| {
-            let meta = metas.get(&(r.agent, r.session.clone()));
-            Session {
-                day: day as u32,
-                name: intern(
-                    &meta
-                        .and_then(|m| m.title.clone())
-                        .unwrap_or_else(|| hhmm(start[&(r.agent, r.session.as_str())])),
-                ),
-                workspace: intern(
-                    meta.and_then(|m| m.workspace.as_deref())
-                        .unwrap_or("unknown"),
-                ),
-                agent: r.agent,
-                incomplete: meta.is_some_and(|m| m.partial),
-                requests: Vec::new(),
-                observed: Vec::new(),
-                group: g,
-                used: Vec::new(),
-                sources: vec![0; BUCKETS.len()],
-            }
-        });
+        let s = slices
+            .entry((day, g))
+            .or_insert_with(|| slice(r.agent, &r.session, day));
         s.requests.push(Request {
             worker: r.worker,
             model: r.model,
@@ -558,16 +594,21 @@ pub(crate) fn windows_for(
                 .filter(|r| (start..=end).contains(&r.ts))
                 .collect();
             current.sort_by_key(|r| r.ts);
+            // One minute grid: the start rounds up, so a reset is never
+            // shown early, and each reading keeps its own UTC minute and day.
+            let start_minute = (start - midnight).div_euclid(60)
+                + i64::from((start - midnight).rem_euclid(60) > 0);
             let mut high = 0.0f64;
             let points = current
                 .iter()
                 .map(|r| {
                     high = high.max(r.percent);
-                    (((r.ts - start) / 60) as u32, high.round() as u32)
+                    let minute = (r.ts - midnight).div_euclid(60) - start_minute;
+                    (minute.max(0) as u32, high.round() as u32)
                 })
                 .collect();
             Window {
-                start: Some((start - midnight).div_euclid(60) as i32),
+                start: Some(start_minute as i32),
                 readings: Cow::Owned(points),
                 ..empty
             }

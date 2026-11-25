@@ -76,12 +76,12 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn cents_exact(&self) -> f64 {
+        self.requests.iter().flat_map(Request::cents_exact).sum()
+    }
+
     pub fn cents(&self) -> u32 {
-        self.requests
-            .iter()
-            .flat_map(Request::cents_exact)
-            .sum::<f64>()
-            .round() as u32
+        self.cents_exact().round() as u32
     }
 }
 
