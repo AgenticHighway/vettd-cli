@@ -4,8 +4,10 @@ mod data;
 #[cfg(test)]
 mod e2e;
 mod fixture;
+mod local;
 mod model;
 mod plan;
+mod pricing;
 mod screen;
 #[cfg(test)]
 mod tests;
@@ -138,10 +140,14 @@ fn main() -> io::Result<()> {
     };
     let data = match args.source {
         Source::Fixture => Data::fixture(),
-        Source::Local => Data::fixture(),
+        Source::Local => local::load(),
     };
     if args.json {
-        println!("{}", export(&data));
+        let json = match data.source {
+            Source::Fixture => export(&data),
+            Source::Local => local::export(&data),
+        };
+        println!("{json}");
         return Ok(());
     }
     run(&data)

@@ -43,6 +43,13 @@ pub(crate) fn clock(today: u32, minutes: i32) -> String {
     }
 }
 
+/// A window that already filled is full until it resets: "full by" a time
+/// that has passed would read as a forecast.
+fn full_until(w: &Window, data: &Data) -> Option<String> {
+    let end = ends(w)?;
+    (full_at(w)? <= data.now).then(|| clock(data.today, end))
+}
+
 /// When the window resets, in minutes from "today" 00:00.
 fn ends(w: &Window) -> Option<i32> {
     Some(w.start? + w.minutes as i32)
@@ -164,12 +171,18 @@ fn history_rows(data: &Data) -> Vec<Row> {
 /// what other plans allow.
 pub(crate) fn headroom(data: &Data) -> Content {
     let answer = match filling(data) {
-        Some((w, used)) => format!(
-            "{} {} window is {used}% used. At this pace it's full by {}.",
-            w.agent,
-            w.name,
-            full_by(w, data.today).unwrap()
-        ),
+        Some((w, used)) => match full_until(w, data) {
+            Some(until) => format!(
+                "{} {} window is {used}% used. It's full until {until}.",
+                w.agent, w.name
+            ),
+            None => format!(
+                "{} {} window is {used}% used. At this pace it's full by {}.",
+                w.agent,
+                w.name,
+                full_by(w, data.today).unwrap()
+            ),
+        },
         None => "No window is on pace to fill before it resets.".into(),
     };
     let mut rows: Vec<Row> = data
@@ -196,12 +209,15 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     if let Some((w, used)) = filling(all) {
         rows.push(link(
-            format!(
-                "{} {}: {used}%, full by {}",
-                w.agent,
-                w.name,
-                full_by(w, all.today).unwrap()
-            ),
+            match full_until(w, all) {
+                Some(until) => format!("{} {}: {used}%, full until {until}", w.agent, w.name),
+                None => format!(
+                    "{} {}: {used}%, full by {}",
+                    w.agent,
+                    w.name,
+                    full_by(w, all.today).unwrap()
+                ),
+            },
             View::Headroom,
             "See every plan window and its pace",
         ));

@@ -234,6 +234,12 @@ fn tokens(s: &Session, local: bool) -> Content {
             let tokens: u64 = requests.iter().map(|r| u64::from(r.tokens[i])).sum();
             line(format!("{part:<14} {tokens:>8} tokens"))
         }));
+        if local {
+            rows.push(line(match crate::pricing::lookup(model) {
+                Some(rate) => format!("Rates checked {} at {}", rate.checked, rate.source),
+                None => "No published rate: unpriced".into(),
+            }));
+        }
     }
     if local {
         rows.extend(source_rows(s));
