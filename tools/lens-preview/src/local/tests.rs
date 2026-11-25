@@ -676,6 +676,7 @@ fn elapsed_forecast_is_not_full_and_a_full_reading_is() {
     let mut data = load();
     let now = data.now;
     let mut w = window_of(&data, "Codex", "5-hour");
+    w.precise.clear();
     // 20% then 60% project 100% within the hour, long before now, but
     // the last reading is 60%.
     w.readings = Cow::Owned(vec![(10, 20), (30, 60)]);
@@ -811,4 +812,60 @@ fn window_minutes_never_reset_early_or_shift_days() {
         0,
         "the reading is on Nov 25"
     );
+}
+
+// Backported from the PR #339 review: pace and reset rows on Codex windows.
+
+fn codex_five_hour(points: &[(&str, f64)]) -> Window {
+    let midnight = parse_ts("2026-11-25T00:00:00Z").unwrap();
+    let resets_at = parse_ts("2026-11-25T14:00:00Z").unwrap();
+    let readings: Vec<Reading> = points
+        .iter()
+        .map(|&(ts, percent)| Reading {
+            ts: parse_ts(ts).unwrap(),
+            minutes: 300,
+            percent,
+            resets_at,
+        })
+        .collect();
+    codex::windows(&readings, midnight, &mut Vec::new()).remove(0)
+}
+
+// Two readings in one minute still have a trend, and a fractional rise
+// isn't rounded into a false fill.
+#[test]
+fn pace_uses_unrounded_readings() {
+    let w = codex_five_hour(&[
+        ("2026-11-25T10:00:05Z", 40.0),
+        ("2026-11-25T10:00:50Z", 40.4),
+    ]);
+    assert_eq!(w.readings[0].0, w.readings[1].0, "both in one minute");
+    // Rounded, 40% -> 40% looks flat; 0.4 points in 45 s is a steep trend.
+    assert!(crate::pace(&w).unwrap() > 100);
+    let w = codex_five_hour(&[("2026-11-25T10:00:00Z", 0.4), ("2026-11-25T11:00:00Z", 0.6)]);
+    // Rounded, 0% -> 1% in an hour would project 4%; it is 0.2 points an hour.
+    assert_eq!(crate::pace(&w), Some(1));
+}
+
+// A window that has reset has no current reading, so its row opens
+// nothing, even when the day of its last reading has sessions.
+#[test]
+fn reset_window_row_opens_nothing() {
+    let mut data = load();
+    let midnight = data.today as i64 * DAY;
+    let readings = [Reading {
+        ts: midnight + 60,
+        minutes: 300,
+        percent: 55.0,
+        resets_at: midnight + 3600,
+    }];
+    data.windows = codex::windows(&readings, midnight, &mut Vec::new());
+    assert!(data.days.contains(&data.today));
+    assert!(has_reset(&data.windows[0], data.now));
+    let rows = crate::headroom(&data).2;
+    let five = rows
+        .iter()
+        .find(|r| r.text.starts_with("Codex · 5-hour"))
+        .unwrap();
+    assert!(five.open.is_none(), "{}", five.text);
 }

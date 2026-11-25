@@ -191,18 +191,19 @@ fn answer_wraps_instead_of_cutting_its_numbers() {
     }
 }
 
-fn window(agent: &str, name: &str) -> &'static Window {
+fn window(agent: &str, name: &str) -> Window {
     fixture::WINDOWS
         .iter()
         .find(|w| w.agent == agent && w.name == name)
         .unwrap()
+        .clone()
 }
 
 // One reading has no pace. Showing a projection from it would invent a
 // trend, so the window shows "—" instead of a number.
 #[test]
 fn pace_needs_two_readings() {
-    let codex = window("Codex", "5-hour");
+    let codex = &window("Codex", "5-hour");
     assert_eq!(codex.readings.len(), 1);
     assert_eq!(pace(codex), None);
     assert_eq!(full_by(codex, 18), None);
@@ -219,11 +220,11 @@ fn pace_needs_two_readings() {
 // 97 minutes after the last reading, before the 14:00 reset.
 #[test]
 fn pace_extrapolates_to_reset_and_names_when_it_fills() {
-    let claude = window("Claude", "5-hour");
+    let claude = &window("Claude", "5-hour");
     assert_eq!(pace(claude), Some(115));
     assert_eq!(full_by(claude, 18).as_deref(), Some("13:22"));
     // A window on pace to stay under its limit has no fill time.
-    let weekly = window("Claude", "weekly");
+    let weekly = &window("Claude", "weekly");
     assert!(pace(weekly).unwrap() < 100);
     assert_eq!(full_by(weekly, 18), None);
 }
@@ -288,7 +289,7 @@ fn headroom_rows_fit_80_columns() {
 // largest projection.
 #[test]
 fn soonest_window_wins_over_the_largest_projection() {
-    let claude = window("Claude", "5-hour");
+    let claude = &window("Claude", "5-hour");
     let fast_weekly = Window {
         agent: "Codex",
         name: "weekly",
@@ -296,6 +297,7 @@ fn soonest_window_wins_over_the_largest_projection() {
         minutes: 7 * 1440,
         start: Some(-3 * 1440 + 22 * 60 + 10),
         readings: Cow::Borrowed(&[(1000, 20), (3695, 60)]),
+        precise: Vec::new(),
     };
     assert!(pace(&fast_weekly) > pace(claude));
     let windows = [fast_weekly, claude.clone()];

@@ -393,6 +393,7 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
                     minutes,
                     start: None,
                     readings: Cow::Owned(Vec::new()),
+                    precise: Vec::new(),
                 };
             };
             let start = end - i64::from(minutes) * 60;
@@ -404,14 +405,16 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
             let start_minute = (start - midnight).div_euclid(60)
                 + i64::from((start - midnight).rem_euclid(60) > 0);
             let mut high = 0.0f64;
-            let points = current
+            let grid = midnight + start_minute * 60;
+            let (points, precise): (Vec<_>, Vec<_>) = current
                 .iter()
                 .map(|r| {
                     high = high.max(r.percent);
                     let minute = (r.ts - midnight).div_euclid(60) - start_minute;
-                    (minute.max(0) as u32, high.round() as u32)
+                    let exact = ((r.ts - grid) as f64 / 60.0).max(0.0);
+                    ((minute.max(0) as u32, high.round() as u32), (exact, high))
                 })
-                .collect();
+                .unzip();
             let start_minute = start_minute as i32;
             Window {
                 agent: AGENT,
@@ -420,6 +423,7 @@ pub(super) fn windows(readings: &[Reading], midnight: i64, notes: &mut Vec<Strin
                 minutes,
                 start: Some(start_minute),
                 readings: Cow::Owned(points),
+                precise,
             }
         })
         .collect()

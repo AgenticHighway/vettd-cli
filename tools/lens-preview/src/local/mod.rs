@@ -524,6 +524,7 @@ fn relay_window(name: &'static str, minutes: u32) -> Window {
         minutes,
         start: None,
         readings: Cow::Owned(Vec::new()),
+        precise: Vec::new(),
     }
 }
 

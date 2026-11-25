@@ -8,23 +8,37 @@ use crate::*;
 /// last readings of this window. None with fewer than 2 readings, because
 /// one reading has no pace.
 pub(crate) fn pace(w: &Window) -> Option<u32> {
-    let (&(t0, p0), &(t1, p1)) = (w.readings.first()?, w.readings.last()?);
-    if w.readings.len() < 2 || t1 <= t0 {
+    let points = points(w);
+    let (&(t0, p0), &(t1, p1)) = (points.first()?, points.last()?);
+    if points.len() < 2 || t1 <= t0 {
         return None;
     }
-    let slope = f64::from(p1.saturating_sub(p0)) / f64::from(t1 - t0);
-    Some((f64::from(p1) + slope * f64::from(w.minutes.saturating_sub(t1))).round() as u32)
+    let slope = (p1 - p0).max(0.0) / (t1 - t0);
+    Some((p1 + slope * (f64::from(w.minutes) - t1).max(0.0)).round() as u32)
+}
+
+/// The readings to project from: unrounded on local data, the window's
+/// whole-minute readings otherwise.
+fn points(w: &Window) -> Vec<(f64, f64)> {
+    if w.precise.is_empty() {
+        w.readings
+            .iter()
+            .map(|&(t, p)| (f64::from(t), f64::from(p)))
+            .collect()
+    } else {
+        w.precise.clone()
+    }
 }
 
 /// When the window reaches 100% at its pace, in minutes from "today"
 /// 00:00, if that comes before reset.
 pub(crate) fn full_at(w: &Window) -> Option<i32> {
-    let (&(t0, p0), &(t1, p1)) = (w.readings.first()?, w.readings.last()?);
+    let points = points(w);
+    let (&(t0, p0), &(t1, p1)) = (points.first()?, points.last()?);
     if pace(w)? < 100 || p1 <= p0 {
         return None;
     }
-    let minutes =
-        f64::from(t1) + f64::from(100 - p1.min(100)) * f64::from(t1 - t0) / f64::from(p1 - p0);
+    let minutes = t1 + (100.0 - p1.min(100.0)) * (t1 - t0) / (p1 - p0);
     Some(w.start? + minutes.round() as i32)
 }
 
@@ -126,6 +140,7 @@ fn window_rows(w: &Window, data: &Data) -> Vec<Row> {
         .zip(w.readings.last())
         .map(|(start, r)| ((start + r.0 as i32).div_euclid(1440) + data.today as i32) as u32);
     let row = match latest {
+        _ if reset => line(text),
         Some(day) if w.minutes <= 300 && data.days.contains(&day) => {
             let action = if day == data.today {
                 "See today's sessions"
