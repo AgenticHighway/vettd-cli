@@ -1,7 +1,7 @@
 # Tasks
 
 Before applying: archive `add-lens-tui-dashboard` (see design.md,
-"Ordering") and settle the open questions in design.md. Every existing test
+"Ordering") and read the resolved questions in design.md. Every existing test
 must keep passing on `--source fixture` after each group.
 
 ## 1. Source option and model
@@ -18,18 +18,22 @@ must keep passing on `--source fixture` after each group.
 - [ ] 2.4 Codex windows from `token_count.rate_limits`, matched by `window_minutes`, current instance by time span (not exact `resets_at`), running-maximum readings, and the reset-since-last-reading state
 - [ ] 2.5 Limit hits over 28 days: Claude `five_hour` rejections on placeholder lines by `requestId` across all files, and Codex `usage_limit_exceeded` turns by `turn_id`
 - [ ] 2.6 Mark sessions partial on unparsable or truncated lines and missing usage, without stopping
-- [ ] 2.7 Print "Reading local logs…" on stderr while reading
+- [ ] 2.7 Read `~/.codex/archived_sessions/` too, counting each session once by `session_meta.payload.id`
+- [ ] 2.8 Session titles for the TUI: Claude's latest `custom-title` / `ai-title`, Codex's latest `session_index.jsonl` entry for the root thread, else the start time. Never exported
+- [ ] 2.9 Print "Reading local logs…" on stderr while reading
 
 ## 3. Pricing
 
 - [ ] 3.1 Add `src/pricing.rs` with dated Claude entries (prefix; fresh input, cache read, 5-minute and 1-hour cache write, output rates; date checked; source URL) and a longest-prefix lookup
-- [ ] 3.2 Leave requests unpriced (no rate, never zero) for unmatched models, a missing cache-write split, or non-standard `speed` / `service_tier`. Test that a session with only such requests shows "unpriced"
+- [ ] 3.2 Add Codex (OpenAI) entries at published API rates. `codex-auto` and other models with no published rate get none
+- [ ] 3.3 Leave requests unpriced (no rate, never zero) for unmatched models, a missing cache-write split, or non-standard `speed` / `service_tier`. Test that a session with only such requests shows "unpriced"
 
 ## 4. Screens on local data
 
 - [ ] 4.1 Top bar text per source (render test at 80×24 for both)
 - [ ] 4.2 "synthetic" scope chip on inventory, component, copy, observation, change and apply views on local data
-- [ ] 4.3 Home: the empty-period answer, the "(illustrative)" table title, and no review-kit finding on local data
+- [ ] 4.5 Session, day and token views: "API-equivalent" on dollar figures and titles as session names on local data
+- [ ] 4.3 Home: the empty-period answer, no "Where tokens went" table, "API-equivalent" on every local dollar figure, and no review-kit finding on local data
 - [ ] 4.4 Plan headroom: Claude rows "—" / "needs relay" and not selectable, the answer only counting windows with readings, the relay note, per-agent limit hits, the weekly-history row needing the relay, and 5-hour rows opening the day of their latest reading
 
 ## 5. Export and privacy

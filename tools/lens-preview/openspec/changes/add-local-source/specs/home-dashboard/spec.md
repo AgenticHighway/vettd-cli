@@ -8,9 +8,10 @@ data.
 ## MODIFIED Requirements
 
 ### Requirement: Answer line
-Home's answer line SHALL read: sessions · requests · tokens · priced USD,
-for every session from the selected source in the period. On local data
-with no sessions, it SHALL read "No sessions in the last 7 days".
+Home's answer line SHALL read: sessions · requests · tokens · USD, for
+every session from the selected source in the period. The USD figure SHALL
+be labelled "priced" on the fixture and "API-equivalent" on local data. With
+no local sessions, it SHALL read "No sessions in the last 7 days".
 
 Covered by: `home_dashboard_shows_usage_before_findings_at_80x24`
 (src/tests/render.rs), plus a local-data test to be added (tasks 4.3).
@@ -19,15 +20,19 @@ Covered by: `home_dashboard_shows_usage_before_findings_at_80x24`
 - **WHEN** Home is shown with the default corpus
 - **THEN** the answer starts "12 sessions" and contains "$12.36 priced"
 
+#### Scenario: Local dollars
+- **WHEN** Home is shown with `--source local`
+- **THEN** the dollar figure is followed by "API-equivalent"
+
 #### Scenario: No local sessions
 - **WHEN** Home is shown with `--source local` and no session in the period
 - **THEN** the answer reads "No sessions in the last 7 days" and the preview keeps running
 
 ### Requirement: Where tokens went
-Home SHALL show a "Where tokens went" table by source. Its shares SHALL add up
-to 100%, and Hooks SHALL be listed with 0 tokens rather than left out. The
-split is a fixture value, because no source records it. On local data the
-title SHALL read "Where tokens went (illustrative)".
+On the fixture, Home SHALL show a "Where tokens went" table by source. Its
+shares SHALL add up to 100%, and Hooks SHALL be listed with 0 tokens rather
+than left out. On local data the table SHALL NOT be shown, because no log
+records where tokens came from, and Home SHALL give its rows to the findings.
 
 Covered by: `token_source_shares_sum_to_whole` and
 `home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs),
@@ -37,9 +42,9 @@ plus a local-data test to be added (tasks 4.3).
 - **WHEN** Home is shown at 80×24
 - **THEN** the table lists Hooks after File reads, and the source basis points sum to 10,000
 
-#### Scenario: Labelled on local data
+#### Scenario: Hidden on local data
 - **WHEN** Home is shown at 80×24 with `--source local`
-- **THEN** the table title reads "Where tokens went (illustrative)"
+- **THEN** no "Where tokens went" table is drawn
 
 ### Requirement: Findings in order of urgency
 Home SHALL list its "Worth a look" findings most urgent first, each shown only

@@ -25,7 +25,7 @@ plus a local export test to be added (tasks 5.1).
 
 #### Scenario: Local export keeps the types
 - **WHEN** the export is built with `--source local`
-- **THEN** `synthetic` is false, `limit_hits` is a number, `claude_weekly_ends_percent` and `now_minutes_from_nov_18` are null, and Claude windows have no readings
+- **THEN** `synthetic` is false, `limit_hits` is a number, `claude_weekly_ends_percent`, `token_sources` and `now_minutes_from_nov_18` are null, and Claude windows have no readings
 
 ## ADDED Requirements
 
@@ -39,7 +39,7 @@ Covered by: a local export test to be added (tasks 5.1).
 
 #### Scenario: Synthetic sections named
 - **WHEN** the export is built with `--source local`
-- **THEN** `synthetic_sections` lists `token_sources`, `components`, `placements` and `scans`, and `limit_hits` equals the sum of `limit_hits_by_agent`
+- **THEN** `synthetic_sections` lists `components`, `placements` and `scans`, and `limit_hits` equals the sum of `limit_hits_by_agent`
 
 #### Scenario: Fixture export unchanged
 - **WHEN** the export is built with `--source fixture`

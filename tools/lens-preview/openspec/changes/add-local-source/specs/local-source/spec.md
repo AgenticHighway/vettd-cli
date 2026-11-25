@@ -60,7 +60,9 @@ before the period SHALL NOT count.
 
 ### Requirement: Where local logs are read
 Local data SHALL be read from `~/.claude/projects/*/*.jsonl` with each
-session's `subagents/*.jsonl`, and from `~/.codex/sessions/**/*.jsonl`.
+session's `subagents/*.jsonl`, and from `~/.codex/sessions/**/*.jsonl`
+and `~/.codex/archived_sessions/*.jsonl`. A Codex session found in both
+SHALL count once, by `session_meta.payload.id`.
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, when set, SHALL replace `~/.claude`
 and `~/.codex`. A missing directory SHALL give that agent no sessions and a
 note on stderr, not an error.
@@ -68,6 +70,10 @@ note on stderr, not an error.
 #### Scenario: No Codex directory
 - **WHEN** `--source local` runs and the Codex sessions directory doesn't exist
 - **THEN** stderr says which directory was not found, Claude sessions still load, and the exit status is zero
+
+#### Scenario: Archived session
+- **WHEN** a Codex session in the period was moved to `archived_sessions/`
+- **THEN** its requests still count, once
 
 ### Requirement: Claude requests are counted once
 A Claude request SHALL be one distinct `requestId` (or `message.id` when it
@@ -197,13 +203,46 @@ where they were published. A model SHALL use its longest matching prefix.
 
 ### Requirement: Unknown prices stay unpriced
 A request SHALL have no rate, never a zero rate, when its model matches no
-entry, its cache writes lack the 5-minute / 1-hour split, or its `speed` or
-`service_tier` isn't `standard`. Totals SHALL leave it out of priced USD,
+entry, or, for Claude, its cache writes lack the 5-minute / 1-hour split
+or its `speed` or `service_tier` isn't `standard`. Totals SHALL leave it out,
 and its day and session SHALL read as partial in USD mode.
 
 #### Scenario: New model
 - **WHEN** a local session's only requests use a model with no rate entry
 - **THEN** the session shows "unpriced", never "$0.00"
+
+### Requirement: Rates cover both agents
+The rate table SHALL hold the published API rates for the Claude and Codex
+(OpenAI) models it names. A Codex request SHALL use its fresh input, cache
+read and output rates. A model with no published API rate, such as
+`codex-auto`, SHALL have no entry.
+
+#### Scenario: Codex priced
+- **WHEN** a Codex request's model matches a table entry
+- **THEN** the request is priced from that entry, the same as a Claude request
+
+### Requirement: Dollars are labelled API-equivalent
+On local data, every dollar figure SHALL be labelled "API-equivalent",
+never "priced" or "spent", because the person may pay through a plan rather
+than per token. The fixture's labels SHALL stay as they are.
+
+#### Scenario: Home on local data
+- **WHEN** a session view is shown with `--source local` for a session with priced requests
+- **THEN** its dollar figure is followed by "API-equivalent"
+
+### Requirement: Session titles in the TUI
+On local data, a session's name SHALL be its latest title: Claude's latest
+`custom-title` or `ai-title` line, or the Codex `session_index.jsonl` entry
+for its root thread with the latest `updated_at`. A session with no title
+SHALL be named by its start time. Titles SHALL appear only in the TUI.
+
+#### Scenario: Renamed session
+- **WHEN** a Claude session has an `ai-title` line and two later `custom-title` lines
+- **THEN** its row shows the last `custom-title`
+
+#### Scenario: No title
+- **WHEN** a Codex root thread has no `session_index.jsonl` entry
+- **THEN** its session is named by its start time, such as "09:12"
 
 ### Requirement: Unreadable input is partial
 A session SHALL be marked incomplete when any of its lines fails to parse,

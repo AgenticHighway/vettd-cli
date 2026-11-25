@@ -25,25 +25,33 @@ This is the proposal only. It changes no code.
   `requestId` across all files, since resumed sessions copy history. Each
   request counts on its own UTC day.
 - **Codex sessions.** From `~/.codex/sessions/**/rollout-*.jsonl`, with
-  subagent threads counted in their root thread. One request per
+  subagent threads counted in their root thread. Archived rollouts count too,
+  once per session. One request per
   `token_usage_record` (per `response_id`).
 - **Codex plan windows.** Plan headroom's two Codex rows come from
   `rate_limits.primary` / `secondary` in Codex `token_count` events. Each
   window is found by its `window_minutes` (300 or 10080) and by time, not by
   exact reset value.
 - **Claude plan windows are not read in this change.** They reach Lens only
-  through the statusline relay, which a later change adds. On local data,
+  through the statusline relay, which the next change
+  (`add-statusline-relay`) adds. On local data,
   Claude rows say that they need the relay, and no number is shown or
   guessed.
 - **Limit hits from logs.** "5-hour limit stopped work N×" counts the
   structured limit rejections that both agents record.
-- **Pricing from a rate table in source.** It is dated, separates 5-minute
-  and 1-hour cache writes, and only covers models it names. Any other model
-  stays unpriced, never $0.
+- **Pricing from a rate table in source.** It holds published API rates for
+  Claude and Codex models, is dated, and separates 5-minute and 1-hour cache
+  writes. Any other model stays unpriced, never $0. On local data, every
+  dollar figure is labelled "API-equivalent", because both agents may be
+  paid through a plan.
+- **Session titles.** The TUI names each session by its latest title
+  (Claude's title lines, Codex's `session_index.jsonl`), or its start time
+  when it has none. Titles are never exported.
 - **Labels.** The top bar names the source. Data that stays synthetic on
-  local is labelled as synthetic where it is shown: the token-source split,
-  the component inventory, copies and load order. The fixed review-kit
-  finding is dropped on local.
+  local is labelled as synthetic where it is shown:
+  the component inventory, copies and load order. "Where tokens went" is
+  hidden on local, because no log records it, and the fixed review-kit
+  finding is dropped.
 - **Privacy.** Offline and read-only. The export, tests and docs hold
   aggregates only, never prompts, tool output, paths, folder names,
   titles, IDs or account data.
@@ -60,7 +68,7 @@ These are specs introduced by the open change `add-lens-tui-dashboard`. They
 must be archived first, as described in design.md under "Ordering".
 - `tui-shell`: the top bar names the data source.
 - `home-dashboard`: the answer line covers the selected source, the
-  token-source table is labelled illustrative on local data, and the
+  token-source table is hidden on local data, and the
   review-kit finding is fixture-only.
 - `plan-headroom`: window rows on local data, Claude rows without the relay,
   history rows from logs, and where window data comes from.

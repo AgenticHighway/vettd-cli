@@ -70,7 +70,7 @@ object with a `type`.
   the only record of a limit hit.
 - Titles (`custom-title`, `ai-title`) and the attribution fields
   (`attributionSkill`, `attributionMcpTool`, `attributionPlugin`) exist.
-  This change doesn't use them. See Open Questions.
+  Titles are shown in the TUI (Decision 8). Attribution isn't used (Decision 10).
 - No `statusLine` is configured in `~/.claude/settings.json` on this
   machine, so no relay data exists to test against.
 
@@ -137,7 +137,7 @@ These shape the requirements, because Lens must not guess any of them.
 ## Goals / Non-Goals
 
 **Goals:**
-- `--source local` gives real sessions, requests, tokens, priced USD and
+- `--source local` gives real sessions, requests, tokens, API-equivalent USD and
   Codex windows on Home and Plan headroom. It never shows a number the logs
   don't support.
 - `--source fixture` stays the default and is byte-for-byte today's preview,
@@ -149,8 +149,9 @@ These shape the requirements, because Lens must not guess any of them.
 - Real token-source attribution, a real component inventory, copies or load
   order.
 - Watching files while the TUI runs. Logs are read once at start.
-- Reading `archived_sessions/`, Claude's `cost-state` totals, titles or
-  attribution fields.
+- Claude's `cost-state` totals and attribution fields. The attribution
+  fields tag whole requests, not where tokens came from, so they can't fill
+  "Where tokens went" (Decision 10).
 - The main vettd-cli crate.
 
 ## Decisions
@@ -159,9 +160,8 @@ These shape the requirements, because Lens must not guess any of them.
    data comes from, and `--corpus` (from `add-stress-corpus`) says which
    synthetic dataset to use. `--corpus` is valid only with
    `--source fixture`. `--source local --corpus …` is rejected on stderr
-   with a non-zero exit. The alternative is one option,
-   `--source fixture|stress|local`, which is simpler to parse but mixes two
-   meanings (Open Question 1).
+   with a non-zero exit. One merged option was rejected because it mixes
+   two meanings.
 2. **The period on local data is the 7 UTC days ending today,** at the time
    the run starts. "Now" is the system clock, read once. Each request counts
    on its own UTC day, so a session that crosses midnight appears on both
@@ -238,7 +238,13 @@ These shape the requirements, because Lens must not guess any of them.
      when its `speed` or `service_tier` isn't `standard`. That is the
      existing "unpriced" state, so its day and session read as partial in
      USD.
-   - Codex models get no entries in this change (Open Question 3).
+   - Codex (OpenAI) models get entries at their published API rates, using
+     fresh input, cache read and output. A model with no published rate,
+     such as `codex-auto`, gets none and stays unpriced.
+   - On local data, every dollar figure is labelled "API-equivalent", never
+     "priced". Both agents may be paid through a plan, so this is what the
+     usage would cost on the API, not what was spent. The fixture keeps its
+     "priced" label.
    - Claude Code's `cost-state` totals aren't used, because they can't be
      split per day or per request.
 8. **Session identity.**
@@ -247,11 +253,18 @@ These shape the requirements, because Lens must not guess any of them.
      `sessionId` names when that file exists, and otherwise to the folder
      it sits in.
    - A Codex session is the root of a `parent_thread_id` chain. A thread
-     whose parent isn't on disk is its own session.
+     whose parent isn't on disk is its own session. Rollouts in
+     `~/.codex/archived_sessions/` are read too, and a session found in both
+     places counts once, by `session_meta.payload.id`.
    - The workspace label is the last component of `cwd`, never a
      `projects/` folder name, which spells out the full path.
-   - The session name is the start time ("09:12"), not a title (Open
-     Question 2).
+   - The session name is its latest title, shown only in the TUI and never
+     exported. For Claude, that's the last `custom-title` or `ai-title` line.
+     For Codex, it's the `thread_name` in `~/.codex/session_index.jsonl`
+     (`id`, `thread_name`, `updated_at`) for the root thread, with the
+     latest `updated_at` winning. On this machine, 18 of 68 rollouts had an
+     entry. Most of the rest are subagent threads, which take their root's
+     title. A session with no title is named by its start time ("09:12").
 9. **Partial, not dropped.** A session is incomplete, using the existing
    flag, when any line in it fails to parse, its last line is cut off
    (still being written), a Claude request has no usage, or a Codex usage
@@ -260,9 +273,11 @@ These shape the requirements, because Lens must not guess any of them.
 10. **What stays synthetic on local data, and how it is labelled.**
     - Top bar: "local logs · read-only · nothing leaves this machine", in
       place of "synthetic data · …".
-    - Home's "Where tokens went" table keeps the fixture split, titled
-      "Where tokens went (illustrative)", because the logs don't record
-      sources. Hiding it instead is Open Question 4.
+    - Home's "Where tokens went" table is hidden on local data, and its rows
+      go to the findings. Claude's `attribution*` fields were checked on
+      2026-11-25 (by token count only). They tag a whole request, most of
+      whose tokens are re-read cache, and 78.4% of tokens carry no tag.
+      They can't say where tokens came from.
     - The component inventory, component, copy, observation, change and
       apply views keep fixture data and add a "synthetic" scope chip. Local
       sessions have no `observed` uses, so a local session's component rows
@@ -353,27 +368,17 @@ version:
 - Export field types changed by source, the `--source` / `--corpus` rule
   had no requirement, and nothing kept project folder names out of labels.
 
-## Open Questions
+## Resolved Questions
 
-These need the user's call before or during apply.
+The user settled these on 2026-11-25.
 
-1. **One option or two?** This change keeps `--source fixture|local` apart
-   from `--corpus default|stress` and rejects `local` + `--corpus`. Should
-   they merge into `--source fixture|stress|local`?
-2. **Session names on local data.** Claude logs hold `custom-title` /
-   `ai-title`. They read better than a start time, but they are written
-   from the user's prompts. Should titles be shown in the TUI? (They stay
-   out of the export either way.)
-3. **Codex pricing.** Codex logs record no cost, and this account is on a
-   subscription plan (`plan_type`), so API rates may not reflect what the
-   person pays. Should Codex requests stay unpriced (the current decision),
-   or should the table carry published API rates labelled "API-equivalent"?
-4. **Token-source table on local data.** Keep the fixture split labelled
-   "illustrative" (the current decision), or hide the table on local data
-   until real attribution exists?
-5. **Claude relay timing.** Is "later change" right, or should the relay
-   (opt-in statusline command, reading format, and where readings are
-   stored) be specced now as a follow-up change, so the "needs relay" rows
-   point at something?
-6. **Archived Codex sessions.** Should `~/.codex/archived_sessions/` count
-   towards the period? It is excluded for now.
+1. **One option or two?** Two: `--source` and `--corpus` (Decision 1).
+2. **Session titles?** Yes, in the TUI only. The latest title wins, with
+   Codex titles from `session_index.jsonl` (Decision 8).
+3. **Codex pricing?** Priced at published API rates like Claude, with all
+   local dollars labelled "API-equivalent" (Decision 7).
+4. **Token-source table on local data?** Hidden (Decision 10).
+5. **Claude relay timing?** It gets its own change, `add-statusline-relay`,
+   next. Until then the rows say "needs relay" (Decision 4).
+6. **Archived Codex sessions?** Included, each session counted once
+   (Decision 8).
