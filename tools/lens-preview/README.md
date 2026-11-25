@@ -87,14 +87,14 @@ chart labels and Enter hint still identify focus and the pending action.
 `NO_COLOR` uses reverse video for selection. All views derive their figures
 from the same synthetic corpus that the JSON export returns.
 
-For a human walkthrough, start at Activity with no instructions. See whether
+For a human walkthrough, start at Home with no instructions. See whether
 the developer can predict what Enter will open from the chart and whether
 the maintainer can find a known skill without choosing a date. Ask each
 person to go Back after opening evidence and describe the scope they land in.
 
 ## Component inventory
 
-Press i from Activity to browse installed skills, native tools and MCP
+Press i from Home to browse installed skills, native tools and MCP
 servers. Slash lookup opens the same component detail. From review-kit,
 compare the workspace and user copies, then inspect observed versions and
 signals. The synthetic 1.5 workspace copy has no matching scan. The 1.4
