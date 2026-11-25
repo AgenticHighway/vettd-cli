@@ -84,17 +84,23 @@ plus a local-data test to be added (tasks 4.3).
 ### Requirement: Findings in order of urgency
 Home SHALL list its "Worth a look" findings most urgent first, each shown only
 when it applies: (1) the plan window that fills soonest; (2) the largest
-complete day, when it is more than 3× normal; (3) on the fixture only, the
+complete day, when it is more than 3× normal; (3) the
 known gap in which copy of review-kit loads in Codex; (4) the first session
 with partial input; (5) a link to every day and its sessions.
 
 Covered by: `home_leads_with_the_filling_window` and
-`home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs),
-plus a local-data test to be added (tasks 4.3).
+`home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs).
 
 #### Scenario: Order in USD
 - **WHEN** Home is shown at 80×24 in USD
 - **THEN** the findings are, in order: "Claude 5-hour: 62%, full by 13:22", "Nov 16: 10× a normal day", "review-kit: unknown load in Codex", "Nov 18: partial input, unpriced", and "Every day and its sessions"
+
+### Requirement: Review-kit finding only on the fixture
+The review-kit finding SHALL be shown only on the fixture. Home on local
+data SHALL NOT show it.
+
+Covered by: `session_across_midnight_shows_on_both_days_and_counts_once`
+(src/local/tests.rs).
 
 #### Scenario: No review-kit finding on local data
 - **WHEN** Home is shown with `--source local`
