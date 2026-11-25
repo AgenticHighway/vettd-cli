@@ -24,7 +24,7 @@ change's tasks 3.3).
 - **WHEN** the export is built from the default corpus
 - **THEN** `source` is `"fixture"`, `windows` has 4 entries, `limit_hits` is 3, `claude_weekly_ends_percent` has 4 entries, and `now_minutes_from_nov_18` equals the fixture's "now"
 
-#### Scenario: Local export without a relay file
+#### Scenario: Local export keeps the types
 - **WHEN** the export is built with `--source local` and no relay file
 - **THEN** `synthetic` is false, `limit_hits` is a number, `token_sources` is a list of estimated shares, `claude_weekly_ends_percent` and `now_minutes_from_nov_18` are null, and Claude windows have no readings
 
