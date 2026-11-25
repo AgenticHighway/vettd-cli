@@ -6,7 +6,7 @@ Every existing test must keep passing on `--source fixture`.
 
 ## 0. Check the real feed
 
-- [ ] 0.1 With the person's consent, run one real Claude session with a temporary statusline command that writes only the stdin JSON's *key paths and value types* (no values) to a scratch file outside the repository. Compare them with design.md "What the statusline gives", and fix the design if they differ. Delete the scratch file afterwards
+- [x] 0.1 With the person's consent, run one real Claude session with a temporary statusline command that writes only the stdin JSON's *key paths and value types* (no values) to a scratch file outside the repository. Compare them with design.md "What the statusline gives", and fix the design if they differ. Delete the scratch file afterwards (2026-11-25: the paths and types matched; `used_percentage` was an integer, which the relay accepts; the scratch file was deleted)
 
 ## 1. Relay writer
 

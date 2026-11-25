@@ -309,6 +309,21 @@ mod tests {
         cleanup(&file);
     }
 
+    // The real feed sends whole-number percentages; they must be read
+    // like fractional ones, not dropped as malformed.
+    #[test]
+    fn integer_percentages_are_recorded() {
+        let file = tmp("integer");
+        let input = r#"{"rate_limits":{"five_hour":{"used_percentage":7,"resets_at":1795003600},
+            "seven_day":{"used_percentage":42,"resets_at":1795300000}}}"#;
+        let (out, errors) = relay(input, &file, NOW, None);
+        assert_eq!(out, "5h 7% · 7d 42%");
+        assert!(errors.is_empty(), "{errors:?}");
+        let pcts: Vec<f64> = records(&file).unwrap().iter().map(|r| r.pct).collect();
+        assert_eq!(pcts, [7.0, 42.0]);
+        cleanup(&file);
+    }
+
     // The relay runs on every message of every session; only the four
     // reading fields may be kept, never what identifies the session.
     #[test]
