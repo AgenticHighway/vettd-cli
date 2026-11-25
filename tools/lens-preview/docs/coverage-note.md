@@ -25,28 +25,32 @@ corpus.
 
 | Parameter | Stress value | Basis |
 |-----------|--------------|-------|
-| Sessions | 2,011 over Nov 12–18, every day present (272–297/day) | Assumption. Same order as the real Claude total (3,096), but the real period is unknown |
+| Sessions | 1,991 over Nov 12–18, every day present (276–293/day) | Assumption. Same order as the real Claude total (3,096), but the real period is unknown |
 | Agent split | about 50/50 Claude/Codex | Assumption. Does **not** match real (3,096 vs 24) |
 | Workspaces | 6, longest 94 chars | Assumption |
 | Model IDs | 3 plus "Unpriced", longest 63 chars | Assumption |
-| Session names | 8 names, each repeated 220–278 times | Assumption |
-| Copy coverage | 111 of 1,178 skill uses (9.4%) record an artifact and version; the rest have neither | Assumption, labelled. Real share unmeasured |
-| Unpriced requests | 47 of 4,952 (0.95%), with no rate (never a zero rate) | Assumption. Real: 0 unpriced models. Kept above real so the state is exercised |
-| Incomplete sessions | 19 of 2,011 (0.94%) | Assumption. Real incompleteness is not measured; 0 skipped lines and 0 unreadable files is a different measure |
-| Token part size | ≤ 1,000,000 (max 999,799) | Assumption. Bound keeps u32 cost maths from overflowing. The corpus token total (~3.36B) is summed in u64 |
-| Components and artifacts | Existing 10 components and existing `PLACEMENTS` identities only | Matches the default fixture, not real |
+| Session names | 8 names, each repeated 221–267 times | Assumption |
+| Copy coverage | 128 of 1,391 skill uses (9.2%) record an artifact and version; the rest have neither | Assumption, labelled. Real share unmeasured |
+| Unpriced requests | 63 of 4,980 (1.3%), with no rate (never a zero rate) | Assumption. Real: 0 unpriced models. Kept above real so the state is exercised |
+| Incomplete sessions | 21 of 1,991 (1.1%); 19 of them have every request priced | Assumption. Real incompleteness is not measured; 0 skipped lines and 0 unreadable files is a different measure |
+| Token part size | ≤ 1,000,000 (max 999,671) | Assumption. Bound keeps u32 cost maths from overflowing. The corpus token total (~3.37B) is summed in u64 |
+| Components and artifacts | Existing 10 components and existing `PLACEMENTS` identities only. Uses go to the 9 callable components; the qa-pack plugin manifest's use is recorded on its children. Each use's one signal accounts for all its calls | Matches the default fixture, not real |
 | Plan windows, limit hits, weekly ends, token sources | Same values as the default export | Reused default synthetic values. No session records them |
 
 ## Timings
 
-Docker `rust:1.97.1`, release build, ten runs of `--corpus stress --json`
-(1,296,985 bytes of output), wall time in ms:
+Windows host, Rust 1.88.0 (Docker was unavailable for this run), release
+build, ten runs of `--corpus stress --json` (1,298,620 bytes of output),
+wall time in ms, including process start:
 
-46, 41, 50, 50, 46, 48, 43, 45, 44, 43. Worst run: **50 ms** (bound: 1 s).
+335, 347, 365, 356, 364, 363, 366, 386, 370, 367. Worst run: **386 ms**
+(bound: 1 s). The earlier Docker `rust:1.97.1` run, before uses stopped
+going to the plugin manifest, had a worst run of 50 ms.
 
 Repeat-run sha256 (release):
-- default: `2f641dd0…16cf5f` (both runs, and with `--corpus` omitted)
-- stress: `d6b8d5c3…197469` (both runs, either flag order)
+- default: `33a1743f…2c60c2ef4` (both flag orders, and with `--corpus`
+  omitted). It changed when the local-source and relay work merged in.
+- stress: `c8ea73d4…853762f68` (both flag orders)
 
 These measure synthetic generation and serialisation, not log parsing, so
 they don't compare with the 195.7 s real Claude scan.

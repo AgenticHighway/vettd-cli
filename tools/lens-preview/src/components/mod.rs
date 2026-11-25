@@ -1,4 +1,4 @@
-use super::{line, link, usd, Page, Row, Runtime, Scope, View};
+use super::{estimate_missing, line, link, usd, Page, Row, Runtime, Scope, View};
 use crate::fixture::{
     Placement, Session, AGENTS, COMPONENTS, KINDS, PLACEMENTS, SCANS, SNAPSHOT, WORKSPACES,
 };

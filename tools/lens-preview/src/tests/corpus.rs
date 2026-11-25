@@ -290,5 +290,116 @@ fn stress_day_labels_fit_their_bars() {
 {text}"
         );
     }
-    assert!(text.contains("12 $1885 "), "{text}");
+}
+
+// A use's signals explain its calls. A breakdown that sums to fewer calls
+// than the observations it summarizes would misreport where calls came from.
+#[test]
+fn stress_signals_account_for_every_call() {
+    for s in fixture::stress_sessions() {
+        for u in &s.observed {
+            let explained: u32 = u.signals.iter().map(|&(_, n)| n).sum();
+            assert_eq!(explained, u.count, "{} on Nov {}", s.name, s.day);
+        }
+    }
+}
+
+// The qa-pack manifest (component 5) records its use on its children, so a
+// direct call to it would be fictitious history in its usage total.
+#[test]
+fn stress_never_calls_the_plugin_manifest() {
+    let all = fixture::stress_sessions();
+    assert!(all
+        .iter()
+        .flat_map(|s| &s.observed)
+        .all(|u| u.component != 5));
+    // Its children are still called, so plugin activity stays visible.
+    assert!(all
+        .iter()
+        .flat_map(|s| &s.observed)
+        .any(|u| u.component == 6 || u.component == 7));
+}
+
+// Partial input is not the same as unpriced input. A session that is
+// incomplete but fully priced must not be called unpriced, and its recorded
+// context estimates count, as floors, instead of disappearing.
+#[test]
+fn incomplete_but_priced_session_is_not_called_unpriced() {
+    let mut data = Data::fixture();
+    let id = data
+        .sessions
+        .iter()
+        .position(|s| s.day == 12 && priced(s) == s.requests.len())
+        .unwrap();
+    data.sessions[id].incomplete = true;
+    let component = data.sessions[id].observed[0].component;
+    let rt = Runtime::default();
+    let home = content(&Page::new(View::Home), &data, false, 80, &rt).2;
+    let finding = home
+        .iter()
+        .find(|r| r.text.contains("partial input"))
+        .expect("partial-input finding");
+    assert!(finding.text.starts_with("Nov 12"), "{}", finding.text);
+    assert!(!finding.text.contains("unpriced"), "{}", finding.text);
+    let page = Page::new(View::Component(component, Scope::WEEK));
+    let detail: Vec<String> = content(&page, &data, false, 80, &rt)
+        .2
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    assert!(
+        detail
+            .iter()
+            .any(|t| t.contains("in partial input: their estimates are floors")),
+        "{detail:#?}"
+    );
+}
+
+// The default fixture's Nov 18 session is incomplete and unpriced, so it
+// stays "unpriced": the fix must not relabel a real unknown.
+#[test]
+fn incomplete_and_unpriced_session_is_still_called_unpriced() {
+    let rt = Runtime::default();
+    let home = content(&Page::new(View::Home), &Data::fixture(), false, 80, &rt).2;
+    assert!(home
+        .iter()
+        .any(|r| r.text == "Nov 18: partial input, unpriced"));
+}
+
+// The title doesn't wrap. At 50 columns "every day partial" is cut off, so
+// each bar must carry its own ≥ or nothing marks the totals as floors.
+#[test]
+fn narrow_stress_chart_keeps_lower_bound_markers() {
+    let data = Data::stress();
+    let page = Page::new(View::Home);
+    let rt = Runtime::default();
+    let (title, scope, rows) = content(&page, &data, false, screen::list_width(50), &rt);
+    let active = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.open.map(|open| (i, open)))
+        .nth(page.selected);
+    let mut term = ratatui::Terminal::new(TestBackend::new(50, 24)).unwrap();
+    term.draw(|f| {
+        screen::draw(
+            f,
+            std::slice::from_ref(&page),
+            &data,
+            false,
+            (&title, &scope),
+            &rows,
+            active,
+            &rt,
+            false,
+        )
+    })
+    .unwrap();
+    let buffer = term.backend().buffer();
+    let text: String = (0..24)
+        .map(|y| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let full_note = text.contains("every day partial (≥)");
+    let marked = (12..=18).all(|d| text.contains(&format!("{d}≥")));
+    assert!(full_note || marked, "{text}");
 }

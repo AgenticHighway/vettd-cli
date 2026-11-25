@@ -90,6 +90,16 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
     let with_data = || days.iter().filter(|d| d.value.is_some());
     let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
+    // No complete day means no normal: say so rather than show a zero.
+    let normal_text = normal.map_or("normal: no complete day".into(), |n| {
+        format!("normal ≈ {}", label(n))
+    });
+    let unit = if cx.count { "REQUESTS" } else { "SPEND" };
+    let one_note = format!("DAILY {unit}  ·  {normal_text}  ·  every day partial (≥)");
+    // The title doesn't wrap. Say "every day partial" once only when it fits
+    // whole (with the block's two padding spaces); otherwise every bar keeps
+    // its own ≥, so no floor ever reads as an exact total.
+    let noted = all_partial && one_note.chars().count() + 2 <= usize::from(chart.width);
     let gap = 1u16;
     let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
         .saturating_sub(gap)
@@ -106,8 +116,8 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
                 .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
             // No-data days show "·", never a zero-height bar that reads as $0.
             // Partial days show "≥": the total is a floor, not the day's cost.
-            // When every day is partial the title says so once instead.
-            let floor = if d.partial && !all_partial { "≥" } else { "" };
+            // When every day is partial and the title fits, it says so once.
+            let floor = if d.partial && !noted { "≥" } else { "" };
             // The day of the month: the chart's seven bars are consecutive.
             let label_day = day_label(d.day);
             let dom = label_day.rsplit(' ').next().unwrap_or_default();
@@ -133,21 +143,18 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
-    // No complete day means no normal: say so rather than show a zero.
-    let normal_text = normal.map_or("normal: no complete day".into(), |n| {
-        format!("normal ≈ {}", label(n))
-    });
-    let title = format!(
-        "DAILY {}  ·  {normal_text}{}",
-        if cx.count { "REQUESTS" } else { "SPEND" },
-        if all_partial {
-            "  ·  every day partial (≥)"
-        } else if days.iter().any(|d| d.partial) {
-            "  ·  ≥ partial"
-        } else {
-            ""
-        }
-    );
+    let title = if noted {
+        one_note
+    } else {
+        format!(
+            "DAILY {unit}  ·  {normal_text}{}",
+            if days.iter().any(|d| d.partial) {
+                "  ·  ≥ partial"
+            } else {
+                ""
+            }
+        )
+    };
     f.render_widget(
         BarChart::default()
             .block(panel_block(&title, cx.theme))
