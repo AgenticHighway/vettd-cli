@@ -111,7 +111,7 @@ test("7. stress Home shows unknown normal, billions and whole-dollar labels", T,
 test("8. --corpus other exits 2 with the error on stderr", T, async () => {
   const term = await launch(["--corpus", "other"], { waitFor: null });
   try {
-    await term.getByText("error: --corpus must be default or stress").expect();
+    await term.getByText("vettd-lens-preview: --corpus takes default or stress").expect();
     assert.equal(await exitCode(term), 2);
   } finally {
     await term.closeQuiet();
@@ -120,5 +120,5 @@ test("8. --corpus other exits 2 with the error on stderr", T, async () => {
   const out = spawnSync(BIN, ["--corpus", "other"], { encoding: "utf8" });
   assert.equal(out.status, 2);
   assert.equal(out.stdout, "");
-  assert.equal(out.stderr.trim(), "error: --corpus must be default or stress");
+  assert.equal(out.stderr.trim(), "vettd-lens-preview: --corpus takes default or stress");
 });

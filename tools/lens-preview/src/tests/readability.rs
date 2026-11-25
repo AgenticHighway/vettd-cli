@@ -2,6 +2,7 @@
 //! title must fit its block without cutting a word.
 
 use super::*;
+use crate::data::Data;
 use ratatui::{backend::TestBackend, buffer::Buffer, style::Modifier};
 
 fn day(value: Option<u32>) -> screen::Day {
@@ -312,7 +313,7 @@ fn shorten_treats_an_existing_ellipsis_as_ordinary_text() {
 #[test]
 fn day_header_keeps_the_narrow_column_for_default_corpus() {
     assert_eq!(
-        day_header(16, &fixture::sessions(), 80),
+        day_header(16, &Data::fixture(), 80),
         "SESSION          WS   AGENT      TOTAL"
     );
 }
@@ -557,4 +558,22 @@ fn no_color_long_session_chips_stay_in_bracket_form() {
         "{chips:?}"
     );
     assert_selection_reversed(&buffer);
+}
+
+// On local data the inventory shows fixture copies, so its workspace
+// filter must cycle the fixture's workspaces. Cycling real ones would pair
+// a real workspace name with synthetic copies.
+#[test]
+fn local_workspace_filter_stays_on_fixture_workspaces() {
+    let local = crate::local::test_data();
+    assert!(local.local());
+    assert_eq!(
+        components::filter_workspaces(&local),
+        crate::fixture::WORKSPACES.to_vec()
+    );
+    assert_eq!(
+        components::filter_workspaces(&Data::stress()).len(),
+        6,
+        "stress cycles its own workspaces"
+    );
 }

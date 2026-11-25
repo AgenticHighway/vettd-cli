@@ -278,14 +278,15 @@ fn tokens(s: &Session, width: u16, local: bool) -> Content {
     let room = usize::from(width).saturating_sub(3);
     let mut rows = incomplete_rows(s);
     for (worker, model, requests) in groups(s) {
-        let count = if requests.len() == 1 {
+        let many = if requests.len() == 1 {
             String::new()
         } else {
             format!(" ({} requests)", requests.len())
         };
+        let reserved = many.chars().count();
         rows.push(line(format!(
-            "{}{count}",
-            worker_model(worker, model, count.chars().count(), room)
+            "{}{many}",
+            worker_model(worker, model, reserved, room)
         )));
         rows.extend(PARTS.iter().enumerate().map(|(i, part)| {
             let tokens: u64 = requests.iter().map(|r| u64::from(r.tokens[i])).sum();
