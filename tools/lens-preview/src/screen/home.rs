@@ -143,9 +143,9 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
         usize::from(chart.width),
     );
     // The title doesn't wrap. When every day is partial, the bars drop their
-    // own ≥ only while the title still says so (full or short); if the note
-    // had to go, every bar keeps its ≥, so no floor reads as an exact total.
-    let noted = all_partial && (title.contains("every day partial") || title.contains("all partial"));
+    // own ≥ only while the title carries the full note; with the short note
+    // or none, every bar keeps its ≥, so no floor reads as an exact total.
+    let noted = all_partial && title.contains("every day partial");
     let gap = 1u16;
     let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
         .saturating_sub(gap)

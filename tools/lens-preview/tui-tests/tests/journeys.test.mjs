@@ -91,7 +91,7 @@ test("6. q exits with code 0", T, async () => {
 // whole numbers, never $0.00 or a label cut mid-number.
 test("7. stress Home shows unknown normal, billions and whole-dollar labels", T, () =>
   journey(["--corpus", "stress"], async (term) => {
-    for (const text of ["normal: no complete day", "every day partial (≥)", "3.4B tokens", "File reads", "1.3B", "12 $1885 "]) {
+    for (const text of ["normal: no complete day", "every day partial (≥)", "3.4B tokens", "File reads", "1.3B", "12 $1909 "]) {
       await term.getByText(text).expect();
     }
     const text = await term.text();

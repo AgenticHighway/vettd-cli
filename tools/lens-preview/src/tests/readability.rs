@@ -617,7 +617,14 @@ fn wide_workspace_keeps_totals_whole_and_aligned() {
     all.sessions[same_day[1]].workspace = "billing-service";
     assert_eq!(cells("日本語"), 6);
     let stack = [Page::new(View::Home), Page::new(View::Day(day))];
-    let rows = content(stack.last().unwrap(), &all, false, screen::list_width(80), &Runtime::default()).2;
+    let rows = content(
+        stack.last().unwrap(),
+        &all,
+        false,
+        screen::list_width(80),
+        &Runtime::default(),
+    )
+    .2;
     let ends: Vec<usize> = rows
         .iter()
         .filter(|r| r.open.is_some())
@@ -626,7 +633,10 @@ fn wide_workspace_keeps_totals_whole_and_aligned() {
             cells(total)
         })
         .collect();
-    assert!(ends.windows(2).all(|w| w[0] == w[1]), "totals end at {ends:?}");
+    assert!(
+        ends.windows(2).all(|w| w[0] == w[1]),
+        "totals end at {ends:?}"
+    );
     assert!(
         ends[0] + 3 <= usize::from(screen::list_width(80)),
         "total ends at {} past the list",

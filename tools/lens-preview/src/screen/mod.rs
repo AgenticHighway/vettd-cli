@@ -1,6 +1,6 @@
 use super::{
-    cells, clip, comparable, content, cost_label, day_header, measure, priced, shorten, total, units, usd, Page,
-    Row, Runtime, Session, View, COMPONENTS, PARTS,
+    cells, clip, comparable, content, cost_label, day_header, measure, priced, shorten, total,
+    units, usd, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
 use crate::data::{day_label, Data, Source};
 use ratatui::{
@@ -180,7 +180,14 @@ fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
         let later = &parts[i + 1..];
         // Room for every later chip, each with brackets (2) and a space (1).
         if !figure(part) && later.iter().any(|p| figure(p)) {
-            let reserve: usize = later.iter().map(|p| least(p) + 3).sum();
+            // Keep later chips whole when this one can still shorten to
+            // MIN_VALUE; otherwise reserve only their least size.
+            let whole: usize = later.iter().map(|p| cells(p) + 3).sum();
+            let reserve = if width.saturating_sub(used + 3 + whole) >= MIN_VALUE {
+                whole
+            } else {
+                later.iter().map(|p| least(p) + 3).sum()
+            };
             let room = width.saturating_sub(used + 3 + reserve);
             if used + cells(part) + 3 + reserve > width && room >= MIN_VALUE {
                 value = shorten(part, room);
