@@ -120,7 +120,31 @@ wall-clock; the peak is the process's peak working set.
   not just the ones changed in the last 28 days.
 - Memory: History adds about 12 MB. The ~1.84 GB peak was already there
   with plain `--json`, so it comes from the existing readers. The owner
-  chose to record it and fix the reader memory in a separate change. Its
-  cause hasn't been looked into yet.
+  chose to record it and fix the reader memory in a separate change
+  (`stream-local-logs`, below).
 - Not covered by the owner's check: the filter, or Enter and Esc on a real
   History row.
+
+## Reader memory on real logs (`stream-local-logs`)
+
+Measured on 2026-11-27 on the owner's logs, release builds, with
+`PeakWorkingSet64` sampled every 20 ms. Only counts and numbers were
+printed, and every export file was deleted afterwards. "Before" is the
+`add-session-history` head. Both builds ran in the same session, so their
+times can be compared with each other but not with the 6.9 s run above.
+
+| Command                           | Before          | After         |
+|-----------------------------------|-----------------|---------------|
+| `--source local --json`           | 8.9 s, 1,841 MB | 8.3 s, 128 MB |
+| `--source local --json --history` | 18.0 s, 1,854 MB | 15.8 s, 172 MB |
+
+- Cause: one recent Claude log is 652 MB. The line reader read each file
+  whole, then held every parsed line of it at once. Reading through a
+  buffer alone brought the peak to 1,197 MB. Having the Claude reader
+  handle one line at a time brought it to 128 MB.
+- Output: old and new binaries were run at the same moment and their
+  exports compared field by field. There were no content differences in
+  `sessions[]` (33) or `history[]` (182). Requests inside a session can come
+  out in a different order from run to run. The old binary does this too,
+  so it existed before this change and is not fixed here.
+

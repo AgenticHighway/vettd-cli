@@ -8,6 +8,8 @@ use crate::fixture::{Request, Session, Used, Window};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -239,27 +241,66 @@ impl Meta {
     }
 }
 
-/// A file's lines, and whether any failed to parse (a cut-off last line
-/// included). Unparsable lines are skipped, never fatal.
-pub(crate) fn read_lines(path: &Path) -> (Vec<Value>, bool) {
-    // Read-only: std::fs::read opens the file without write access.
-    let Ok(bytes) = std::fs::read(path) else {
-        return (Vec::new(), true);
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    let mut broken = false;
-    let lines = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| match serde_json::from_str(l) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                broken = true;
-                None
+/// A file's lines, parsed one at a time so only one line is held in
+/// memory. `broken` turns true when the file can't be read or any line
+/// fails to parse (a cut-off last line included); unparsable lines are
+/// skipped, never fatal.
+pub(crate) struct Lines {
+    reader: Option<BufReader<File>>,
+    buf: Vec<u8>,
+    pub(crate) broken: bool,
+}
+
+pub(crate) fn lines_of(path: &Path) -> Lines {
+    // Read-only: File::open opens the file without write access.
+    let reader = File::open(path).ok().map(BufReader::new);
+    Lines {
+        broken: reader.is_none(),
+        reader,
+        buf: Vec::new(),
+    }
+}
+
+impl Iterator for Lines {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        let reader = self.reader.as_mut()?;
+        loop {
+            self.buf.clear();
+            match reader.read_until(b'\n', &mut self.buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => {
+                    self.broken = true;
+                    break;
+                }
             }
-        })
-        .collect();
-    (lines, broken)
+            // Line endings as `str::lines`: "\n" or "\r\n".
+            let mut line = &self.buf[..];
+            if let Some(l) = line.strip_suffix(b"\n") {
+                line = l.strip_suffix(b"\r").unwrap_or(l);
+            }
+            let text = String::from_utf8_lossy(line);
+            if text.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str(&text) {
+                Ok(v) => return Some(v),
+                Err(_) => self.broken = true,
+            }
+        }
+        self.reader = None;
+        None
+    }
+}
+
+/// A whole file's lines at once, for files that are read more than once
+/// over (Codex rollouts, the session index).
+pub(crate) fn read_lines(path: &Path) -> (Vec<Value>, bool) {
+    let mut lines = lines_of(path);
+    let all = lines.by_ref().collect();
+    (all, lines.broken)
 }
 
 pub(crate) fn jsonl_in(dir: &Path) -> Vec<PathBuf> {

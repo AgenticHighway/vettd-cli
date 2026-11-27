@@ -1254,3 +1254,38 @@ fn dashboard_export_is_unchanged_by_reading_history() {
     assert_eq!(export(&data).to_string(), before);
     assert!(export(&data).get("history").is_none());
 }
+
+// Logs are read a line at a time so a log file of hundreds of MB isn't
+// held whole (an owner's 652 MB file once peaked the read at 1.84 GB).
+// The streamed lines must be the ones the whole-file read gave: "\n" and
+// "\r\n" endings, blank lines skipped, a bad or cut-off line skipped and
+// flagged, and an unreadable file flagged with no lines.
+#[test]
+fn streamed_lines_match_the_whole_file_rules() {
+    let tmp = std::env::temp_dir().join(format!("lens-lines-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let path = tmp.join("log.jsonl");
+    let mut bytes =
+        b"{\"a\":1}\r\n\n   \r\n{\"b\":\"x\xffy\"}\nnot json\n{\"c\":3}\n{\"d\":".to_vec();
+    std::fs::write(&path, &bytes).unwrap();
+    let mut lines = lines_of(&path);
+    let got: Vec<Value> = lines.by_ref().collect();
+    assert_eq!(
+        got,
+        vec![
+            serde_json::json!({"a": 1}),
+            serde_json::json!({"b": "x\u{fffd}y"}),
+            serde_json::json!({"c": 3}),
+        ]
+    );
+    assert!(lines.broken);
+    // Without the bad and cut-off lines, nothing is flagged.
+    bytes.truncate(b"{\"a\":1}\r\n\n   \r\n{\"b\":\"x\xffy\"}\n".len());
+    std::fs::write(&path, &bytes).unwrap();
+    let (clean, broken) = read_lines(&path);
+    assert_eq!(clean.len(), 2);
+    assert!(!broken);
+    let (none, missing) = read_lines(&tmp.join("absent.jsonl"));
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert!(none.is_empty() && missing);
+}

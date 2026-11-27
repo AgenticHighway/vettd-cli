@@ -9,7 +9,7 @@
 //! the response streams.
 
 use super::{
-    intern, jsonl_in, read_lines, split, subdirs, text_chars, ts_of, u64_at, usage_with,
+    intern, jsonl_in, lines_of, split, subdirs, text_chars, ts_of, u64_at, usage_with,
     workspace_of, Found, History, Req, UseEvent,
 };
 use crate::data::BUCKETS;
@@ -110,15 +110,13 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
     found.opening(files.len());
     for (index, (path, folder, is_subagent)) in files.iter().enumerate() {
         found.opened();
-        let (lines, broken) = read_lines(path);
-        if broken {
-            found.meta(AGENT, folder).partial = true;
-        }
+        let mut lines = lines_of(path);
         let mut file_events = Vec::new();
         let mut current: Option<String> = None;
         // invoked_skills seen before any request in this file.
         let mut waiting: Vec<String> = Vec::new();
-        for line in &lines {
+        for line in lines.by_ref() {
+            let line = &line;
             let session = match line.get("sessionId").and_then(Value::as_str) {
                 Some(id) if *is_subagent && known.contains(id) => id.to_string(),
                 _ => folder.clone(),
@@ -251,6 +249,9 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
                 }
                 _ => {}
             }
+        }
+        if lines.broken {
+            found.meta(AGENT, folder).partial = true;
         }
         events.push(file_events);
     }
