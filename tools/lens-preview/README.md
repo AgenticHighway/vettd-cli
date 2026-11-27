@@ -71,6 +71,12 @@ docker run --rm -v "$PWD:/src:ro" node:22.17.0-bookworm bash -c '
   a component. Home/End (or g/G outside
   Find) jump to a list's first or last row. On lists, figures are bold and
   workspace and agent columns are muted.
+- History. Press h on Home, Week, a day or a session to list every session,
+  newest first: start date, agent, name, requests and dollars. On the
+  fixture it lists the corpus's sessions (1,991 on `--corpus stress`).
+  Type to filter by name, workspace, agent or date ("nov 17"); Backspace
+  removes a character. Enter opens the session over all its requests, and
+  Esc returns to the same filter and row, then to where you pressed h.
 - Maintainer. Press i. Narrow with w (workspace: every workspace in the
   loaded corpus, in sorted order), a (agent), Tab (type) and e (evidence);
   x clears. The header shows the scope, result count and
@@ -109,9 +115,20 @@ logs instead, and `--source local --json` exports them:
   `~/.codex/session_index.jsonl` for titles (`CODEX_HOME` replaces
   `~/.codex`).
 
-The period is the 7 UTC days ending today. Files untouched for 28 days are
-never opened; newer ones also feed the 4-week limit-hit count. A missing
-directory is noted on stderr and gives that agent no sessions.
+The period is the 7 UTC days ending today. For the dashboard, files
+untouched for 28 days are never opened; newer ones also feed the 4-week
+limit-hit count. A missing directory is noted on stderr and gives that
+agent no sessions.
+
+History (h) reads every log file, however old, on a background thread
+once the first screen is drawn, so startup is unchanged. Until it
+finishes, History says it is still reading and how many files it has read
+out of how many it found. A session that began before the period shows
+only its in-period requests on a day, and all of them in History. Plain
+`--json` never reads History. `--json --history` does the full read before
+printing (slow by design on a large history) and adds a `history` array,
+newest first, with the same fields and identifier rules as `sessions`.
+`--history` without `--json` exits with code 2.
 
 What you see, and how sure it is:
 

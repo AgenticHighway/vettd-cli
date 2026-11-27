@@ -12,8 +12,10 @@ pub(super) fn preview(
     let (title, scope, rows) = content(&Page::new(view), all, count, width, rt);
     match view {
         View::Day(day) => day_preview(day, all, count),
-        View::Session(id) => {
-            let session = &all[id];
+        View::Session(_) | View::HistorySession(_) => {
+            let Some(session) = rt.session(view, all) else {
+                return (crumb(view, all, rt), Vec::new());
+            };
             let mut detail = vec![
                 format!(
                     "{} | {} | {}",
@@ -29,10 +31,10 @@ pub(super) fn preview(
                     .filter(|row| row.open.is_none() && !row.text.starts_with("──"))
                     .map(|row| row.text),
             );
-            (all[id].name.into(), detail)
+            (session.name.into(), detail)
         }
-        View::Tokens(_) => (
-            crumb(view, all),
+        View::Tokens(_) | View::HistoryTokens(_) => (
+            crumb(view, all, rt),
             rows.into_iter()
                 .map(|row| row.text.replace(" tokens", " tok"))
                 .collect(),
@@ -43,7 +45,7 @@ pub(super) fn preview(
             (title, detail)
         }
         _ => (
-            crumb(view, all),
+            crumb(view, all, rt),
             rows.into_iter().map(|row| row.text).collect(),
         ),
     }

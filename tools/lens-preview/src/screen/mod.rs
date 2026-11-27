@@ -1,6 +1,6 @@
 use super::{
-    cells, comparable, content, cost_label, day_header, measure, priced, shorten, total, units,
-    usd, Emphasis, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
+    cells, comparable, content, cost_label, day_header, history_header, measure, priced, shorten,
+    total, units, usd, Emphasis, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
 use crate::data::{day_label, Data, Source};
 use ratatui::{
@@ -109,15 +109,18 @@ impl Theme {
     }
 }
 
-fn crumb(view: View, all: &Data) -> String {
+fn crumb(view: View, all: &Data, rt: &Runtime) -> String {
     match view {
         View::Home => "Home".into(),
         View::Headroom => "Plan headroom".into(),
         View::Week => "Daily activity".into(),
         View::Find => "Lookup".into(),
         View::Day(day) => day_label(day),
-        View::Session(id) => all[id].name.into(),
-        View::Tokens(_) => "Tokens".into(),
+        View::Session(_) | View::HistorySession(_) => rt
+            .session(view, all)
+            .map_or("Session".into(), |s| s.name.into()),
+        View::Tokens(_) | View::HistoryTokens(_) => "Tokens".into(),
+        View::History => "History".into(),
         View::Help => "Keys".into(),
         View::Inventory => "Components".into(),
         View::Component(c, s) => format!(
@@ -137,8 +140,8 @@ fn crumb(view: View, all: &Data) -> String {
 }
 
 /// Keeps Home and the last levels that fit, so the current place is never cut.
-fn breadcrumb(stack: &[Page], all: &Data, max: usize) -> String {
-    let parts: Vec<_> = stack.iter().map(|p| crumb(p.view, all)).collect();
+fn breadcrumb(stack: &[Page], all: &Data, rt: &Runtime, max: usize) -> String {
+    let parts: Vec<_> = stack.iter().map(|p| crumb(p.view, all, rt)).collect();
     let full = parts.join(" › ");
     if full.chars().count() <= max {
         return full;
@@ -352,7 +355,8 @@ fn draw_header(
     );
     let max = usize::from(f.area().width.saturating_sub(2));
     f.render_widget(
-        Paragraph::new(format!(" {}", breadcrumb(stack, cx.all, max))).style(theme.fg(MUTED)),
+        Paragraph::new(format!(" {}", breadcrumb(stack, cx.all, cx.rt, max)))
+            .style(theme.fg(MUTED)),
         path,
     );
     // The marker gets its own column so a wrapped answer keeps its indent.
@@ -426,22 +430,44 @@ fn footer_keys(view: View, w: u16) -> Vec<(&'static str, &'static str)> {
             ("a", "Agent"),
             ("x", "Clear"),
         ],
-        View::Find => vec![("Type", "to filter"), ("Esc", "Back"), ("Ctrl+C", "Quit")],
+        View::Find | View::History => {
+            vec![("Type", "to filter"), ("Esc", "Back"), ("Ctrl+C", "Quit")]
+        }
         _ if widen => vec![("p", "Widen to week"), ("Esc", "Back"), ("?", "Keys")],
-        View::Home if w < 65 => vec![("c", "USD/req"), ("i", "Inventory"), ("?", "Keys")],
+        View::Home if w < 65 => vec![
+            ("c", "USD/req"),
+            ("i", "Inventory"),
+            ("?", "Keys"),
+            ("h", "History"),
+        ],
         // q still quits and is in help; the day keys earn its place.
         View::Home => vec![
             ("←→", "Day"),
             ("c", "USD/requests"),
             ("i", "Inventory"),
             ("/", "Find"),
+            ("h", "History"),
             ("?", "Keys"),
+        ],
+        View::Week | View::Day(_) | View::Session(_) if w < 65 => vec![
+            ("i", "Inventory"),
+            ("/", "Find"),
+            ("Esc", "Back"),
+            ("h", "History"),
         ],
         _ if w < 65 => vec![("i", "Inventory"), ("/", "Find"), ("Esc", "Back")],
         View::Week => vec![
             ("1–7", "Day"),
             ("c", "USD/requests"),
             ("/", "Find"),
+            ("h", "History"),
+            ("Esc", "Back"),
+            ("?", "Keys"),
+        ],
+        View::Day(_) | View::Session(_) => vec![
+            ("c", "USD/requests"),
+            ("/", "Find"),
+            ("h", "History"),
             ("Esc", "Back"),
             ("?", "Keys"),
         ],

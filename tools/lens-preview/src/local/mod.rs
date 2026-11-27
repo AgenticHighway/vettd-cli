@@ -71,9 +71,31 @@ pub(crate) struct Found {
     pub(crate) uses: Vec<UseEvent>,
     pub(crate) limit_hits: u32,
     pub(crate) readings: Vec<Reading>,
+    /// History's read reports (files read, files found) here as it goes.
+    pub(crate) progress: Option<Box<dyn FnMut(usize, usize) + Send>>,
+    pub(crate) files: (usize, usize),
 }
 
 impl Found {
+    /// A reader found `n` more files it will open.
+    pub(crate) fn opening(&mut self, n: usize) {
+        self.files.1 += n;
+        self.report();
+    }
+
+    /// A reader is opening its next file.
+    pub(crate) fn opened(&mut self) {
+        self.files.0 += 1;
+        self.report();
+    }
+
+    fn report(&mut self) {
+        let (read, found) = self.files;
+        if let Some(progress) = self.progress.as_mut() {
+            progress(read, found);
+        }
+    }
+
     pub(crate) fn meta(&mut self, agent: &'static str, session: &str) -> &mut Meta {
         self.sessions
             .entry((agent, session.to_string()))
@@ -99,6 +121,16 @@ impl History {
             .and_then(|m| m.modified())
             .is_ok_and(|modified| modified >= cutoff)
     }
+}
+
+/// What a read covers.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Span {
+    /// The dashboard: the 7 UTC days ending today, from files modified
+    /// since the cutoff (none in tests, which use fixed dates).
+    Week(Option<SystemTime>),
+    /// History: every file, every request, one slice per whole session.
+    All,
 }
 
 /// Process-lifetime names for the views' `&'static str` fields. Local
@@ -322,37 +354,83 @@ pub(crate) fn test_data() -> Data {
         relay: None,
     };
     let now = parse_ts("2026-11-25T12:00:00Z").unwrap();
-    read(&roots, now, None, &mut Vec::new())
+    read(&roots, now, Span::Week(None), &mut Vec::new())
+}
+
+/// History over the hand-written logs under `tests/data/history/`: an old
+/// unpriced session and one that spans the period's start.
+#[cfg(test)]
+pub(crate) fn test_history() -> Data {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("history");
+    let roots = Roots {
+        claude: Some(dir.join("claude")),
+        codex: None,
+        relay: None,
+    };
+    let now = parse_ts("2026-11-25T12:00:00Z").unwrap();
+    read(&roots, now, Span::All, &mut Vec::new())
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Reads local logs as of the system clock. Notes go to stderr.
 pub(crate) fn load(relay_file: Option<PathBuf>) -> Data {
     eprintln!("Reading local logs…");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
     let cutoff = SystemTime::now().checked_sub(Duration::from_secs((HISTORY_DAYS * DAY) as u64));
     let mut notes = Vec::new();
-    let data = read(&Roots::from_env(relay_file), now, cutoff, &mut notes);
+    let data = read(
+        &Roots::from_env(relay_file),
+        unix_now(),
+        Span::Week(cutoff),
+        &mut notes,
+    );
     for note in notes {
         eprintln!("{note}");
     }
     data
 }
 
-/// Reads both agents' logs into the views' data. `cutoff` limits which
-/// files are opened by modification time.
-pub(crate) fn read(
+/// History: every session in the logs on disk, however old, newest
+/// first. `progress` hears (files read, files found) as reading goes. Its
+/// notes are dropped: the dashboard's read already printed them.
+pub(crate) fn history(progress: Option<Box<dyn FnMut(usize, usize) + Send>>) -> Data {
+    let roots = Roots {
+        relay: None,
+        ..Roots::from_env(None)
+    };
+    let found = Found {
+        progress,
+        ..Found::default()
+    };
+    read_into(&roots, unix_now(), Span::All, &mut Vec::new(), found)
+}
+
+/// Reads both agents' logs into the views' data over `span`.
+pub(crate) fn read(roots: &Roots, now: i64, span: Span, notes: &mut Vec<String>) -> Data {
+    read_into(roots, now, span, notes, Found::default())
+}
+
+fn read_into(
     roots: &Roots,
     now: i64,
-    cutoff: Option<SystemTime>,
+    span: Span,
     notes: &mut Vec<String>,
+    mut found: Found,
 ) -> Data {
     let history = History {
-        cutoff,
+        cutoff: match span {
+            Span::Week(cutoff) => cutoff,
+            Span::All => None,
+        },
         since: now - HISTORY_DAYS * DAY,
     };
-    let mut found = Found::default();
     let mut hits = Vec::new();
     for (agent, root, sub, reader) in [
         (
@@ -397,14 +475,18 @@ pub(crate) fn read(
                 })
                 .collect::<Vec<_>>()
         });
-    assemble(found, hits, relay, now, notes)
+    assemble(found, hits, relay, now, span == Span::All, notes)
 }
 
+/// Builds the views' data. The dashboard (`all` false) gets one slice per
+/// session and UTC day in the period; History (`all`) one slice per whole
+/// session, on the day it started, newest first.
 fn assemble(
     found: Found,
     hits: Vec<(&'static str, u32)>,
     relay: Option<Vec<Reading>>,
     now: i64,
+    all: bool,
     notes: &mut Vec<String>,
 ) -> Data {
     let today = now.div_euclid(DAY);
@@ -419,7 +501,7 @@ fn assemble(
     } = found;
     // Each session's start time, over all its requests in the period.
     let mut start: HashMap<(&str, &str), i64> = HashMap::new();
-    let in_period = |ts: i64| (first..=today).contains(&ts.div_euclid(DAY));
+    let in_period = |ts: i64| all || (first..=today).contains(&ts.div_euclid(DAY));
     for r in requests.iter().filter(|r| in_period(r.ts)) {
         let e = start.entry((r.agent, &r.session)).or_insert(r.ts);
         *e = (*e).min(r.ts);
@@ -438,6 +520,9 @@ fn assemble(
     keys.sort_by_key(|k| (start[k], k.0, k.1));
     let group: HashMap<(&str, &str), usize> =
         keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+    // The day a slice is on: its own on the dashboard, the session's start
+    // day in History.
+    let day_of = |key: (&str, &str), ts: i64| if all { start[&key] } else { ts }.div_euclid(DAY);
     // One slice per session and UTC day.
     let mut slices: BTreeMap<(i64, usize), Session> = BTreeMap::new();
     let slice = |agent: &'static str, session: &str, day: i64| {
@@ -463,7 +548,7 @@ fn assemble(
         }
     };
     for &((agent, session), ts) in &missing {
-        let day = ts.div_euclid(DAY);
+        let day = day_of((agent, session), ts);
         let agent = if agent == "Claude" { "Claude" } else { "Codex" };
         slices
             .entry((day, group[&(agent, session)]))
@@ -471,7 +556,7 @@ fn assemble(
     }
     for r in requests.iter().filter(|r| in_period(r.ts)) {
         let g = group[&(r.agent, r.session.as_str())];
-        let day = r.ts.div_euclid(DAY);
+        let day = day_of((r.agent, r.session.as_str()), r.ts);
         let s = slices
             .entry((day, g))
             .or_insert_with(|| slice(r.agent, &r.session, day));
@@ -490,7 +575,7 @@ fn assemble(
     let mut counted: BTreeMap<(i64, usize, &str, &str, &str, bool), u32> = BTreeMap::new();
     for u in uses.iter().filter(|u| in_period(u.ts)) {
         if let Some(&g) = group.get(&(u.agent, u.session.as_str())) {
-            let day = u.ts.div_euclid(DAY);
+            let day = day_of((u.agent, u.session.as_str()), u.ts);
             if slices.contains_key(&(day, g)) {
                 *counted
                     .entry((day, g, u.kind, u.name.as_str(), u.copy, u.estimated))
@@ -507,7 +592,16 @@ fn assemble(
             estimated,
         });
     }
-    let sessions: Vec<Session> = slices.into_values().collect();
+    let mut sessions: Vec<Session> = slices.into_values().collect();
+    if all {
+        let started = |s: &Session| start[&keys[s.group]];
+        sessions.sort_by(|a, b| {
+            started(b)
+                .cmp(&started(a))
+                .then(a.agent.cmp(b.agent))
+                .then(a.name.cmp(b.name))
+        });
+    }
     let totals: Vec<u64> = (0..BUCKETS.len())
         .map(|i| sessions.iter().map(|s| s.sources[i]).sum())
         .collect();
@@ -645,22 +739,15 @@ fn weekly_ends(relay: &[Reading], now: i64) -> Vec<u32> {
     ended[ended.len().saturating_sub(4)..].to_vec()
 }
 
-/// The local export: aggregates only. No titles, names, paths, prompts or
-/// IDs; sessions are numbered in start order instead.
-pub(crate) fn export(data: &Data) -> Value {
-    let token_sources: Vec<_> = data
-        .token_sources
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "source": s.name,
-                "basis_points": s.basis_points,
-                "estimated_tokens": s.tokens,
-            })
-        })
-        .collect();
-    let sessions: Vec<_> = data
-        .sessions
+/// `history[]` for `--json --history`: History's sessions, newest first,
+/// under the same rules as `sessions[]`.
+pub(crate) fn history_export(history: &Data) -> Value {
+    sessions_json(&history.sessions).into()
+}
+
+/// Sessions as the export holds them: no titles, names, paths or IDs.
+fn sessions_json(sessions: &[Session]) -> Vec<Value> {
+    sessions
         .iter()
         .map(|s| {
             let uses = |kind: &str| -> u32 {
@@ -688,7 +775,24 @@ pub(crate) fn export(data: &Data) -> Value {
                 })).collect::<Vec<_>>(),
             })
         })
+        .collect()
+}
+
+/// The local export: aggregates only. No titles, names, paths, prompts or
+/// IDs; sessions are numbered in start order instead.
+pub(crate) fn export(data: &Data) -> Value {
+    let token_sources: Vec<_> = data
+        .token_sources
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "source": s.name,
+                "basis_points": s.basis_points,
+                "estimated_tokens": s.tokens,
+            })
+        })
         .collect();
+    let sessions = sessions_json(&data.sessions);
     let mut workspaces: Vec<&str> = data.sessions.iter().map(|s| s.workspace).collect();
     workspaces.sort_unstable();
     workspaces.dedup();

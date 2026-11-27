@@ -32,9 +32,125 @@ pub(crate) fn content(page: &Page, all: &Data, count: bool, width: u16, rt: &Run
         View::Week => week(all, count, bar_width),
         View::Find => synthetic(find(&page.filter, all, count, width), all),
         View::Day(day) => day_sessions(day, all, count, width),
-        View::Session(id) => session(id, &all[id], bar_width, width, all.local()),
-        View::Tokens(id) => tokens(&all[id], width, all.local()),
+        View::Session(id) => session(id, &all[id], bar_width, width, all.local(), false),
+        View::Tokens(id) => tokens(&all[id], width, all.local(), false),
+        View::History => history(&page.filter, all, rt, width),
+        View::HistorySession(id) | View::HistoryTokens(id) => match rt.past() {
+            Some(past) if matches!(page.view, View::HistorySession(_)) => {
+                session(id, &past[id], bar_width, width, all.local(), true)
+            }
+            Some(past) => tokens(&past[id], width, all.local(), true),
+            None => history(&page.filter, all, rt, width),
+        },
     }
+}
+
+/// Cells a History row's fixed columns take: the row marker (3), date (6),
+/// agent (6), requests (5), dollars (8), the gaps between them (4) and the
+/// partial flag " ≥" (2). The name gets the rest.
+const HISTORY_FIXED: usize = 3 + 6 + 6 + 5 + 8 + 4 + 2;
+
+/// The name column at a list width: 14 cells in the 48-cell pane at 80
+/// columns.
+pub(crate) fn history_name_width(width: u16) -> usize {
+    usize::from(width).saturating_sub(HISTORY_FIXED).max(4)
+}
+
+/// The History column header, aligned with its rows.
+pub(crate) fn history_header(width: u16) -> String {
+    let name = history_name_width(width);
+    format!(
+        "{:<6} {:<6} {:<name$} {:>5} {:>8}",
+        "DATE", "AGENT", "SESSION", "REQ", "USD"
+    )
+}
+
+/// The start of `text` that fits `max` cells, ending in "…" when cut.
+fn cut(text: &str, max: usize) -> String {
+    if cells(text) <= max {
+        text.to_string()
+    } else {
+        format!("{}…", clip(text, max.saturating_sub(1)))
+    }
+}
+
+/// History: every session found, newest first, filtered by what was typed
+/// with Find's matcher. While the local read runs it says how far it got
+/// and lists no session.
+fn history(filter: &str, all: &Data, rt: &Runtime, width: u16) -> Content {
+    let chip = if all.local() {
+        "local logs"
+    } else {
+        "synthetic"
+    };
+    let Some(past) = rt.past() else {
+        let Past::Reading(read, found) = rt.history else {
+            unreachable!("past() is None only while reading")
+        };
+        return (
+            "History is still reading local logs".into(),
+            format!("{chip} | Reading {read} of {found} files"),
+            vec![line(format!(
+                "Reading log files: {read} of {found} read so far"
+            ))],
+        );
+    };
+    let needle = filter.to_ascii_lowercase();
+    let matches = |text: &str| text.to_ascii_lowercase().contains(&needle);
+    let name = history_name_width(width);
+    let rows: Vec<Row> = past
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            matches(s.name)
+                || matches(s.workspace)
+                || matches(s.agent)
+                || matches(&day_label(s.day))
+        })
+        .map(|(id, s)| {
+            let dollars = if s.requests.iter().all(|r| !r.priced()) {
+                "unpriced".to_string()
+            } else {
+                usd(s.cents())
+            };
+            // "unpriced" is a flag, not an amount, so it isn't bold.
+            let figure = (dollars != "unpriced").then_some(Emphasis::Figure);
+            Cells::default()
+                .add(pad(&day_label(s.day), 6), Some(Emphasis::Secondary))
+                .add(" ", None)
+                .add(format!("{:<6}", s.agent), Some(Emphasis::Secondary))
+                .add(format!(" {} ", pad(&cut(s.name, name), name)), None)
+                .add(format!("{:>5}", s.requests.len()), Some(Emphasis::Figure))
+                .add(" ", None)
+                .add(format!("{dollars:>8}"), figure)
+                .add(if s.incomplete { " ≥" } else { "" }, None)
+                .link(
+                    View::HistorySession(id),
+                    "Open session over all its requests",
+                )
+        })
+        .collect();
+    let title = if filter.is_empty() {
+        format!("{} sessions, newest first", past.len())
+    } else {
+        format!(
+            "{} of {} sessions match \"{filter}\"",
+            rows.len(),
+            past.len()
+        )
+    };
+    let scope = format!(
+        "{chip} | All sessions | {} USD | Filter: {filter}_",
+        all.dollars()
+    );
+    if rows.is_empty() {
+        return (
+            title,
+            scope,
+            vec![line(format!("No session matches \"{filter}\""))],
+        );
+    }
+    (title, scope, rows)
 }
 
 /// On local data the inventory and everything it opens stays fixture
@@ -65,6 +181,7 @@ fn help() -> Content {
             "w a e   Inventory: workspace, agent, evidence",
             "x       Inventory: clear filters",
             "/       Find a day, session or component",
+            "h       History: all sessions, newest first",
             "c       Toggle priced USD and requests",
             "q       Quit (Ctrl+C also works in search)",
         ]
@@ -315,9 +432,12 @@ fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
     )
 }
 
-fn session_scope(s: &Session, local: bool) -> String {
+/// A History session covers all its requests, so its scope says so rather
+/// than name one day of the period.
+fn session_scope(s: &Session, local: bool, past: bool) -> String {
     format!(
-        "{} UTC | Workspace {} | {} | {}",
+        "{}{} UTC | Workspace {} | {} | {}",
+        if past { "All requests | Started " } else { "" },
         day_label(s.day),
         s.workspace,
         s.agent,
@@ -357,7 +477,7 @@ fn groups(s: &Session) -> Vec<(&'static str, &'static str, Vec<&Request>)> {
     groups
 }
 
-fn tokens(s: &Session, width: u16, local: bool) -> Content {
+fn tokens(s: &Session, width: u16, local: bool, past: bool) -> Content {
     let room = usize::from(width).saturating_sub(3);
     let mut rows = incomplete_rows(s);
     for (worker, model, requests) in groups(s) {
@@ -391,7 +511,7 @@ fn tokens(s: &Session, width: u16, local: bool) -> Content {
     }
     (
         format!("{} / token and cache detail", s.name),
-        session_scope(s, local),
+        session_scope(s, local, past),
         rows,
     )
 }
@@ -488,12 +608,23 @@ fn used_rows(s: &Session) -> Vec<Row> {
     rows
 }
 
-fn session(id: usize, s: &Session, bar_width: usize, width: u16, local: bool) -> Content {
+fn session(
+    id: usize,
+    s: &Session,
+    bar_width: usize,
+    width: u16,
+    local: bool,
+    past: bool,
+) -> Content {
     let mut rows = incomplete_rows(s);
     rows.extend(cost_rows(s, bar_width, width));
     rows.push(link(
         "Token and cache detail",
-        View::Tokens(id),
+        if past {
+            View::HistoryTokens(id)
+        } else {
+            View::Tokens(id)
+        },
         "See token counts by model and worker",
     ));
     if local {
@@ -517,7 +648,7 @@ fn session(id: usize, s: &Session, bar_width: usize, width: u16, local: bool) ->
     }
     (
         format!("{} / cost components", s.name),
-        session_scope(s, local),
+        session_scope(s, local, past),
         rows,
     )
 }
