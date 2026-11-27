@@ -16,7 +16,7 @@ The code bears the feedback out:
   Home → Nov 13's sessions takes 7 presses (↓×4, Enter, ↓, Enter). Home's
   daily bars can be seen but not selected.
 - `/` finds components only. Sessions and days can't be found by name, so a
-  session in a 280-row stress Day list can only be reached with ↓ or PgDn.
+  session in a 289-row stress Day list can only be reached with ↓ or PgDn.
 - No key jumps to the first or last row of a list.
 - Each row is drawn in a single style (ink, or amber for flags). Figures,
   names, workspaces and agents look the same.

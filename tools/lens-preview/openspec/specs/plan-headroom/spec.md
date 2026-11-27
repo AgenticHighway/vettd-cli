@@ -1,0 +1,145 @@
+# plan-headroom Specification
+
+## Purpose
+Plan headroom: how full each provider usage window is, its pace to reset,
+and where each number comes from. In the preview, all window data is
+synthetic.
+
+## Requirements
+
+### Requirement: One row per window
+Plan headroom SHALL show one row per provider window: the 5-hour and weekly
+windows for Claude and for Codex. Each row with readings SHALL show the used
+share, the projected share at reset, the reset time and the source: "logs"
+for Codex, "relay" for Claude.
+
+Covered by: `headroom_answers_with_the_filling_window_and_cites_sources` and
+`headroom_rows_fit_80_columns` (src/tests/render.rs), and
+`relay_readings_feed_claude_windows_like_codex` (src/local/tests.rs).
+
+#### Scenario: Sources are cited
+- **WHEN** Plan headroom is built from the fixture
+- **THEN** it has one selectable row per window (4 in all), Claude rows end in "relay", and Codex rows end in "logs"
+
+#### Scenario: Claude rows from the relay
+- **WHEN** Plan headroom is built with `--source local` and the relay file has two readings in the current Claude 5-hour window
+- **THEN** the Claude 5-hour row shows the latest share and a pace, ends in "relay", and is selectable
+
+### Requirement: Rows without readings
+A window row without readings SHALL show "—" for its used share, projected
+share and reset time, say why it has none, and SHALL NOT open anything.
+
+Covered by: `codex_windows_group_by_time_with_a_running_maximum`
+(src/local/tests.rs) and
+`local_plan_headroom_is_reachable_and_names_the_missing_relay`
+(src/e2e/local.rs).
+
+#### Scenario: Claude rows without the relay
+- **WHEN** Plan headroom is built with `--source local` and no relay file
+- **THEN** both Claude rows show "—" for used, pace and reset, say "relay not set up", and are not selectable
+
+### Requirement: Window rows open their sessions
+A 5-hour window's row SHALL open the sessions of the day of its latest
+reading, which is Nov 18 on the fixture. A weekly window's row SHALL open the
+daily view. A row without readings SHALL open nothing.
+
+Covered by: `plan_journey_goes_deep_and_comes_back_to_the_same_finding`
+(src/e2e/mod.rs). The weekly case is verified in `plan.rs::window_row`. The
+local case needs a test to be added (tasks 4.4).
+
+#### Scenario: A 5-hour row opens today
+- **WHEN** Enter is pressed on the Claude 5-hour row on the fixture
+- **THEN** the breadcrumb is "Home › Plan headroom › Nov 18"
+
+#### Scenario: Codex 5-hour row on local data
+- **WHEN** the Codex 5-hour window's latest reading is on Dec 2 and Enter is pressed on its row
+- **THEN** the Dec 2 sessions open
+
+### Requirement: Straight-line pace
+The projected share at reset SHALL be a straight line through the window's
+first and last readings, extended to the reset. With fewer than 2 readings,
+the projection SHALL show "—" and no fill time, never a guessed number.
+
+Covered by: `pace_needs_two_readings` and
+`pace_extrapolates_to_reset_and_names_when_it_fills` (src/tests/render.rs).
+
+#### Scenario: Two or more readings
+- **WHEN** Claude's 5-hour window goes from 9% to 62% between its first and last readings
+- **THEN** its projection is 115% and it fills at 13:22
+
+#### Scenario: One reading
+- **WHEN** Codex's 5-hour window has a single reading
+- **THEN** its row shows "—" for the projection, and it has no fill time
+
+### Requirement: Answer names the soonest fill
+The answer SHALL name the window that fills soonest, meaning the earliest
+fill time and not the largest projection, with its used share and when it
+fills. Only windows with readings SHALL count.
+
+Covered by: `headroom_answers_with_the_filling_window_and_cites_sources` and
+`soonest_window_wins_over_the_largest_projection` (src/tests/render.rs).
+
+#### Scenario: Default fixture
+- **WHEN** Plan headroom is shown
+- **THEN** the answer is "Claude 5-hour window is 62% used. At this pace it's full by 13:22."
+
+#### Scenario: Larger projection that fills later
+- **WHEN** a weekly window projects above the Claude 5-hour window's 115% but fills days later
+- **THEN** the Claude 5-hour window is the one named
+
+### Requirement: Answer when nothing fills
+When no window is on pace to fill before it resets, the answer SHALL say
+"No window is on pace to fill before it resets." On local data without relay
+readings, the answer SHALL NOT mention the relay. Instead, the "Last 4 weeks"
+section SHALL say that Claude windows need the statusline relay and that Lens
+doesn't guess them.
+
+Covered by: `local_headroom_names_the_missing_relay_under_history`
+(src/local/tests.rs).
+
+#### Scenario: Nothing filling, no relay
+- **WHEN** Plan headroom is shown with `--source local`, no relay data, and no Codex window on pace to fill
+- **THEN** the answer is "No window is on pace to fill before it resets.", and under "Last 4 weeks" a note says Claude windows need the statusline relay and that Lens doesn't guess them
+
+### Requirement: No plan recommendation
+Plan headroom SHALL NOT recommend a plan. Below the window rows it SHALL show
+how Claude's recent weekly windows ended, how many times each agent's limit
+stopped work, how to read the pace column, and that the provider's meter is
+the source of truth. A history figure the source can't supply SHALL say what
+it needs instead of showing a number.
+
+Covered by: `plan_headroom_reaches_its_trailing_explanation`
+(src/e2e/scrolling.rs), plus relay tests to be added (tasks 3.2).
+
+#### Scenario: Trailing explanation
+- **WHEN** a person scrolls to the bottom of Plan headroom
+- **THEN** "Provider meters are the source of truth." is shown
+
+#### Scenario: Weekly history without the relay
+- **WHEN** Plan headroom is shown with `--source local` and no relay file
+- **THEN** the weekly history row says it needs the statusline relay, and no Claude weekly percentage is shown
+
+#### Scenario: Weekly history from the relay
+- **WHEN** the relay file spans two weekly resets
+- **THEN** the weekly history row lists those two endings and says the relay has seen 2 weeks
+
+### Requirement: Window data follows the source
+On the fixture, every window, reading, weekly history and limit-hit count
+SHALL come from the synthetic fixture, and nothing local SHALL be read. On
+local data, Codex windows and limit hits SHALL come from local logs, and
+Claude windows and weekly history from the statusline relay file.
+
+Covered by: `export_carries_home_and_headroom_data` (src/tests/render.rs)
+for the fixture, plus relay tests to be added (tasks 3.1).
+
+#### Scenario: Windows come from the fixture
+- **WHEN** the export is built with `--source fixture`
+- **THEN** `windows` has the fixture's 4 windows, and no relay file is opened
+
+#### Scenario: Codex windows come from logs
+- **WHEN** the export is built with `--source local` from hand-written logs with two Codex 5-hour readings and no relay file
+- **THEN** the Codex 5-hour window holds those 2 readings, and the Claude windows hold none
+
+#### Scenario: Claude windows come from the relay
+- **WHEN** the export is built with `--source local` and a hand-written relay file with one `seven_day` reading in the current window
+- **THEN** the Claude weekly window holds that 1 reading

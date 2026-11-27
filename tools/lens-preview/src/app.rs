@@ -1,6 +1,7 @@
 //! Frame computation and key handling, apart from the terminal.
 
-use crate::fixture::{workspaces, Session, AGENTS, KINDS};
+use crate::data::Data;
+use crate::fixture::{AGENTS, KINDS};
 use crate::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -106,7 +107,7 @@ impl App {
     }
 
     /// Computes the current frame and clamps selection and scroll to it.
-    pub(crate) fn frame(&mut self, all: &[Session], (w, h): (u16, u16)) -> Shown {
+    pub(crate) fn frame(&mut self, all: &Data, (w, h): (u16, u16)) -> Shown {
         let page = self.stack.last_mut().unwrap();
         let (title, scope, rows) = content(page, all, self.count, screen::list_width(w), &self.rt);
         let actions: Vec<_> = rows
@@ -135,7 +136,7 @@ impl App {
         }
     }
 
-    pub(crate) fn draw(&self, f: &mut ratatui::Frame, all: &[Session], shown: &Shown, mono: bool) {
+    pub(crate) fn draw(&self, f: &mut ratatui::Frame, all: &Data, shown: &Shown, mono: bool) {
         screen::draw(
             f,
             &self.stack,
@@ -150,7 +151,7 @@ impl App {
     }
 
     /// Applies one key press. Returns false when the key quits.
-    pub(crate) fn press(&mut self, all: &[Session], (w, h): (u16, u16), key: KeyEvent) -> bool {
+    pub(crate) fn press(&mut self, all: &Data, (w, h): (u16, u16), key: KeyEvent) -> bool {
         if key.kind == KeyEventKind::Release {
             return true;
         }
@@ -192,7 +193,7 @@ impl App {
     /// Keys that act on the current page: moving and scrolling, typing in
     /// Find, and inventory filters. Returns false when the key isn't one.
     /// Find takes letters first, so typing never triggers a command.
-    fn edit_page(&mut self, code: KeyCode, all: &[Session], shown: &Shown) -> bool {
+    fn edit_page(&mut self, code: KeyCode, all: &Data, shown: &Shown) -> bool {
         let page = self.stack.last_mut().unwrap();
         let finding = matches!(page.view, View::Find);
         let inventory = matches!(page.view, View::Inventory);
@@ -252,7 +253,9 @@ impl App {
                 reset(page);
             }
             KeyCode::Tab if inventory => cycle(page, 0, KINDS.len()),
-            KeyCode::Char('w') if inventory => cycle(page, 1, workspaces(all).len()),
+            KeyCode::Char('w') if inventory => {
+                cycle(page, 1, components::filter_workspaces(all).len())
+            }
             KeyCode::Char('a') if inventory => cycle(page, 2, AGENTS.len()),
             KeyCode::Char('e') if inventory => cycle(page, 3, components::EVIDENCE.len()),
             KeyCode::Char('x') if inventory => {
@@ -268,7 +271,7 @@ impl App {
     fn global(
         &mut self,
         code: KeyCode,
-        all: &[Session],
+        all: &Data,
         size: (u16, u16),
         active: Option<(usize, (View, &'static str))>,
     ) -> bool {
@@ -289,8 +292,10 @@ impl App {
             // 1–7 open the period's days by position, as Week lists them.
             // Find never gets here: it types digits first.
             KeyCode::Char(ch @ '1'..='7') if matches!(view, View::Home | View::Week) => {
-                let day = 11 + ch.to_digit(10).unwrap();
-                self.stack.push(Page::new(View::Day(day)));
+                let position = ch.to_digit(10).unwrap() as usize - 1;
+                if let Some(&day) = all.days.get(position) {
+                    self.stack.push(Page::new(View::Day(day)));
+                }
             }
             KeyCode::Char('c') if view.measured() => {
                 self.toggle_unit(all, size, active.map(|(_, (target, _))| target))
@@ -305,7 +310,7 @@ impl App {
     /// (Nov 16 is unusual in dollars, not in requests), so the selection
     /// follows the target, not the position. If it vanished, the first row
     /// is selected rather than whichever row slid into its place.
-    fn toggle_unit(&mut self, all: &[Session], (w, _): (u16, u16), before: Option<View>) {
+    fn toggle_unit(&mut self, all: &Data, (w, _): (u16, u16), before: Option<View>) {
         self.count = !self.count;
         let page = self.stack.last_mut().unwrap();
         if page.day.is_some() {

@@ -2,6 +2,7 @@
 //! title must fit its block without cutting a word.
 
 use super::*;
+use crate::data::Data;
 use ratatui::{backend::TestBackend, buffer::Buffer, style::Modifier};
 
 fn day(value: Option<u32>) -> screen::Day {
@@ -13,7 +14,7 @@ fn day(value: Option<u32>) -> screen::Day {
 }
 
 /// Renders Home over an explicit corpus, as render.rs does for the default one.
-fn home_over(all: &[Session], (w, h): (u16, u16)) -> Buffer {
+fn home_over(all: &Data, (w, h): (u16, u16)) -> Buffer {
     let rt = Runtime::default();
     let stack = [Page::new(View::Home)];
     let page = stack.last().unwrap();
@@ -107,7 +108,7 @@ fn bar_heights(grid: &[Vec<char>], title: usize, caption: usize) -> Vec<usize> {
 
 #[test]
 fn stress_bars_show_the_spread_between_days() {
-    let grid = grid(&home_over(&fixture::stress_sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::stress(), (80, 24)));
     let title = title_row(&grid);
     let heights = bar_heights(&grid, title, caption_row(&grid, title));
     let min = *heights.iter().min().unwrap();
@@ -119,7 +120,7 @@ fn stress_bars_show_the_spread_between_days() {
 
 #[test]
 fn stress_title_names_the_floor_in_whole_dollars() {
-    let grid = grid(&home_over(&fixture::stress_sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::stress(), (80, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     let after = title
         .split("from $")
@@ -132,7 +133,7 @@ fn stress_title_names_the_floor_in_whole_dollars() {
 
 #[test]
 fn stress_title_stays_whole_when_narrow() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let grid = grid(&home_over(&all, (60, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     // Stacked at 60 columns the full wording does not fit, so the short
@@ -145,7 +146,7 @@ fn stress_title_stays_whole_when_narrow() {
 // axis stay, because a raised axis that isn't named misleads.
 #[test]
 fn stress_title_keeps_unit_and_axis_when_very_narrow() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let (days, _) = screen::daily(&all, false);
     let base = screen::baseline(&days, false);
     let grid = grid(&home_over(&all, (40, 24)));
@@ -160,7 +161,7 @@ fn stress_title_keeps_unit_and_axis_when_very_narrow() {
 
 #[test]
 fn default_title_keeps_its_full_wording_without_an_axis() {
-    let grid = grid(&home_over(&fixture::sessions(), (80, 24)));
+    let grid = grid(&home_over(&Data::fixture(), (80, 24)));
     let title = title_of(&grid[title_row(&grid)]);
     assert!(title.starts_with("DAILY SPEND  ·  normal ≈"), "{title:?}");
     assert!(!title.contains("from $"), "{title:?}");
@@ -168,7 +169,7 @@ fn default_title_keeps_its_full_wording_without_an_axis() {
 
 #[test]
 fn stress_floor_is_whole_dollars_below_the_lowest_day() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let (days, _) = screen::daily(&all, false);
     let base = screen::baseline(&days, false);
     let lowest = days.iter().filter_map(|d| d.value).min().unwrap();
@@ -179,7 +180,7 @@ fn stress_floor_is_whole_dollars_below_the_lowest_day() {
 
 #[test]
 fn default_corpus_has_no_floor_in_dollars() {
-    let (days, _) = screen::daily(&fixture::sessions(), false);
+    let (days, _) = screen::daily(&Data::fixture(), false);
     assert_eq!(screen::baseline(&days, false), 0);
 }
 
@@ -223,7 +224,7 @@ fn no_data_has_no_floor() {
 
 /// Renders any stack over an explicit corpus, with each page's own selection
 /// and scroll, as the app draws it.
-fn stack_over(all: &[Session], stack: &[Page], (w, h): (u16, u16), mono: bool) -> Buffer {
+fn stack_over(all: &Data, stack: &[Page], (w, h): (u16, u16), mono: bool) -> Buffer {
     let rt = Runtime::default();
     let page = stack.last().unwrap();
     let (title, scope, rows) = content(page, all, false, screen::list_width(w), &rt);
@@ -312,7 +313,7 @@ fn shorten_treats_an_existing_ellipsis_as_ordinary_text() {
 #[test]
 fn day_header_keeps_the_narrow_column_for_default_corpus() {
     assert_eq!(
-        day_header(16, &fixture::sessions(), 80),
+        day_header(16, &Data::fixture(), 80),
         "SESSION          WS   AGENT      TOTAL"
     );
 }
@@ -320,7 +321,7 @@ fn day_header_keeps_the_narrow_column_for_default_corpus() {
 // Each stress day's rows share one workspace column, so the totals line up.
 #[test]
 fn stress_day_totals_end_in_one_column_inside_the_list() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let stack = [Page::new(View::Home), Page::new(View::Day(16))];
     for (w, h) in [(80u16, 24u16), (60, 24)] {
         let buffer = stack_over(&all, &stack, (w, h), false);
@@ -351,7 +352,7 @@ fn stress_day_totals_end_in_one_column_inside_the_list() {
 // shortened to exactly the column; at 60 wide it keeps its start and end.
 #[test]
 fn long_workspace_is_shortened_to_the_day_column() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.day == 16 && s.workspace.chars().count() == 94)
@@ -378,7 +379,7 @@ fn long_workspace_is_shortened_to_the_day_column() {
 // chip rather than dropping every chip after it.
 #[test]
 fn long_scope_keeps_agent_and_cost_chips() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.workspace.chars().count() == 94)
@@ -391,7 +392,7 @@ fn long_scope_keeps_agent_and_cost_chips() {
         assert!(chips.contains(&format!("Nov {} UTC", s.day)), "{chips:?}");
         assert!(chips.contains('…'), "{chips:?}");
         assert!(chips.contains(s.agent), "{chips:?}");
-        assert!(chips.contains(&cost_label(s)), "{chips:?}");
+        assert!(chips.contains(&cost_label(s, false)), "{chips:?}");
         assert!(!chips.trim_end().ends_with('…'), "{chips:?}");
     }
 }
@@ -400,7 +401,7 @@ fn long_scope_keeps_agent_and_cost_chips() {
 // and in the token detail, at both widths.
 #[test]
 fn long_model_session_rows_end_with_their_cost() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.requests.iter().any(|r| r.model.chars().count() == 63))
@@ -428,7 +429,7 @@ fn long_model_session_rows_end_with_their_cost() {
 // with the cost too.
 #[test]
 fn long_model_session_preview_ends_with_its_cost() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.requests.iter().any(|r| r.model.chars().count() == 63))
@@ -466,7 +467,7 @@ fn long_model_session_preview_ends_with_its_cost() {
 // the shortening arithmetic must still never underflow or panic there.
 #[test]
 fn stress_views_draw_at_the_smallest_size() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let long = all
         .iter()
         .position(|s| s.workspace.chars().count() > 80)
@@ -501,7 +502,7 @@ fn assert_selection_reversed(buffer: &Buffer) {
 // is still marked by reverse video.
 #[test]
 fn no_color_home_title_names_the_floor_in_whole_dollars() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let buffer = stack_over(&all, &[Page::new(View::Home)], (80, 24), true);
     let grid = grid(&buffer);
     let title = title_of(&grid[title_row(&grid)]);
@@ -519,7 +520,7 @@ fn no_color_home_title_names_the_floor_in_whole_dollars() {
 // session is reverse video.
 #[test]
 fn no_color_day_totals_end_in_one_column() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let stack = [Page::new(View::Home), Page::new(View::Day(16))];
     let (w, h) = (80u16, 24u16);
     let buffer = stack_over(&all, &stack, (w, h), true);
@@ -540,7 +541,7 @@ fn no_color_day_totals_end_in_one_column() {
 // cost as bracketed chips, and shortens only the workspace chip.
 #[test]
 fn no_color_long_session_chips_stay_in_bracket_form() {
-    let all = fixture::stress_sessions();
+    let all = Data::stress();
     let id = all
         .iter()
         .position(|s| s.workspace.chars().count() == 94)
@@ -552,6 +553,147 @@ fn no_color_long_session_chips_stay_in_bracket_form() {
     assert!(chips.contains(&format!("[Nov {} UTC]", s.day)), "{chips:?}");
     assert!(chips.contains('…'), "{chips:?}");
     assert!(chips.contains(&format!("[{}]", s.agent)), "{chips:?}");
-    assert!(chips.contains(&format!("[{}]", cost_label(s))), "{chips:?}");
+    assert!(
+        chips.contains(&format!("[{}]", cost_label(s, false))),
+        "{chips:?}"
+    );
     assert_selection_reversed(&buffer);
+}
+
+// On local data the inventory shows fixture copies, so its workspace
+// filter must cycle the fixture's workspaces. Cycling real ones would pair
+// a real workspace name with synthetic copies.
+#[test]
+fn local_workspace_filter_stays_on_fixture_workspaces() {
+    let local = crate::local::test_data();
+    assert!(local.local());
+    assert_eq!(
+        components::filter_workspaces(&local),
+        crate::fixture::WORKSPACES.to_vec()
+    );
+    assert_eq!(
+        components::filter_workspaces(&Data::stress()).len(),
+        6,
+        "stress cycles its own workspaces"
+    );
+}
+
+// A cost chip may lose its note but never a digit. At 60 columns the
+// workspace chip used to keep its full width and leave "$18.7…" for the
+// cost, a wrong figure rather than a shorter one.
+#[test]
+fn session_cost_chip_keeps_every_digit_at_60_columns() {
+    let all = Data::stress();
+    let mut day: Vec<usize> = (0..all.len()).filter(|&i| all[i].day == 16).collect();
+    day.sort_by_key(|&i| std::cmp::Reverse(all[i].cents()));
+    for &id in day.iter().take(40) {
+        let s = &all[id];
+        if priced(s) == 0 {
+            continue;
+        }
+        let stack = [Page::new(View::Home), Page::new(View::Session(id))];
+        let buffer = stack_over(&all, &stack, (60, 24), true);
+        let chips = line(&grid(&buffer)[3]);
+        assert!(
+            chips.contains(&format!("[{}", usd(s.cents()))),
+            "{} in {} lost digits: {chips:?}",
+            s.name,
+            s.workspace
+        );
+    }
+}
+
+/// Characters that take two terminal cells must be counted as two, or the
+/// columns after them shift and the total is clipped at the list edge.
+#[test]
+fn wide_workspace_keeps_totals_whole_and_aligned() {
+    let mut all = Data::fixture();
+    let day = all.sessions[0].day;
+    let same_day: Vec<usize> = (0..all.sessions.len())
+        .filter(|&i| all.sessions[i].day == day)
+        .collect();
+    assert!(same_day.len() >= 2, "need two sessions on day {day}");
+    all.sessions[same_day[0]].workspace = "日本語のワークスペース";
+    all.sessions[same_day[1]].workspace = "billing-service";
+    assert_eq!(cells("日本語"), 6);
+    let stack = [Page::new(View::Home), Page::new(View::Day(day))];
+    let rows = content(
+        stack.last().unwrap(),
+        &all,
+        false,
+        screen::list_width(80),
+        &Runtime::default(),
+    )
+    .2;
+    let ends: Vec<usize> = rows
+        .iter()
+        .filter(|r| r.open.is_some())
+        .map(|r| {
+            let total = r.text.trim_end_matches(" ≥");
+            cells(total)
+        })
+        .collect();
+    assert!(
+        ends.windows(2).all(|w| w[0] == w[1]),
+        "totals end at {ends:?}"
+    );
+    assert!(
+        ends[0] + 3 <= usize::from(screen::list_width(80)),
+        "total ends at {} past the list",
+        ends[0]
+    );
+    for &i in &same_day {
+        let s = &all.sessions[i];
+        let row = rows.iter().find(|r| is_session(r, i)).unwrap();
+        assert!(row.text.contains(&usd(s.cents())), "{:?}", row.text);
+    }
+}
+
+#[test]
+fn shorten_counts_wide_characters_as_two_cells() {
+    assert_eq!(shorten("日本語のワークスペース", 7), "日…ス");
+    assert!(cells(&shorten("日本語のワークスペース", 8)) <= 8);
+    assert_eq!(pad("日本", 6), "日本  ");
+    assert_eq!(clip("日本語", 5), "日本");
+}
+
+// The owner found a bare "≥ partial" hard to decode, so a partial day's
+// scope chips spell it out. That only helps if the chip shows whole at 80
+// columns, in colour and no-colour, instead of shortening to "…".
+#[test]
+fn partial_flag_meaning_shows_whole_on_every_stress_day_at_80_columns() {
+    let all = Data::stress();
+    for day in 12..=18 {
+        for mono in [false, true] {
+            let stack = [Page::new(View::Home), Page::new(View::Day(day))];
+            let chips = line(&grid(&stack_over(&all, &stack, (80, 24), mono))[3]);
+            assert!(
+                chips.contains("≥ partial: total is at least this"),
+                "{chips:?}"
+            );
+        }
+    }
+}
+
+// A partial session's total is a floor. If its "≥" is cut off at the list
+// edge, the row reads as an exact total, so the flag must fit on every day.
+#[test]
+fn partial_flag_fits_every_stress_day_at_80_columns() {
+    let all = Data::stress();
+    let width = screen::list_width(80);
+    for day in 12..=18 {
+        let (title, _, rows) = content(
+            &Page::new(View::Day(day)),
+            &all,
+            false,
+            width,
+            &Runtime::default(),
+        );
+        let partial: Vec<_> = rows.iter().filter(|r| r.text.ends_with(" ≥")).collect();
+        assert!(!partial.is_empty(), "Nov {day} has no partial row");
+        assert!(title.contains("≥ partial"), "{title:?}");
+        for r in partial {
+            assert!(3 + cells(&r.text) <= usize::from(width), "{:?}", r.text);
+        }
+    }
 }

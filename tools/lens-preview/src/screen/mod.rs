@@ -1,7 +1,8 @@
 use super::{
-    comparable, content, cost_label, day_header, measure, priced, shorten, units, usd, Emphasis,
-    Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
+    cells, comparable, content, cost_label, day_header, measure, priced, shorten, total, units,
+    usd, Emphasis, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
+use crate::data::{day_label, Data, Source};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -108,13 +109,13 @@ impl Theme {
     }
 }
 
-fn crumb(view: View, all: &[Session]) -> String {
+fn crumb(view: View, all: &Data) -> String {
     match view {
         View::Home => "Home".into(),
         View::Headroom => "Plan headroom".into(),
         View::Week => "Daily activity".into(),
         View::Find => "Lookup".into(),
-        View::Day(day) => format!("Nov {day}"),
+        View::Day(day) => day_label(day),
         View::Session(id) => all[id].name.into(),
         View::Tokens(_) => "Tokens".into(),
         View::Help => "Keys".into(),
@@ -123,7 +124,7 @@ fn crumb(view: View, all: &[Session]) -> String {
             "{} ({})",
             COMPONENTS[c].name,
             if s.from == s.to {
-                format!("Nov {}", s.from)
+                day_label(s.from)
             } else {
                 "week".into()
             }
@@ -136,7 +137,7 @@ fn crumb(view: View, all: &[Session]) -> String {
 }
 
 /// Keeps Home and the last levels that fit, so the current place is never cut.
-fn breadcrumb(stack: &[Page], all: &[Session], max: usize) -> String {
+fn breadcrumb(stack: &[Page], all: &Data, max: usize) -> String {
     let parts: Vec<_> = stack.iter().map(|p| crumb(p.view, all)).collect();
     let full = parts.join(" › ");
     if full.chars().count() <= max {
@@ -152,27 +153,78 @@ fn breadcrumb(stack: &[Page], all: &[Session], max: usize) -> String {
 /// Scope parts become chips, so workspace, agent and period read as values.
 /// A chip that doesn't fit is shortened so the later chips still fit, which
 /// keeps the agent and cost in view. Only when even that leaves too little
-/// does it give way to "…", so chips are never cut mid-word.
+/// does it give way to "…", so chips are never cut mid-word. A figure chip
+/// (one starting with "$") may lose its note but never a digit: earlier
+/// chips shorten first to leave room for its amount.
 fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
     const MIN_VALUE: usize = 8;
+    let figure = |p: &str| p.starts_with('$');
+    // The least a chip's value can shrink to: a figure keeps its amount
+    // plus "…" for a dropped note; other chips can shorten to MIN_VALUE.
+    let least = |p: &str| {
+        let amount = p.split(' ').next().unwrap_or(p);
+        if !figure(p) {
+            cells(p).min(MIN_VALUE)
+        } else if amount.len() == p.len() {
+            cells(p)
+        } else {
+            cells(amount) + 1
+        }
+    };
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
     let parts: Vec<_> = scope.split(" | ").filter(|p| !p.is_empty()).collect();
     for (i, part) in parts.iter().enumerate() {
         let mut value = part.to_string();
         let more = if i + 1 < parts.len() { 2 } else { 0 };
-        if used + value.chars().count() + 2 + more > width {
-            // Each later chip needs its brackets (2) and a space (1).
-            let later: usize = parts[i + 1..].iter().map(|p| p.chars().count() + 3).sum();
-            let with_later = width.saturating_sub(used + 3 + later);
-            let alone = width.saturating_sub(used + 5);
-            if with_later >= MIN_VALUE {
-                value = shorten(part, with_later);
-            } else if alone >= MIN_VALUE {
-                value = shorten(part, alone);
+        let later = &parts[i + 1..];
+        // Room for every later chip, each with brackets (2) and a space (1).
+        if !figure(part) && later.iter().any(|p| figure(p)) {
+            // Keep later chips whole when this one can still shorten to
+            // MIN_VALUE; otherwise reserve only their least size.
+            let whole: usize = later.iter().map(|p| cells(p) + 3).sum();
+            let reserve = if width.saturating_sub(used + 3 + whole) >= MIN_VALUE {
+                whole
             } else {
-                spans.push(Span::styled("…", theme.fg(MUTED)));
-                break;
+                later.iter().map(|p| least(p) + 3).sum()
+            };
+            let room = width.saturating_sub(used + 3 + reserve);
+            if used + cells(part) + 3 + reserve > width {
+                if room >= MIN_VALUE {
+                    value = shorten(part, room);
+                } else if used + 2 + reserve <= width {
+                    // Too little room to shorten: this chip gives way to "…"
+                    // so the figure after it keeps its amount.
+                    spans.push(Span::styled("…", theme.fg(MUTED)));
+                    spans.push(Span::raw(" "));
+                    used += 2;
+                    continue;
+                }
+            }
+        }
+        if used + cells(&value) + 2 + more > width {
+            let full: usize = later.iter().map(|p| cells(p) + 3).sum();
+            let with_later = width.saturating_sub(used + 3 + full);
+            let alone = width.saturating_sub(used + 5);
+            let fit = |room: usize| {
+                if figure(part) {
+                    // Drop the note a whole word at a time, so no number in
+                    // it is ever cut short.
+                    let words: Vec<&str> = part.split(' ').collect();
+                    (1..words.len())
+                        .rev()
+                        .map(|k| format!("{}…", words[..k].join(" ")))
+                        .find(|v| cells(v) <= room)
+                } else {
+                    (room >= MIN_VALUE).then(|| shorten(part, room))
+                }
+            };
+            match fit(with_later).or_else(|| fit(alone)) {
+                Some(shortened) => value = shortened,
+                None => {
+                    spans.push(Span::styled("…", theme.fg(MUTED)));
+                    break;
+                }
             }
         }
         let chip = if theme.mono {
@@ -180,7 +232,7 @@ fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
         } else {
             format!(" {value} ")
         };
-        used += chip.chars().count() + 1;
+        used += cells(&chip) + 1;
         spans.push(Span::styled(chip, theme.on(INK, PANEL)));
         spans.push(Span::raw(" "));
     }
@@ -198,7 +250,7 @@ fn keys(pairs: &[(&str, &str)], theme: Theme) -> Line<'static> {
 
 /// What every part of a frame reads.
 struct Ctx<'a> {
-    all: &'a [Session],
+    all: &'a Data,
     count: bool,
     rows: &'a [Row],
     active: Option<(usize, (View, &'static str))>,
@@ -212,7 +264,7 @@ struct Ctx<'a> {
 pub fn draw(
     f: &mut Frame,
     stack: &[Page],
-    all: &[Session],
+    all: &Data,
     count: bool,
     (title, scope): (&str, &str),
     rows: &[Row],
@@ -288,7 +340,10 @@ fn draw_header(
         Paragraph::new(Line::from(vec![
             Span::styled(" LENS ", theme.panel().add_modifier(Modifier::BOLD)),
             Span::styled(
-                "  synthetic data · nothing leaves this machine",
+                match cx.all.source {
+                    Source::Fixture => "  synthetic data · nothing leaves this machine",
+                    Source::Local => "  local logs · read-only · nothing leaves this machine",
+                },
                 theme.fg(MUTED),
             ),
         ]))
@@ -397,5 +452,41 @@ fn footer_keys(view: View, w: u16) -> Vec<(&'static str, &'static str)> {
             ("?", "Keys"),
         ],
         _ => vec![("/", "Find"), ("Esc", "Back"), ("?", "Keys"), ("q", "Quit")],
+    }
+}
+
+#[cfg(test)]
+mod chip_tests {
+    use super::{chips, Theme};
+
+    fn text(scope: &str, width: usize) -> String {
+        let line = chips(scope, width, Theme { mono: true });
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // A cost note's fraction is a figure too: "(12/150 priced)" cut to
+    // "(12/15…" reads as 12 of 15. The note goes a whole word at a time.
+    #[test]
+    fn cost_note_is_never_cut_inside_a_number() {
+        let scope = "Codex | $8.04 USD (12/150 priced)";
+        for width in 10..40 {
+            let shown = text(scope, width);
+            assert!(!shown.contains("(12/15…"), "{width}: {shown:?}");
+            assert!(!shown.contains("(12/1…"), "{width}: {shown:?}");
+            if let Some(chip) = shown.split('[').find(|c| c.starts_with('$')) {
+                assert!(chip.starts_with("$8.04"), "{width}: {shown:?}");
+            }
+        }
+    }
+
+    // Too narrow to shorten the workspace to a readable length: it gives
+    // way to "…" so the cost after it keeps its amount.
+    #[test]
+    fn narrow_scope_keeps_the_cost_amount_over_the_workspace() {
+        let scope = "Nov 12 UTC | Workspace platform/services/internal-tooling | Codex | $8.04 USD (3/3 priced)";
+        for width in 34..=60 {
+            let shown = text(scope, width);
+            assert!(shown.contains("[$8.04"), "{width}: {shown:?}");
+        }
     }
 }

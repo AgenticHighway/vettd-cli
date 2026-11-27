@@ -201,8 +201,13 @@ pub(super) fn observation(sid: usize, u: usize, all: &[Session]) -> (String, Str
             usage.artifact.unwrap_or("Not recorded")
         )),
         line(format!("Scan      {}", scan_text(usage.artifact))),
-        line(if s.incomplete {
+        line(if estimate_missing(s) {
             "Context   Unpriced (partial input)".to_string()
+        } else if s.incomplete {
+            format!(
+                "Context   ≥{} est., component (partial input)",
+                usd(usage.context_cents)
+            )
         } else {
             format!("Context   {} est., component", usd(usage.context_cents))
         }),

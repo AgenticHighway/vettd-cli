@@ -1,12 +1,11 @@
-# Spec Delta
+# synthetic-corpus Specification
 
 ## Purpose
-
 Defines the synthetic datasets the Lens preview and its JSON export are built
 from. A clean default fixture pins the documented numbers, and a noisy stress
 corpus approximates real local logs at scale.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Corpus selection
 The preview SHALL accept `--corpus <name>`, where the name is `default` or
@@ -27,11 +26,11 @@ omitted, the preview SHALL use `default`. Other arguments SHALL be ignored.
 
 #### Scenario: Unknown corpus rejected
 - **WHEN** the preview runs with `--corpus other`
-- **THEN** it prints `error: --corpus must be default or stress` to stderr, writes nothing to stdout and exits with code 2
+- **THEN** it prints `vettd-lens-preview: --corpus takes default or stress` to stderr, writes nothing to stdout and exits with code 2
 
 #### Scenario: Missing corpus value rejected
 - **WHEN** the preview runs with `--json --corpus` and nothing after it
-- **THEN** it prints `error: --corpus must be default or stress` to stderr, writes nothing to stdout and exits with code 2
+- **THEN** it prints `vettd-lens-preview: --corpus takes default or stress` to stderr, writes nothing to stdout and exits with code 2
 
 ### Requirement: Deterministic export
 The JSON export of either corpus SHALL be byte-identical on every run of the
@@ -46,12 +45,13 @@ same build.
 - **THEN** the two stdout outputs are byte-identical
 
 ### Requirement: Default corpus unchanged
-Apart from the added `corpus` field, the default corpus SHALL keep every
-session, figure and field it had before this change.
+Apart from the added `source` (from `add-local-source`) and `corpus`
+fields, the default corpus SHALL keep every session, figure and field it
+had before this change.
 
 #### Scenario: Export matches the pre-change capture
 - **WHEN** the default corpus is exported with `--json`
-- **THEN** the output, with the `corpus` field removed, equals as JSON the export captured from the branch head before this change, including `windows`, `token_sources`, `limit_hits`, `claude_weekly_ends_percent` and `now_minutes_from_nov_18`
+- **THEN** the output, with the `source` and `corpus` fields removed, equals as JSON the export captured from the branch head before this change, including `windows`, `token_sources`, `limit_hits`, `claude_weekly_ends_percent` and `now_minutes_from_nov_18`
 
 #### Scenario: Pinned fixture figures hold
 - **WHEN** the default corpus is loaded

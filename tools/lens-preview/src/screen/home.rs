@@ -2,7 +2,6 @@
 //! findings worth opening. Only the findings take the selection.
 
 use super::*;
-use crate::fixture::SOURCE_SHARES;
 use ratatui::widgets::{Bar, BarChart, BarGroup, Cell, Padding, Row as TRow, Table};
 
 /// One day on the chart. `value` is None when there was no input at all;
@@ -16,14 +15,15 @@ pub struct Day {
 
 /// Each day's total in the current unit, and the median complete day.
 /// `None` means no day is complete, so there is no normal to compare with.
-pub fn daily(all: &[Session], count: bool) -> (Vec<Day>, Option<u32>) {
-    let days: Vec<Day> = (12..=18)
-        .map(|day| {
+pub fn daily(all: &Data, count: bool) -> (Vec<Day>, Option<u32>) {
+    let days: Vec<Day> = all
+        .days
+        .iter()
+        .map(|&day| {
             let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
             Day {
                 day,
-                value: (!sessions.is_empty())
-                    .then(|| sessions.iter().map(|s| measure(s, count)).sum()),
+                value: (!sessions.is_empty()).then(|| total(sessions.iter().copied(), count)),
                 partial: sessions.iter().any(|s| !comparable(s, count)),
             }
         })
@@ -107,65 +107,8 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
     let label = |v: u32| if cx.count { v.to_string() } else { usd(v) };
     let with_data = || days.iter().filter(|d| d.value.is_some());
     let all_partial = with_data().all(|d| d.partial) && with_data().next().is_some();
-    let gap = 1u16;
-    let bar_width = (chart.width.saturating_sub(2) / 7)
-        .saturating_sub(gap)
-        .clamp(3, 9);
-    // A caption wider than its bar is cut, dropping digits. Fall back to
-    // whole dollars (rounded down, so a floor stays a floor), then to the
-    // day alone.
-    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
     // Bars start above the floor, so small differences between days show.
     let base = baseline(&days, cx.count);
-    let bars: Vec<Bar> = days
-        .iter()
-        .map(|d| {
-            let outlier = d
-                .value
-                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
-            // No-data days show "·", never a zero-height bar that reads as $0.
-            // Partial days show "≥": the total is a floor, not the day's cost.
-            // When every day is partial the title says so once instead.
-            let floor = if d.partial && !all_partial { "≥" } else { "" };
-            // The chosen bar is marked by a character, so it shows without
-            // colour too. "▸" takes the place of the space after the day.
-            let chosen = cx.bar == Some(d.day);
-            let mark = if chosen { "▸" } else { " " };
-            let day_only = || {
-                let text = format!("{}{}{floor}", if chosen { "▸" } else { "" }, d.day);
-                if fits(&text) || !chosen {
-                    text
-                } else {
-                    format!("▸{}", d.day)
-                }
-            };
-            let caption = match d.value {
-                None => format!("{}{mark}·", d.day),
-                Some(v) if wide => {
-                    let full = format!("{}{mark}{floor}{}", d.day, label(v));
-                    let whole = format!("{}{mark}{floor}${}", d.day, v / 100);
-                    if fits(&full) {
-                        full
-                    } else if !cx.count && fits(&whole) {
-                        whole
-                    } else {
-                        day_only()
-                    }
-                }
-                Some(_) => day_only(),
-            };
-            let caption = if chosen {
-                Line::styled(caption, cx.theme.selected())
-            } else {
-                Line::from(caption)
-            };
-            Bar::default()
-                .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
-                .text_value(String::new())
-                .label(caption)
-                .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
-        })
-        .collect();
     // No complete day means no normal: say so rather than show a zero.
     let unit = if cx.count {
         ("DAILY REQUESTS", "REQUESTS")
@@ -199,6 +142,70 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
         axis_part.as_ref(),
         usize::from(chart.width),
     );
+    // The title doesn't wrap. When every day is partial, the bars drop their
+    // own ≥ only while the title carries the full note; with the short note
+    // or none, every bar keeps its ≥, so no floor reads as an exact total.
+    let noted = all_partial && title.contains("every day partial");
+    let gap = 1u16;
+    let bar_width = (chart.width.saturating_sub(2) / days.len().max(1) as u16)
+        .saturating_sub(gap)
+        .clamp(3, 9);
+    // A caption wider than its bar is cut, dropping digits. Fall back to
+    // whole dollars (rounded down, so a floor stays a floor), then to the
+    // day alone.
+    let fits = |text: &String| text.chars().count() <= usize::from(bar_width);
+    let bars: Vec<Bar> = days
+        .iter()
+        .map(|d| {
+            let outlier = d
+                .value
+                .is_some_and(|v| v == peak && normal.is_some_and(|n| v > n * 3));
+            // No-data days show "·", never a zero-height bar that reads as $0.
+            // Partial days show "≥": the total is a floor, not the day's cost.
+            // When every day is partial and the title fits, it says so once.
+            let floor = if d.partial && !noted { "≥" } else { "" };
+            // The day of the month: the chart's seven bars are consecutive.
+            let label_day = day_label(d.day);
+            let dom = label_day.rsplit(' ').next().unwrap_or_default();
+            // The chosen bar is marked by a character, so it shows without
+            // colour too. "▸" takes the place of the space after the day.
+            let chosen = cx.bar == Some(d.day);
+            let mark = if chosen { "▸" } else { " " };
+            let day_only = || {
+                let text = format!("{}{dom}{floor}", if chosen { "▸" } else { "" });
+                if fits(&text) || !chosen {
+                    text
+                } else {
+                    format!("▸{dom}")
+                }
+            };
+            let caption = match d.value {
+                None => format!("{dom}{mark}·"),
+                Some(v) if wide => {
+                    let full = format!("{dom}{mark}{floor}{}", label(v));
+                    let whole = format!("{dom}{mark}{floor}${}", v / 100);
+                    if fits(&full) {
+                        full
+                    } else if !cx.count && fits(&whole) {
+                        whole
+                    } else {
+                        day_only()
+                    }
+                }
+                Some(_) => day_only(),
+            };
+            let caption = if chosen {
+                Line::styled(caption, cx.theme.selected())
+            } else {
+                Line::from(caption)
+            };
+            Bar::default()
+                .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
+                .text_value(String::new())
+                .label(caption)
+                .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
+        })
+        .collect();
     f.render_widget(
         BarChart::default()
             .block(panel_block(&title, cx.theme))
@@ -228,7 +235,7 @@ fn chart_title(
     axis: Option<&Part>,
     width: usize,
 ) -> String {
-    let fits = |text: &str| text.chars().count() + 2 <= width;
+    let fits = |text: &str| cells(text) + 2 <= width;
     // Shown in this order; `true` marks a part that may be dropped.
     let parts: Vec<(&Part, bool)> = [Some((unit, false)), Some((normal, true))]
         .into_iter()
@@ -285,18 +292,26 @@ fn chart_title(
 fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
     let theme = cx.theme;
     let total = total_tokens(cx.all);
-    let bar_cells = usize::from(sources.width.saturating_sub(36)).clamp(4, 14);
-    let table_rows: Vec<TRow> = SOURCE_SHARES
-        .iter()
-        .map(|&(name, bp)| {
+    // Local source names are longer ("Instructions and files").
+    let name_width: u16 = if cx.all.local() { 22 } else { 19 };
+    let bar_cells = usize::from(sources.width.saturating_sub(17 + name_width)).clamp(4, 14);
+    // Local data has more sources than the table has rows: the largest
+    // six are shown, and Token detail and the export hold the rest.
+    let mut shares: Vec<_> = cx.all.token_sources.iter().collect();
+    if cx.all.local() {
+        shares.sort_by_key(|s| std::cmp::Reverse(s.basis_points));
+        shares.truncate(6);
+    }
+    let table_rows: Vec<TRow> = shares
+        .into_iter()
+        .map(|share| {
+            let (name, bp) = (share.name, share.basis_points);
             let filled = (bp as usize * bar_cells).div_ceil(10_000);
             let (amount, share) = if bp == 0 {
                 ("0".to_string(), "—".to_string())
             } else {
-                (
-                    compact(total / 10_000 * u64::from(bp)),
-                    format!("{}%", bp / 100),
-                )
+                let tokens = share.tokens.unwrap_or(total / 10_000 * u64::from(bp));
+                (compact(tokens), format!("{}%", bp / 100))
             };
             TRow::new(vec![
                 Cell::from(name),
@@ -308,7 +323,7 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
         })
         .collect();
     let widths = [
-        Constraint::Length(19),
+        Constraint::Length(name_width),
         Constraint::Length(6),
         Constraint::Length(5),
         Constraint::Fill(1),
@@ -317,7 +332,14 @@ fn draw_sources(f: &mut Frame, sources: Rect, cx: &Ctx) {
         Table::new(table_rows, widths)
             .header(TRow::new(["SOURCE", "TOKENS", "SHARE", ""]).style(theme.fg(MUTED)))
             .column_spacing(1)
-            .block(panel_block("WHERE TOKENS WENT", theme)),
+            .block(panel_block(
+                if cx.all.local() {
+                    "WHERE TOKENS WENT (ESTIMATED)"
+                } else {
+                    "WHERE TOKENS WENT"
+                },
+                theme,
+            )),
         sources,
     );
 }

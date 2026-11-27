@@ -210,7 +210,7 @@ fn corpus_fingerprint_is_pinned() {
     let cents: u64 = all.iter().map(|s| u64::from(s.cents())).sum();
     assert_eq!(
         (count, cents),
-        (2_011, 1_345_621),
+        (1_991, 1_368_564),
         "fingerprint (count, cents)"
     );
 }

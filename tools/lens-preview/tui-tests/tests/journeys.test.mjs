@@ -91,7 +91,7 @@ test("6. q exits with code 0", T, async () => {
 // whole numbers, never $0.00 or a label cut mid-number.
 test("7. stress Home shows unknown normal, billions and whole-dollar labels", T, () =>
   journey(["--corpus", "stress"], async (term) => {
-    for (const text of ["normal: no complete day", "every day partial (≥)", "3.4B tokens", "File reads", "1.3B", "12 $1885 "]) {
+    for (const text of ["normal: no complete day", "every day partial (≥)", "3.4B tokens", "File reads", "1.3B", "12 $1909 "]) {
       await term.getByText(text).expect();
     }
     const text = await term.text();
@@ -111,7 +111,7 @@ test("7. stress Home shows unknown normal, billions and whole-dollar labels", T,
 test("8. --corpus other exits 2 with the error on stderr", T, async () => {
   const term = await launch(["--corpus", "other"], { waitFor: null });
   try {
-    await term.getByText("error: --corpus must be default or stress").expect();
+    await term.getByText("vettd-lens-preview: --corpus takes default or stress").expect();
     assert.equal(await exitCode(term), 2);
   } finally {
     await term.closeQuiet();
@@ -120,7 +120,7 @@ test("8. --corpus other exits 2 with the error on stderr", T, async () => {
   const out = spawnSync(BIN, ["--corpus", "other"], { encoding: "utf8" });
   assert.equal(out.status, 2);
   assert.equal(out.stdout, "");
-  assert.equal(out.stderr.trim(), "error: --corpus must be default or stress");
+  assert.equal(out.stderr.trim(), "vettd-lens-preview: --corpus takes default or stress");
 });
 
 // The counter at the end of the hint row ("n/total"), so a journey can tell
@@ -171,7 +171,7 @@ test("11. / index finds the Nov 16 run; Esc keeps search and row", T, () =>
     await selectedStartsWith(term, "▸ Nov 16 Index rebuild");
   }));
 
-// A 280-row stress day: End and g must reach both ends in one press each.
+// A 289-row stress day (Nov 16): End and g must reach both ends in one press each.
 test("12. stress Nov 16: End reaches the last session, g the first", T, () =>
   journey(["--corpus", "stress"], async (term) => {
     await term.press("5");

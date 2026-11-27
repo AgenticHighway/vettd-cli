@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn preview(
     view: View,
-    all: &[Session],
+    all: &Data,
     count: bool,
     width: u16,
     rt: &Runtime,
@@ -16,10 +16,12 @@ pub(super) fn preview(
             let session = &all[id];
             let mut detail = vec![
                 format!(
-                    "{} | {} | Nov {}",
-                    session.agent, session.workspace, session.day
+                    "{} | {} | {}",
+                    session.agent,
+                    session.workspace,
+                    day_label(session.day)
                 ),
-                cost_label(session),
+                cost_label(session, all.local()),
                 String::new(),
             ];
             detail.extend(
@@ -52,7 +54,7 @@ pub(super) fn preview(
 fn day_preview(day: u32, all: &[Session], count: bool) -> (String, Vec<String>) {
     let current: Vec<_> = all.iter().filter(|s| s.day == day).collect();
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
-    let total: u32 = current.iter().map(|s| measure(s, count)).sum();
+    let total: u32 = total(current.iter().copied(), count);
     let mut preview = vec![
         headline(&current, total, count),
         format!("{} sessions", current.len()),
@@ -63,7 +65,7 @@ fn day_preview(day: u32, all: &[Session], count: bool) -> (String, Vec<String>) 
         preview.extend(comparison(day, &current, &prior, total, count));
     }
     preview.extend(lead(&current, count));
-    (format!("Nov {day} | UTC"), preview)
+    (format!("{} | UTC", day_label(day)), preview)
 }
 
 fn headline(current: &[&Session], total: u32, count: bool) -> String {
@@ -94,9 +96,9 @@ fn comparison(
     if count {
         let previous: u32 = prior.iter().map(|s| measure(s, true)).sum();
         return vec![format!(
-            "{:+} req vs Nov {}",
+            "{:+} req vs {}",
             i64::from(total) - i64::from(previous),
-            day - 1
+            day_label(day - 1)
         )];
     }
     let sum = |sessions: &[&Session], i: usize| -> u32 {
@@ -106,12 +108,12 @@ fn comparison(
             .map(|r| r.cents()[i])
             .sum()
     };
-    let previous: u32 = prior.iter().map(|s| s.cents()).sum();
+    let previous: u32 = super::total(prior.iter().copied(), false);
     let delta =
         |a: u32, b: u32| format!("{}{}", if a >= b { "+" } else { "−" }, usd(a.abs_diff(b)));
     let mut lines = vec![
         String::new(),
-        format!("{} vs Nov {}", delta(total, previous), day - 1),
+        format!("{} vs {}", delta(total, previous), day_label(day - 1)),
     ];
     lines.extend(
         PARTS

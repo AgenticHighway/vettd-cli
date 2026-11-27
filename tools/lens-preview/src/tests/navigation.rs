@@ -73,7 +73,7 @@ fn empty_find_lists_only_components() {
 // day comes before the rest of it.
 #[test]
 fn find_orders_sessions_by_day_then_size() {
-    let all = fixture::sessions();
+    let all = Data::fixture();
     let mut page = Page::new(View::Find);
     page.filter = "a".into();
     let rows = content(&page, &all, false, 80, &Runtime::default()).2;
@@ -119,7 +119,7 @@ fn check_span(view: View, all: &[Session], text: &str, cell: &str, emphasis: Emp
 #[test]
 fn every_span_marks_the_cell_it_names() {
     let rt = Runtime::default();
-    for all in [fixture::sessions(), fixture::stress_sessions()] {
+    for all in [Data::fixture(), Data::stress()] {
         let mut views = vec![View::Week];
         views.extend((12..=18).map(View::Day));
         views.extend((0..all.len()).flat_map(|id| [View::Session(id), View::Tokens(id)]));

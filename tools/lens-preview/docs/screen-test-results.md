@@ -33,3 +33,8 @@ person who knows the tool, so it is a lead for the screen test, not a result.
 - These line up with screen-test questions 1 (reach the cause of an expensive
   day without being told which keys to press) and 4 (read Home at stress
   scale). The test should watch for them specifically.
+- Day partial flag `≥`: "it works, it's hard to figure out what that means
+  though". The Day screen's last scope chip now spells it out (`≥ partial:
+  total is at least this`) in place of the previous-day comparison, which a
+  partial day never has. The screen test should check whether people read
+  it unprompted.

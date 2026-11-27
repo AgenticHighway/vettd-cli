@@ -9,7 +9,7 @@ fn counter(u: &mut User) -> String {
     hint.split_whitespace().last().unwrap().to_string()
 }
 
-fn day_rows(all: &[Session], day: u32) -> Vec<Row> {
+fn day_rows(all: &Data, day: u32) -> Vec<Row> {
     let rt = Runtime::default();
     content(
         &Page::new(View::Day(day)),
@@ -21,8 +21,8 @@ fn day_rows(all: &[Session], day: u32) -> Vec<Row> {
     .2
 }
 
-// A 280-row stress day: End reaches the last session and g comes back to
-// the first, one press each instead of a PgDn per screen.
+// A 289-row stress day (Nov 16): End reaches the last session and g comes
+// back to the first, one press each instead of a PgDn per screen.
 #[test]
 fn end_and_g_reach_both_ends_of_a_long_day() {
     let mut u = User::stress((80, 24));

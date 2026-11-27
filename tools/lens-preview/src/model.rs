@@ -1,6 +1,7 @@
 //! Scope, views, pages and the row helpers every view builds from.
 
-use crate::fixture::{Session, PERIOD};
+use crate::data::{day_label, period_label};
+use crate::fixture::Session;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
@@ -39,9 +40,9 @@ impl Scope {
 
     pub(crate) fn period(&self) -> String {
         if self.from == self.to {
-            format!("Nov {} UTC", self.from)
+            format!("{} UTC", day_label(self.from))
         } else {
-            PERIOD.into()
+            period_label(self.from, self.to)
         }
     }
 
@@ -209,23 +210,55 @@ impl Cells {
     }
 }
 
-/// Cuts text to `max` characters, keeping its start and its end, because
-/// names often differ only at the ends. Counts chars so text is never split
-/// inside a character.
+/// Terminal cells `text` takes. Wide characters such as 日本語 take two
+/// each, so widths are counted in cells, never in characters.
+pub(crate) fn cells(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// The longest start of `text` that takes at most `max` cells.
+pub(crate) fn clip(text: &str, max: usize) -> String {
+    take_cells(text.chars(), max)
+}
+
+/// `text` padded with spaces to `width` cells. `format!`'s `{:<n}` pads by
+/// characters, which misaligns rows holding wide characters.
+pub(crate) fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(cells(text))))
+}
+
+fn take_cells(chars: impl Iterator<Item = char>, max: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for c in chars {
+        let w = cells(c.encode_utf8(&mut [0; 4]));
+        if used + w > max {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
+/// Cuts text to at most `max` cells, keeping its start and its end,
+/// because names often differ only at the ends. A wide character that
+/// would straddle the limit is left out, so the result may be a cell short;
+/// `pad` fills it.
 pub(crate) fn shorten(text: &str, max: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max {
+    if cells(text) <= max {
         return text.to_string();
     }
     match max {
         0 => String::new(),
         1 => "…".into(),
         _ => {
-            let head = max / 2;
-            let tail = (max - 1) / 2;
-            let start: String = chars[..head].iter().collect();
-            let end: String = chars[chars.len() - tail..].iter().collect();
-            format!("{start}…{end}")
+            let head = take_cells(text.chars(), max / 2);
+            let tail: String = take_cells(text.chars().rev(), (max - 1) / 2)
+                .chars()
+                .rev()
+                .collect();
+            format!("{head}…{tail}")
         }
     }
 }
@@ -240,10 +273,7 @@ pub(crate) fn bar(amount: u32, max: u32, width: usize) -> String {
 }
 
 pub(crate) fn priced(s: &Session) -> usize {
-    s.requests
-        .iter()
-        .filter(|r| r.milli_usd_per_ktok.is_some())
-        .count()
+    s.requests.iter().filter(|r| r.priced()).count()
 }
 
 pub(crate) fn measure(s: &Session, count: bool) -> u32 {
@@ -254,6 +284,27 @@ pub(crate) fn measure(s: &Session, count: bool) -> u32 {
     }
 }
 
+/// Several sessions' requests or cents. Cents are summed unrounded and
+/// rounded once, so many sub-cent sessions don't add up to $0.00.
+pub(crate) fn total<'a>(sessions: impl IntoIterator<Item = &'a Session>, count: bool) -> u32 {
+    let sessions: Vec<&Session> = sessions.into_iter().collect();
+    if count {
+        sessions.iter().map(|s| s.requests.len() as u32).sum()
+    } else {
+        sessions
+            .iter()
+            .map(|s| s.cents_exact())
+            .sum::<f64>()
+            .round() as u32
+    }
+}
+
+/// Whether any of these sessions has a request with a rate. A dollar total
+/// with none is unknown, not $0.00.
+pub(crate) fn any_priced<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> bool {
+    sessions.into_iter().any(|s| priced(s) > 0)
+}
+
 pub(crate) fn units(value: u32, count: bool) -> String {
     if count {
         format!("{value} req")
@@ -262,13 +313,27 @@ pub(crate) fn units(value: u32, count: bool) -> String {
     }
 }
 
-pub(crate) fn cost_label(s: &Session) -> String {
+/// A session's dollar figure. On local data it is what the usage would
+/// cost on the API, which the person may not pay (a plan may cover it).
+pub(crate) fn cost_label(s: &Session, local: bool) -> String {
     let n = priced(s);
-    if n == 0 {
-        "No priced requests".into()
-    } else {
-        format!("{} USD ({n}/{} priced)", usd(s.cents()), s.requests.len())
+    match (n, local) {
+        (0, false) => "No priced requests".into(),
+        (0, true) => "No request has a rate".into(),
+        (_, false) => format!("{} USD ({n}/{} priced)", usd(s.cents()), s.requests.len()),
+        (_, true) => format!(
+            "{} USD API-equivalent ({n}/{} with a rate)",
+            usd(s.cents()),
+            s.requests.len()
+        ),
     }
+}
+
+/// Input is partial and some requests have no rate, so the context
+/// estimates of its uses are unknown. Partial input whose requests are all
+/// priced still has recorded estimates, as floors.
+pub(crate) fn estimate_missing(s: &Session) -> bool {
+    s.incomplete && priced(s) < s.requests.len()
 }
 
 pub(crate) fn comparable(s: &Session, count: bool) -> bool {
@@ -279,7 +344,7 @@ pub(crate) fn comparable(s: &Session, count: bool) -> bool {
 pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row {
     let measure = if count {
         format!("{} req", s.requests.len())
-    } else if s.requests.iter().all(|r| r.milli_usd_per_ktok.is_none()) {
+    } else if s.requests.iter().all(|r| !r.priced()) {
         "unpriced".into()
     } else {
         usd(s.cents())
@@ -287,15 +352,15 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row
     // "unpriced" is a flag, not an amount, so it isn't bold.
     let figure = (measure != "unpriced").then_some(Emphasis::Figure);
     Cells::default()
-        .add(format!("{:<16} ", s.name), None)
+        .add(format!("{} ", pad(&clip(s.name, 16), 16)), None)
         .add(
-            format!("{:<ws$}", shorten(s.workspace, ws)),
+            pad(&shorten(s.workspace, ws), ws),
             Some(Emphasis::Secondary),
         )
         .add(" ", None)
         .add(format!("{:<7}", s.agent), Some(Emphasis::Secondary))
         .add(" ", None)
         .add(format!("{measure:>8}"), figure)
-        .add(if s.incomplete { "  partial" } else { "" }, None)
+        .add(if s.incomplete { " ≥" } else { "" }, None)
         .link(View::Session(id), "Open session cost and components")
 }

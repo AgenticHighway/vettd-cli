@@ -52,7 +52,7 @@ commit, or by reasoning recorded in the evidence.
 - [x] 8.1 Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in Docker. Verify all pass with no ignored tests, and record the counts
   - Evidence: Docker `rust:1.97.1` (toolchain 1.88.0 from `rust-toolchain.toml`): `cargo fmt --check` OK, `cargo clippy --locked --all-targets -- -D warnings` clean, `cargo test --locked` 107 passed, 0 failed, 0 ignored (79 before this change).
 - [x] 8.2 Re-record the sha256 of the release `--json` for both corpora and of `tests/golden/default-export.json`. Verify they are unchanged from 1.1
-  - Evidence: default `2f641dd0…16cf5f` (with and without `--corpus default`), stress `d6b8d5c3…197469` (both flag orders), golden `9e33c787…236ab99`. All match 1.1.
+  - Evidence: default `2f641dd0…16cf5f` (with and without `--corpus default`), stress `d6b8d5c3…197469` (both flag orders), golden `9e33c787…236ab99`. All match 1.1. After merging the updated base (`022fb76`, which adds local sources and changes the export), both corpora's exports are byte-identical to the base's own build (default `33a1743f…`, stress `6693a67f…`); timing 43–65 ms.
 - [x] 8.3 Time ten release runs of `--corpus stress --json` in Docker, record the figures, and verify the worst run is under 1 s
   - Evidence: ten release runs (ms): 47, 44, 44, 68, 68, 57, 49, 43, 40, 46. Worst 68 ms.
 - [x] 8.4 Run the tui-test journeys (`tui-tests/`) in Docker `node:22.17.0-bookworm` and verify 8/8 pass
