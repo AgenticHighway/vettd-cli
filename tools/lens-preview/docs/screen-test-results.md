@@ -38,3 +38,11 @@ person who knows the tool, so it is a lead for the screen test, not a result.
   total is at least this`) in place of the previous-day comparison, which a
   partial day never has. The screen test should check whether people read
   it unprompted.
+
+## Owner feedback after lens-navigation (not test evidence)
+
+On 2026-11-26 the project owner checked the navigation build (`--corpus
+stress`, merged with Slice 1) by eye: it "feels better". They gave no
+detail on finding a day or session, key presses, or scanning, so this
+does not show which change helped. It is a lead for screen-test questions
+1 and 4, not a result.
