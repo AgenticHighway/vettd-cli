@@ -47,6 +47,19 @@ the 7-day period SHALL count towards usage.
 - **WHEN** one file was last modified 30 days ago and another 20 days ago, with no request in the period
 - **THEN** the first is not opened, the second's limit hits count, and neither adds usage
 
+### Requirement: Startup reads recent files in full
+With `--source local`, the preview SHALL read every log file modified in the
+last 28 days before it draws the first screen or prints the export, and SHALL
+print "Reading local logs…" on stderr before it starts reading. No startup
+time limit is set: about 270 files (1.4 GB) took 7–14 s warm.
+
+Covered by: `local_export_says_it_is_reading_on_stderr` (tests/startup.rs);
+timing is not tested.
+
+#### Scenario: Large recent history
+- **WHEN** `--source local --json` runs over a large recent history
+- **THEN** "Reading local logs…" is on stderr before the export is on stdout, and the export is complete
+
 ### Requirement: Requests count on their own day
 Each request SHALL count on the UTC day of its own timestamp, not the day its
 session started. A session with requests on several days SHALL appear on

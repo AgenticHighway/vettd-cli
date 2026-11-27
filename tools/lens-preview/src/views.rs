@@ -31,9 +31,9 @@ pub(crate) fn content(page: &Page, all: &Data, count: bool, width: u16, rt: &Run
         View::Help => help(),
         View::Week => week(all, count, bar_width),
         View::Find => synthetic(find(&page.filter), all),
-        View::Day(day) => day_sessions(day, all, count),
-        View::Session(id) => session(id, &all[id], bar_width, all.local()),
-        View::Tokens(id) => tokens(&all[id], all.local()),
+        View::Day(day) => day_sessions(day, all, count, width),
+        View::Session(id) => session(id, &all[id], bar_width, width, all.local()),
+        View::Tokens(id) => tokens(&all[id], width, all.local()),
     }
 }
 
@@ -162,7 +162,33 @@ fn find(filter: &str) -> Content {
     )
 }
 
-fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
+/// The workspace column for one day: its longest name, clamped so the
+/// fixed columns still fit `width` (the list width). Shorter days keep the
+/// narrow column, so the default corpus renders as before.
+pub(crate) fn day_ws_width(day: u32, all: &[Session], width: u16) -> usize {
+    // Row marker (3) plus name, agent and total with their separators (34),
+    // plus the " ≥" a partial session ends with (2), so it is never cut.
+    let room = usize::from(width).saturating_sub(3 + 34 + 2);
+    let longest = all
+        .iter()
+        .filter(|s| s.day == day)
+        .map(|s| cells(s.workspace))
+        .max()
+        .unwrap_or(0);
+    longest.clamp(4, room.max(4))
+}
+
+/// The Day column header, aligned with the rows `day_sessions` builds.
+pub(crate) fn day_header(day: u32, all: &[Session], width: u16) -> String {
+    let ws = day_ws_width(day, all, width);
+    format!(
+        "{:<16} {:<ws$} {:<7} {:>8}",
+        "SESSION", "WS", "AGENT", "TOTAL"
+    )
+}
+
+fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
+    let ws = day_ws_width(day, all, width);
     let mut sessions: Vec<_> = all
         .iter()
         .enumerate()
@@ -171,7 +197,12 @@ fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
     sessions.sort_by_key(|(_, s)| std::cmp::Reverse(measure(s, count)));
     let total: u32 = total(sessions.iter().map(|(_, s)| *s), count);
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
-    let comparison = if sessions.is_empty()
+    let partial = sessions.iter().any(|(_, s)| s.incomplete);
+    // A partial day is never compared, so its comparison chip explains the
+    // "≥" its rows end in instead. The title has no room for that at 80 columns.
+    let comparison = if partial {
+        "≥ partial: total is at least this".into()
+    } else if sessions.is_empty()
         || prior.is_empty()
         || prior.iter().any(|s| !comparable(s, count))
         || sessions.iter().any(|(_, s)| !comparable(s, count))
@@ -188,7 +219,12 @@ fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
     };
     let label = day_label(day);
     (
-        format!("{label} sessions"),
+        // Partial rows end in "≥" (at least); the scope chip says what it means.
+        if partial {
+            format!("{label} sessions  ·  ≥ partial")
+        } else {
+            format!("{label} sessions")
+        },
         format!(
             "{label} UTC | All workspaces | {}{} | {comparison}",
             units(total, count),
@@ -200,7 +236,7 @@ fn day_sessions(day: u32, all: &Data, count: bool) -> Content {
         ),
         sessions
             .into_iter()
-            .map(|(id, s)| session_row(id, s, count))
+            .map(|(id, s)| session_row(id, s, count, ws))
             .collect(),
     )
 }
@@ -223,6 +259,13 @@ fn incomplete_rows(s: &Session) -> Vec<Row> {
     }
 }
 
+/// "worker / model", with the model shortened so the row, plus `reserved`
+/// columns after it, fits `room`. The model keeps at least one character.
+fn worker_model(worker: &str, model: &str, reserved: usize, room: usize) -> String {
+    let model_room = room.saturating_sub(cells(worker) + 3 + reserved).max(1);
+    format!("{worker} / {}", shorten(model, model_room))
+}
+
 /// Requests grouped by worker and model, in the order they first appear.
 /// A local session can hold thousands of requests; the fixture's groups
 /// each hold one, so its rows are unchanged.
@@ -240,14 +283,20 @@ fn groups(s: &Session) -> Vec<(&'static str, &'static str, Vec<&Request>)> {
     groups
 }
 
-fn tokens(s: &Session, local: bool) -> Content {
+fn tokens(s: &Session, width: u16, local: bool) -> Content {
+    let room = usize::from(width).saturating_sub(3);
     let mut rows = incomplete_rows(s);
     for (worker, model, requests) in groups(s) {
-        rows.push(line(if requests.len() == 1 {
-            format!("{worker} / {model}")
+        let many = if requests.len() == 1 {
+            String::new()
         } else {
-            format!("{worker} / {model} ({} requests)", requests.len())
-        }));
+            format!(" ({} requests)", requests.len())
+        };
+        let reserved = cells(&many);
+        rows.push(line(format!(
+            "{}{many}",
+            worker_model(worker, model, reserved, room)
+        )));
         rows.extend(PARTS.iter().enumerate().map(|(i, part)| {
             let tokens: u64 = requests.iter().map(|r| u64::from(r.tokens[i])).sum();
             line(format!("{part:<14} {tokens:>8} tokens"))
@@ -296,7 +345,8 @@ fn source_rows(s: &Session) -> Vec<Row> {
 }
 
 /// Cost by part (only when something is priced) and by worker and model.
-fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
+fn cost_rows(s: &Session, bar_width: usize, width: u16) -> Vec<Row> {
+    let room = usize::from(width).saturating_sub(3);
     let mut rows = Vec::new();
     let parts: [u32; 4] = std::array::from_fn(|i| {
         s.requests
@@ -322,7 +372,10 @@ fn cost_rows(s: &Session, bar_width: usize) -> Vec<Row> {
             n if n == requests.len() => "unpriced".into(),
             n => format!("{} + {n} unpriced", usd(cents.round() as u32)),
         };
-        line(format!("{worker} / {model}   {cost}"))
+        line(format!(
+            "{}   {cost}",
+            worker_model(worker, model, 3 + cells(&cost), room)
+        ))
     }));
     rows
 }
@@ -351,9 +404,9 @@ fn used_rows(s: &Session) -> Vec<Row> {
     rows
 }
 
-fn session(id: usize, s: &Session, bar_width: usize, local: bool) -> Content {
+fn session(id: usize, s: &Session, bar_width: usize, width: u16, local: bool) -> Content {
     let mut rows = incomplete_rows(s);
-    rows.extend(cost_rows(s, bar_width));
+    rows.extend(cost_rows(s, bar_width, width));
     rows.push(link(
         "Token and cache detail",
         View::Tokens(id),

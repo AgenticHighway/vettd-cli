@@ -90,14 +90,13 @@ plus a local-data test to be added (tasks 4.3).
 ### Requirement: Findings in order of urgency
 Home SHALL list its "Worth a look" findings most urgent first, each shown only
 when it applies: (1) the plan window that fills soonest; (2) the largest
-complete day, when it is more than 3× normal; (3) on the fixture only, the
+complete day, when it is more than 3× normal; (3) the
 known gap in which copy of review-kit loads in Codex; (4) the first session
 with partial input; (5) a link to every day and its sessions.
 
-Covered by: `home_leads_with_the_filling_window` and
-`home_dashboard_shows_usage_before_findings_at_80x24` (src/tests/render.rs),
-two `incomplete_*_called_unpriced` tests (src/tests/corpus.rs), plus a
-local-data test to be added (tasks 4.3).
+Covered by: `home_leads_with_the_filling_window`,
+`home_dashboard_shows_usage_before_findings_at_80x24` and two
+`incomplete_*_called_unpriced` tests.
 
 #### Scenario: Order in USD
 - **WHEN** Home is shown at 80×24 in USD
@@ -106,6 +105,13 @@ local-data test to be added (tasks 4.3).
 #### Scenario: Partial input is not always unpriced
 - **WHEN** the first session with partial input has every request priced
 - **THEN** its finding reads "<day>: partial input" with no ", unpriced"; it says ", unpriced" only when a request has no rate
+
+### Requirement: Review-kit finding only on the fixture
+The review-kit finding SHALL be shown only on the fixture. Home on local
+data SHALL NOT show it.
+
+Covered by: `session_across_midnight_shows_on_both_days_and_counts_once`
+(src/local/tests.rs).
 
 #### Scenario: No review-kit finding on local data
 - **WHEN** Home is shown with `--source local`

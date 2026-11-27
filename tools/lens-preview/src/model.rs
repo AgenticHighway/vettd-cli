@@ -156,6 +156,59 @@ pub(crate) fn link(text: impl Into<String>, view: View, action: &'static str) ->
     }
 }
 
+/// Terminal cells `text` takes. Wide characters such as 日本語 take two
+/// each, so widths are counted in cells, never in characters.
+pub(crate) fn cells(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// The longest start of `text` that takes at most `max` cells.
+pub(crate) fn clip(text: &str, max: usize) -> String {
+    take_cells(text.chars(), max)
+}
+
+/// `text` padded with spaces to `width` cells. `format!`'s `{:<n}` pads by
+/// characters, which misaligns rows holding wide characters.
+pub(crate) fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(cells(text))))
+}
+
+fn take_cells(chars: impl Iterator<Item = char>, max: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for c in chars {
+        let w = cells(c.encode_utf8(&mut [0; 4]));
+        if used + w > max {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
+/// Cuts text to at most `max` cells, keeping its start and its end,
+/// because names often differ only at the ends. A wide character that
+/// would straddle the limit is left out, so the result may be a cell short;
+/// `pad` fills it.
+pub(crate) fn shorten(text: &str, max: usize) -> String {
+    if cells(text) <= max {
+        return text.to_string();
+    }
+    match max {
+        0 => String::new(),
+        1 => "…".into(),
+        _ => {
+            let head = take_cells(text.chars(), max / 2);
+            let tail: String = take_cells(text.chars().rev(), (max - 1) / 2)
+                .chars()
+                .rev()
+                .collect();
+            format!("{head}…{tail}")
+        }
+    }
+}
+
 pub(crate) fn usd(cents: u32) -> String {
     format!("${}.{:02}", cents / 100, cents % 100)
 }
@@ -233,7 +286,8 @@ pub(crate) fn comparable(s: &Session, count: bool) -> bool {
     !s.incomplete && (count || priced(s) == s.requests.len())
 }
 
-pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
+/// `ws` is the workspace column width; long names are shortened to fit it.
+pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row {
     let measure = if count {
         format!("{} req", s.requests.len())
     } else if s.requests.iter().all(|r| !r.priced()) {
@@ -243,12 +297,12 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool) -> Row {
     };
     link(
         format!(
-            "{:<16} {:<4} {:<7} {:>8}{}",
-            s.name.chars().take(16).collect::<String>(),
-            s.workspace,
+            "{} {} {:<7} {:>8}{}",
+            pad(&clip(s.name, 16), 16),
+            pad(&shorten(s.workspace, ws), ws),
             s.agent,
             measure,
-            if s.incomplete { "  partial" } else { "" }
+            if s.incomplete { " ≥" } else { "" }
         ),
         View::Session(id),
         "Open session cost and components",

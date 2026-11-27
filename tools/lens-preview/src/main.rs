@@ -78,7 +78,6 @@ fn run(all: &Data) -> io::Result<()> {
 /// The stress corpus reuses the default synthetic plan windows and token
 /// sources, since no session records them.
 fn export(data: &Data, corpus: &str) -> serde_json::Value {
-    let workspaces: std::collections::BTreeSet<&str> = data.iter().map(|s| s.workspace).collect();
     let token_sources: Vec<_> = data
         .token_sources
         .iter()
@@ -90,7 +89,7 @@ fn export(data: &Data, corpus: &str) -> serde_json::Value {
         "corpus": corpus,
         "period": data.period(),
         "snapshot": fixture::SNAPSHOT,
-        "workspaces": workspaces,
+        "workspaces": fixture::workspaces(data),
         "agents": AGENTS,
         "components": COMPONENTS,
         "placements": fixture::PLACEMENTS,

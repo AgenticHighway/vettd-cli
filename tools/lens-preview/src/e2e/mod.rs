@@ -30,9 +30,18 @@ impl User {
     }
 
     fn at(size: (u16, u16)) -> Self {
+        Self::with(Data::fixture(), size)
+    }
+
+    /// The seeded stress corpus: six workspaces, long names, long models.
+    fn stress(size: (u16, u16)) -> Self {
+        Self::with(Data::stress(), size)
+    }
+
+    fn with(all: Data, size: (u16, u16)) -> Self {
         Self {
             app: App::new(),
-            all: Data::fixture(),
+            all,
             size,
             mono: false,
             quit: false,
@@ -120,7 +129,7 @@ impl User {
     }
 }
 
-use KeyCode::{Down, Enter, Esc};
+use KeyCode::{Down, Enter, Esc, PageDown, PageUp};
 
 // Journey: "am I using my plan well?" Home leads with the window that can
 // stop work, Enter explains it, and Esc twice returns to the same finding.
@@ -179,6 +188,70 @@ fn maintainer_journey_filters_clears_and_returns_to_the_row() {
     );
     u.press(Esc);
     assert_eq!(u.selected(), row);
+}
+
+// Journey: a maintainer filters by workspace on the stress corpus. The
+// filter offers the corpus's own workspaces in sorted order, then wraps to
+// all of them, so no workspace the corpus holds is out of reach.
+#[test]
+fn workspace_filter_follows_the_stress_corpus() {
+    let mut u = User::stress((80, 24));
+    let names = fixture::workspaces(&u.all);
+    assert_eq!(fixture::workspaces(&fixture::sessions()), ["api", "web"]);
+    assert_eq!(names.len(), 6, "{names:?}");
+    assert!(names.windows(2).all(|pair| pair[0] < pair[1]), "{names:?}");
+    u.press(KeyCode::Char('i'));
+    for name in &names {
+        u.press(KeyCode::Char('w'));
+        // Long names are shortened in the chip, but the start always shows.
+        let prefix: String = name.chars().take(8).collect();
+        u.sees(&format!("Workspace {prefix}"));
+    }
+    u.press(KeyCode::Char('w')).sees("All workspaces");
+}
+
+// On a long list, PageDown and PageUp reach both ends. The hint row counts
+// the selectable rows as "n/total", so the counter shows where the person is.
+#[test]
+fn long_list_pages_to_both_ends() {
+    let mut u = User::stress((80, 24));
+    u.app.stack.push(Page::new(View::Day(16)));
+    let counter = |u: &mut User| {
+        let screen = u.screen();
+        let hint = screen.lines().rev().nth(1).unwrap();
+        hint.split_whitespace().last().unwrap().to_string()
+    };
+    let total: usize = counter(&mut u).split('/').nth(1).unwrap().parse().unwrap();
+    let mut before = counter(&mut u);
+    let mut presses = 0;
+    while presses < 100 {
+        u.press(PageDown);
+        let now = counter(&mut u);
+        if now == before {
+            break;
+        }
+        before = now;
+        presses += 1;
+    }
+    assert_eq!(before, format!("{total}/{total}"));
+    let rt = Runtime::default();
+    let rows = content(
+        &Page::new(View::Day(16)),
+        &u.all,
+        false,
+        screen::list_width(80),
+        &rt,
+    )
+    .2;
+    let last = rows.iter().rev().find(|r| r.open.is_some()).unwrap();
+    let head: String = last.text.chars().take(10).collect();
+    assert!(
+        u.selected().starts_with(&format!("▸ {head}")),
+        "{:?}",
+        last.text
+    );
+    u.times(PageUp, presses);
+    assert_eq!(counter(&mut u), format!("1/{total}"));
 }
 
 // Lookup is a text field: letters type, they don't trigger commands, and q

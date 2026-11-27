@@ -1,4 +1,5 @@
 use super::{estimate_missing, line, link, usd, Page, Row, Runtime, Scope, View};
+use crate::data::Data;
 use crate::fixture::{
     Placement, Session, AGENTS, COMPONENTS, KINDS, PLACEMENTS, SCANS, SNAPSHOT, WORKSPACES,
 };
@@ -187,9 +188,20 @@ fn pick(values: &[&'static str], index: usize) -> Option<&'static str> {
     index.checked_sub(1).map(|i| values[i])
 }
 
+/// The workspaces the inventory filter cycles. On local data the
+/// inventory reads the fixture's sessions (see `views::content`), so the
+/// cycle has the fixture's workspaces, never real ones.
+pub fn filter_workspaces(all: &Data) -> Vec<&'static str> {
+    if all.local() {
+        WORKSPACES.to_vec()
+    } else {
+        crate::fixture::workspaces(all)
+    }
+}
+
 pub fn rows(page: &Page, all: &[Session], rt: &Runtime) -> (String, String, Vec<Row>) {
     match page.view {
-        View::Inventory => inventory(page, rt),
+        View::Inventory => inventory(page, all, rt),
         View::Component(c, scope) => component(c, scope, all, rt),
         View::Placement(pid) => placement(pid, all, rt),
         View::Observation(sid, u) => observation(sid, u, all),

@@ -174,4 +174,5 @@ fn empty_inventory_filter_reports_zero_results() {
     assert!(scope.starts_with("0 of 10 |"));
 }
 
+mod readability;
 mod render;
