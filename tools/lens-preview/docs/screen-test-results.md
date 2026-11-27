@@ -46,3 +46,26 @@ stress`, merged with Slice 1) by eye: it "feels better". They gave no
 detail on finding a day or session, key presses, or scanning, so this
 does not show which change helped. It is a lead for screen-test questions
 1 and 4, not a result.
+
+## Owner real-data check of the navigation build (expert review)
+
+On 2026-11-26 the project owner ran the navigation build on their own
+logs (`--source local`, period Nov 21–27 UTC). The screen test is still
+waived, so this is labelled expert review: one person who knows the tool,
+not test evidence.
+
+- Week keys 1–7: "all correct". Each opened the expected UTC day.
+- 80 columns: "all readable".
+- Day totals and the `≥ partial` chip: no verdict yet. The owner's answer
+  was about Claude headroom instead (below).
+- Claude sessions do load (18 Claude and 6 Codex sessions in the export).
+  What the owner saw as "Claude not showing" is Plan headroom: both Claude
+  windows had no reading. No relay file existed, and the `statusLine` in
+  `~/.claude/settings.json` didn't call `--relay`. The installed binary
+  records correctly when given a sample reading, so this is setup, not a
+  defect. Plan headroom is pending until relay readings exist.
+- Codex weekly showed `~272%` at reset, which the owner read as wrong. It
+  is the pace projection, not the used share: 95% used about 2.4 days into
+  the week, carried on a straight line to the reset. The arithmetic is as
+  designed (projections over 100% are allowed). Whether the column reads
+  clearly enough is an open question for the screen test, not a fix here.
