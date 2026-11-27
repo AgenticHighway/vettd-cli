@@ -1,6 +1,6 @@
 use super::{
-    cells, clip, comparable, content, cost_label, day_header, measure, priced, shorten, total,
-    units, usd, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
+    cells, comparable, content, cost_label, day_header, measure, priced, shorten, total, units,
+    usd, Page, Row, Runtime, Session, View, COMPONENTS, PARTS,
 };
 use crate::data::{day_label, Data, Source};
 use ratatui::{
@@ -189,8 +189,17 @@ fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
                 later.iter().map(|p| least(p) + 3).sum()
             };
             let room = width.saturating_sub(used + 3 + reserve);
-            if used + cells(part) + 3 + reserve > width && room >= MIN_VALUE {
-                value = shorten(part, room);
+            if used + cells(part) + 3 + reserve > width {
+                if room >= MIN_VALUE {
+                    value = shorten(part, room);
+                } else if used + 2 + reserve <= width {
+                    // Too little room to shorten: this chip gives way to "…"
+                    // so the figure after it keeps its amount.
+                    spans.push(Span::styled("…", theme.fg(MUTED)));
+                    spans.push(Span::raw(" "));
+                    used += 2;
+                    continue;
+                }
             }
         }
         if used + cells(&value) + 2 + more > width {
@@ -199,7 +208,13 @@ fn chips(scope: &str, width: usize, theme: Theme) -> Line<'static> {
             let alone = width.saturating_sub(used + 5);
             let fit = |room: usize| {
                 if figure(part) {
-                    (room >= least(part)).then(|| format!("{}…", clip(part, room - 1).trim_end()))
+                    // Drop the note a whole word at a time, so no number in
+                    // it is ever cut short.
+                    let words: Vec<&str> = part.split(' ').collect();
+                    (1..words.len())
+                        .rev()
+                        .map(|k| format!("{}…", words[..k].join(" ")))
+                        .find(|v| cells(v) <= room)
                 } else {
                     (room >= MIN_VALUE).then(|| shorten(part, room))
                 }
@@ -420,5 +435,41 @@ fn footer_keys(view: View, w: u16) -> Vec<(&'static str, &'static str)> {
             ("?", "Keys"),
         ],
         _ => vec![("/", "Find"), ("Esc", "Back"), ("?", "Keys"), ("q", "Quit")],
+    }
+}
+
+#[cfg(test)]
+mod chip_tests {
+    use super::{chips, Theme};
+
+    fn text(scope: &str, width: usize) -> String {
+        let line = chips(scope, width, Theme { mono: true });
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // A cost note's fraction is a figure too: "(12/150 priced)" cut to
+    // "(12/15…" reads as 12 of 15. The note goes a whole word at a time.
+    #[test]
+    fn cost_note_is_never_cut_inside_a_number() {
+        let scope = "Codex | $8.04 USD (12/150 priced)";
+        for width in 10..40 {
+            let shown = text(scope, width);
+            assert!(!shown.contains("(12/15…"), "{width}: {shown:?}");
+            assert!(!shown.contains("(12/1…"), "{width}: {shown:?}");
+            if let Some(chip) = shown.split('[').find(|c| c.starts_with('$')) {
+                assert!(chip.starts_with("$8.04"), "{width}: {shown:?}");
+            }
+        }
+    }
+
+    // Too narrow to shorten the workspace to a readable length: it gives
+    // way to "…" so the cost after it keeps its amount.
+    #[test]
+    fn narrow_scope_keeps_the_cost_amount_over_the_workspace() {
+        let scope = "Nov 12 UTC | Workspace platform/services/internal-tooling | Codex | $8.04 USD (3/3 priced)";
+        for width in 34..=60 {
+            let shown = text(scope, width);
+            assert!(shown.contains("[$8.04"), "{width}: {shown:?}");
+        }
     }
 }

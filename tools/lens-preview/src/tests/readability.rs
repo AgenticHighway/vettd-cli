@@ -629,7 +629,7 @@ fn wide_workspace_keeps_totals_whole_and_aligned() {
         .iter()
         .filter(|r| r.open.is_some())
         .map(|r| {
-            let total = r.text.trim_end_matches("  partial");
+            let total = r.text.trim_end_matches(" ≥");
             cells(total)
         })
         .collect();
@@ -655,4 +655,27 @@ fn shorten_counts_wide_characters_as_two_cells() {
     assert!(cells(&shorten("日本語のワークスペース", 8)) <= 8);
     assert_eq!(pad("日本", 6), "日本  ");
     assert_eq!(clip("日本語", 5), "日本");
+}
+
+// A partial session's total is a floor. If its "≥" is cut off at the list
+// edge, the row reads as an exact total, so the flag must fit on every day.
+#[test]
+fn partial_flag_fits_every_stress_day_at_80_columns() {
+    let all = Data::stress();
+    let width = screen::list_width(80);
+    for day in 12..=18 {
+        let (title, _, rows) = content(
+            &Page::new(View::Day(day)),
+            &all,
+            false,
+            width,
+            &Runtime::default(),
+        );
+        let partial: Vec<_> = rows.iter().filter(|r| r.text.ends_with(" ≥")).collect();
+        assert!(!partial.is_empty(), "Nov {day} has no partial row");
+        assert!(title.contains("≥ partial"), "{title:?}");
+        for r in partial {
+            assert!(3 + cells(&r.text) <= usize::from(width), "{:?}", r.text);
+        }
+    }
 }

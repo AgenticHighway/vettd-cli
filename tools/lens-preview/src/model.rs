@@ -302,7 +302,7 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row
             pad(&shorten(s.workspace, ws), ws),
             s.agent,
             measure,
-            if s.incomplete { "  partial" } else { "" }
+            if s.incomplete { " ≥" } else { "" }
         ),
         View::Session(id),
         "Open session cost and components",

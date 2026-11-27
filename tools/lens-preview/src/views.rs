@@ -166,8 +166,9 @@ fn find(filter: &str) -> Content {
 /// fixed columns still fit `width` (the list width). Shorter days keep the
 /// narrow column, so the default corpus renders as before.
 pub(crate) fn day_ws_width(day: u32, all: &[Session], width: u16) -> usize {
-    // Row marker (3) plus name, agent and total with their separators (34).
-    let room = usize::from(width).saturating_sub(3 + 34);
+    // Row marker (3) plus name, agent and total with their separators (34),
+    // plus the " ≥" a partial session ends with (2), so it is never cut.
+    let room = usize::from(width).saturating_sub(3 + 34 + 2);
     let longest = all
         .iter()
         .filter(|s| s.day == day)
@@ -213,7 +214,12 @@ fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
     };
     let label = day_label(day);
     (
-        format!("{label} sessions"),
+        // Partial rows end in "≥" (at least); the title says what it means.
+        if sessions.iter().any(|(_, s)| s.incomplete) {
+            format!("{label} sessions  ·  ≥ partial")
+        } else {
+            format!("{label} sessions")
+        },
         format!(
             "{label} UTC | All workspaces | {}{} | {comparison}",
             units(total, count),
@@ -251,9 +257,7 @@ fn incomplete_rows(s: &Session) -> Vec<Row> {
 /// "worker / model", with the model shortened so the row, plus `reserved`
 /// columns after it, fits `room`. The model keeps at least one character.
 fn worker_model(worker: &str, model: &str, reserved: usize, room: usize) -> String {
-    let model_room = room
-        .saturating_sub(worker.chars().count() + 3 + reserved)
-        .max(1);
+    let model_room = room.saturating_sub(cells(worker) + 3 + reserved).max(1);
     format!("{worker} / {}", shorten(model, model_room))
 }
 
@@ -283,7 +287,7 @@ fn tokens(s: &Session, width: u16, local: bool) -> Content {
         } else {
             format!(" ({} requests)", requests.len())
         };
-        let reserved = many.chars().count();
+        let reserved = cells(&many);
         rows.push(line(format!(
             "{}{many}",
             worker_model(worker, model, reserved, room)
@@ -365,7 +369,7 @@ fn cost_rows(s: &Session, bar_width: usize, width: u16) -> Vec<Row> {
         };
         line(format!(
             "{}   {cost}",
-            worker_model(worker, model, 3 + cost.chars().count(), room)
+            worker_model(worker, model, 3 + cells(&cost), room)
         ))
     }));
     rows

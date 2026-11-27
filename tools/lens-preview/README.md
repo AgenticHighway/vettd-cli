@@ -83,9 +83,10 @@ The fixture never treats partial skill signals as definitive usage totals.
 The chart toggle previews USD and request counts. When every day with data
 is at least half the peak, as on the stress corpus, Home's chart starts from
 a raised baseline so the differences between days show. Its title then names
-the axis start, for example `from $1510`. Long workspaces and model IDs are
+the axis start, for example `from $1474`. Long workspaces and model IDs are
 shortened in the middle (`platf…tress`) so totals and costs stay whole and
-aligned. Upstream count breakdowns
+aligned. In a day's session list, a partial session's total ends with `≥`
+(at least), and the day's title says `≥ partial`. Upstream count breakdowns
 by trigger, tool, class and MCP remain Phase 1 parity work.
 
 ## Your own logs: `--source local`

@@ -29,7 +29,7 @@ show "·" and no bar.
 
 ### Requirement: Chart title names a raised baseline
 When the chart uses a raised baseline, its title SHALL say where the axis
-starts, in the chart's current unit, for example `axis from $1510`.
+starts, in the chart's current unit, for example `axis from $1474`.
 
 #### Scenario: Stress title names the axis start
 - **WHEN** Home is drawn from the stress corpus in priced USD at 80×24

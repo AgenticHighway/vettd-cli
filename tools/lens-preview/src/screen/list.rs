@@ -30,9 +30,10 @@ fn row_style(text: &str, theme: Theme) -> Style {
         theme.fg(CYAN)
     } else if text.starts_with("──") {
         theme.fg(MUTED)
-    } else if ["partial", "unpriced", "Unknown", "unknown", "None for"]
-        .iter()
-        .any(|flag| text.contains(flag))
+    } else if text.ends_with(" ≥")
+        || ["partial", "unpriced", "Unknown", "unknown", "None for"]
+            .iter()
+            .any(|flag| text.contains(flag))
     {
         theme.fg(AMBER)
     } else {

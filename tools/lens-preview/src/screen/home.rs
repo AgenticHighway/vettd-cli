@@ -218,7 +218,7 @@ fn chart_title(
     axis: Option<&Part>,
     width: usize,
 ) -> String {
-    let fits = |text: &str| text.chars().count() + 2 <= width;
+    let fits = |text: &str| cells(text) + 2 <= width;
     // Shown in this order; `true` marks a part that may be dropped.
     let parts: Vec<(&Part, bool)> = [Some((unit, false)), Some((normal, true))]
         .into_iter()
