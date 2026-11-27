@@ -96,3 +96,31 @@ verdicts.
 - 80 columns: on days whose scope line carries a total over $10 and "No
   comparable previous day", "All workspaces" is shortened to
   "All w…paces". It is still legible.
+
+## Owner check of session History on real logs (expert review)
+
+On 2026-11-27 the project owner opened History (`h`) on their own logs
+(`--source local`). They didn't time it, but called it "quick enough". The
+read runs in the background after the first screen, so the wait isn't felt.
+This is expert review, not test evidence.
+
+At the owner's request, Claude timed the export on the same logs. Only
+counts were printed, and the output file was deleted afterwards. Each run
+listed 181 History sessions and 32 sessions in the period. Times are
+wall-clock; the peak is the process's peak working set.
+
+| Build   | Command                           | Time   | Peak memory |
+|---------|-----------------------------------|--------|-------------|
+| release | `--source local --json`           | 6.9 s  | 1,843 MB    |
+| release | `--source local --json --history` | 16.2 s | 1,855 MB    |
+| debug   | `--source local --json`           | 25 s   | 1,844 MB    |
+| debug   | `--source local --json --history` | 51 s   | 1,856 MB    |
+
+- Time: `--history` adds about 9 s in release, because it reads every file,
+  not just the ones changed in the last 28 days.
+- Memory: History adds about 12 MB. The ~1.84 GB peak was already there
+  with plain `--json`, so it comes from the existing readers. The owner
+  chose to record it and fix the reader memory in a separate change. Its
+  cause hasn't been looked into yet.
+- Not covered by the owner's check: the filter, or Enter and Esc on a real
+  History row.
