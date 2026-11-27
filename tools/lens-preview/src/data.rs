@@ -115,6 +115,23 @@ impl Data {
         }
     }
 
+    /// Fixture History: the corpus's own sessions, newest first, ties
+    /// broken by agent then name. There is nothing to read, so it is ready
+    /// at once.
+    pub(crate) fn corpus_history(&self) -> Self {
+        let mut sessions = self.sessions.clone();
+        sessions.sort_by(|a, b| {
+            b.day
+                .cmp(&a.day)
+                .then(a.agent.cmp(b.agent))
+                .then(a.name.cmp(b.name))
+        });
+        Self {
+            sessions,
+            ..Self::fixture()
+        }
+    }
+
     pub(crate) fn local(&self) -> bool {
         self.source == Source::Local
     }

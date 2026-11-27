@@ -199,3 +199,24 @@ test("13. footer names the day arrows; help lists the new keys", T, () =>
       await term.getByText(text).expect();
     }
   }));
+
+// History on the stress corpus: open it, filter to one day, open the third
+// row, and come back to the same filter and row.
+test("14. stress h opens History; filter, open the third row, Esc keeps both", T, () =>
+  journey(["--corpus", "stress"], async (term) => {
+    await term.press("h");
+    await term.getByText("1991 sessions, newest first").expect();
+    await until(term, (t) => crumb(t) === "Home › History", "History breadcrumb");
+    await term.type("nov 17");
+    await term.getByText("Filter: nov 17_").expect();
+    for (let i = 0; i < 2; i++) await term.press("Down");
+    await until(term, (t) => counter(t)?.startsWith("3/"), "third row");
+    const row = selected(await term.text());
+    await term.press("Enter");
+    await until(term, (t) => crumb(t).startsWith("Home › History › ") && t.includes("All requests"), "History session");
+    await term.press("Escape");
+    await term.getByText("Filter: nov 17_").expect();
+    await until(term, (t) => selected(t) === row, "the same row");
+    await term.press("Escape");
+    await until(term, (t) => crumb(t) === "Home", "Home breadcrumb");
+  }));

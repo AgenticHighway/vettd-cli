@@ -107,7 +107,9 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
     let mut skills: Vec<Pending> = Vec::new();
     let mut rejected: HashSet<String> = HashSet::new();
 
+    found.opening(files.len());
     for (index, (path, folder, is_subagent)) in files.iter().enumerate() {
+        found.opened();
         let (lines, broken) = read_lines(path);
         if broken {
             found.meta(AGENT, folder).partial = true;

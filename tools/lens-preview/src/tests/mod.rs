@@ -5,6 +5,7 @@ use super::*;
 use crate::data::Data;
 
 mod corpus;
+mod history;
 mod stress;
 
 fn rows(view: View, rt: &Runtime) -> Vec<Row> {

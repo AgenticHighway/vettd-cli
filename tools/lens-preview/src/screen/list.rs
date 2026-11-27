@@ -13,8 +13,10 @@ fn header(view: View, count: bool) -> &'static str {
         // Built per day by views::day_header, since its workspace column varies.
         View::Day(_) => "",
         View::Find => "MATCHES",
-        View::Session(_) => "COST, WORKERS AND OBSERVED COMPONENTS",
-        View::Tokens(_) => "TOKENS BY WORKER",
+        View::Session(_) | View::HistorySession(_) => "COST, WORKERS AND OBSERVED COMPONENTS",
+        View::Tokens(_) | View::HistoryTokens(_) => "TOKENS BY WORKER",
+        // Built per width by views::history_header, like Day.
+        View::History => "",
         View::Help => "KEY     ACTION",
         View::Inventory => "TYPE    COMPONENT       #  STATE",
         View::Component(..) => "USE, COPIES, OBSERVATIONS, SIGNALS",
@@ -63,6 +65,7 @@ pub(super) fn draw_list(f: &mut Frame, body: Rect, page: &Page, cx: &Ctx) {
     // Same width the rows were built with, so the columns line up.
     let heading = match page.view {
         View::Day(day) => day_header(day, cx.all, list_width(body.width)),
+        View::History if cx.rt.past().is_some() => history_header(list_width(body.width)),
         view => header(view, cx.count).into(),
     };
     f.render_widget(

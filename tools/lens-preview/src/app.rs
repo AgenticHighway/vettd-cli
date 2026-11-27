@@ -4,6 +4,7 @@ use crate::data::Data;
 use crate::fixture::{AGENTS, KINDS};
 use crate::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// What one frame shows: computed from the app state at a terminal size.
 pub(crate) struct Shown {
@@ -106,6 +107,24 @@ impl App {
         }
     }
 
+    /// Takes whatever History's background read has sent. Returns whether
+    /// it is still reading, so the loop knows to keep polling.
+    pub(crate) fn take_history(&mut self, rx: &Receiver<Past>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(past) => {
+                    let done = matches!(past, Past::Ready(_));
+                    self.rt.history = past;
+                    if done {
+                        return false;
+                    }
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => return false,
+            }
+        }
+    }
+
     /// Computes the current frame and clamps selection and scroll to it.
     pub(crate) fn frame(&mut self, all: &Data, (w, h): (u16, u16)) -> Shown {
         let page = self.stack.last_mut().unwrap();
@@ -192,10 +211,11 @@ impl App {
 
     /// Keys that act on the current page: moving and scrolling, typing in
     /// Find, and inventory filters. Returns false when the key isn't one.
-    /// Find takes letters first, so typing never triggers a command.
+    /// Find and History take letters first, so typing never triggers a
+    /// command.
     fn edit_page(&mut self, code: KeyCode, all: &Data, shown: &Shown) -> bool {
         let page = self.stack.last_mut().unwrap();
-        let finding = matches!(page.view, View::Find);
+        let finding = matches!(page.view, View::Find | View::History);
         let inventory = matches!(page.view, View::Inventory);
         let reset = |page: &mut Page| {
             page.selected = 0;
@@ -289,6 +309,18 @@ impl App {
             KeyCode::Char('?') if view != View::Help => self.stack.push(Page::new(View::Help)),
             KeyCode::Char('q') => return false,
             KeyCode::Char('/') => self.stack.push(Page::new(View::Find)),
+            KeyCode::Char('h')
+                if matches!(
+                    view,
+                    View::Home | View::Week | View::Day(_) | View::Session(_)
+                ) =>
+            {
+                // The fixture has nothing to read: its History is the corpus.
+                if !all.local() && self.rt.past().is_none() {
+                    self.rt.history = Past::Ready(all.corpus_history());
+                }
+                self.stack.push(Page::new(View::History));
+            }
             // 1–7 open the period's days by position, as Week lists them.
             // Find never gets here: it types digits first.
             KeyCode::Char(ch @ '1'..='7') if matches!(view, View::Home | View::Week) => {

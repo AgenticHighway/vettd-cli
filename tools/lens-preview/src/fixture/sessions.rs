@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Use {
     pub component: usize,
     pub version: Option<&'static str>,
@@ -13,7 +13,7 @@ pub struct Use {
     pub signals: &'static [(&'static str, u32)],
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Request {
     pub worker: &'static str,
     pub model: &'static str,
@@ -47,6 +47,7 @@ impl Request {
 }
 
 /// A skill or MCP server a local session used, read from its logs.
+#[derive(Clone)]
 pub struct Used {
     pub kind: &'static str,
     pub name: &'static str,
@@ -56,7 +57,7 @@ pub struct Used {
     pub estimated: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Session {
     pub day: u32,
     pub name: &'static str,

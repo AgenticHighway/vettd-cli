@@ -33,6 +33,8 @@ use ratatui::{
 };
 use std::io::{self, BufWriter};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 struct Terminal;
 
@@ -58,11 +60,29 @@ fn run(all: &Data) -> io::Result<()> {
     let mut term = ratatui::Terminal::new(CrosstermBackend::new(BufWriter::new(io::stderr())))?;
     let mut app = App::new();
     let mono = screen::no_color();
+    let mut started = false;
+    let mut reading: Option<mpsc::Receiver<Past>> = None;
     loop {
         let size = term.size()?;
         let size = (size.width, size.height);
         let shown = app.frame(all, size);
         term.draw(|f| app.draw(f, all, &shown, mono))?;
+        // History reads every log file, so it starts only once the first
+        // screen is up and runs beside the TUI. `q` never waits for it.
+        if all.local() && !started {
+            started = true;
+            reading = Some(read_history());
+        }
+        if let Some(rx) = &reading {
+            if !app.take_history(rx) {
+                reading = None;
+                continue;
+            }
+            // Poll while reading, so progress and the list show without a key.
+            if !event::poll(Duration::from_millis(200))? {
+                continue;
+            }
+        }
         let Event::Key(key) = event::read()? else {
             continue;
         };
@@ -71,6 +91,20 @@ fn run(all: &Data) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Starts History's read on its own thread. It sends progress as it goes,
+/// then the sessions.
+fn read_history() -> mpsc::Receiver<Past> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let progress = tx.clone();
+        let data = local::history(Some(Box::new(move |read, found| {
+            let _ = progress.send(Past::Reading(read, found));
+        })));
+        let _ = tx.send(Past::Ready(data));
+    });
+    rx
 }
 
 /// The whole synthetic corpus, so every number a view shows can be rebuilt
@@ -105,11 +139,14 @@ fn export(data: &Data, corpus: &str) -> serde_json::Value {
 
 pub(crate) const CORPUS_ERROR: &str = "--corpus takes default or stress";
 pub(crate) const LOCAL_CORPUS_ERROR: &str = "--corpus needs --source fixture";
+pub(crate) const HISTORY_ERROR: &str = "--history needs --json";
 
 /// `--json`, `--source <name>`, `--corpus <name>` and the relay options,
 /// in any order. Other arguments are ignored.
 pub(crate) struct Args {
     pub(crate) json: bool,
+    /// `--json --history`: add every session History lists.
+    pub(crate) history: bool,
     pub(crate) source: Source,
     /// The synthetic corpus, when `--corpus` was given.
     pub(crate) corpus: Option<&'static str>,
@@ -123,6 +160,7 @@ pub(crate) struct Args {
 pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
     let mut parsed = Args {
         json: false,
+        history: false,
         source: Source::Fixture,
         corpus: None,
         relay: false,
@@ -135,6 +173,10 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
         let value = match arg.as_str() {
             "--json" => {
                 parsed.json = true;
+                continue;
+            }
+            "--history" => {
+                parsed.history = true;
                 continue;
             }
             "--relay" => {
@@ -172,6 +214,10 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Args {
     if parsed.source == Source::Local && parsed.corpus.is_some() && parsed.error.is_none() {
         parsed.error = Some(LOCAL_CORPUS_ERROR.into());
     }
+    // History is only exported; the TUI reads it on its own.
+    if parsed.history && !parsed.json && parsed.error.is_none() {
+        parsed.error = Some(HISTORY_ERROR.into());
+    }
     parsed
 }
 
@@ -191,10 +237,21 @@ fn main() -> io::Result<()> {
         Source::Local => local::load(args.relay_file),
     };
     if args.json {
-        let json = match data.source {
+        let mut json = match data.source {
             Source::Fixture => export(&data, args.corpus.unwrap_or("default")),
             Source::Local => local::export(&data),
         };
+        // Opt-in, so plain `--json` stays byte-identical and never waits
+        // for the full read.
+        if args.history {
+            let history = match data.source {
+                Source::Fixture => serde_json::json!(data.corpus_history().sessions),
+                Source::Local => local::history_export(&local::history(None)),
+            };
+            json.as_object_mut()
+                .unwrap()
+                .insert("history".into(), history);
+        }
         println!("{json}");
         return Ok(());
     }

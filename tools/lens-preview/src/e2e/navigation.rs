@@ -264,13 +264,20 @@ fn footers_name_the_day_keys_where_they_work() {
     assert!(footer(&mut u).contains("1–7 Day"), "{}", footer(&mut u));
 }
 
-// Narrow footers keep their earlier items whole.
+// Narrow footers keep their earlier items whole. History comes last, so
+// it never pushes an older key off the row.
 #[test]
 fn narrow_footers_are_unchanged() {
     let mut u = User::at((60, 24));
-    assert_eq!(footer(&mut u), " c USD/req   i Inventory   ? Keys");
+    assert_eq!(
+        footer(&mut u),
+        " c USD/req   i Inventory   ? Keys   h History"
+    );
     u.times(Down, 4).press(Enter);
-    assert_eq!(footer(&mut u), " i Inventory   / Find   Esc Back");
+    assert_eq!(
+        footer(&mut u),
+        " i Inventory   / Find   Esc Back   h History"
+    );
 }
 
 // Help lists every new key and what it does.

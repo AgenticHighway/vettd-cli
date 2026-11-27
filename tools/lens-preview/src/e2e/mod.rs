@@ -437,6 +437,7 @@ fn daily_view_answers_instead_of_labelling() {
 // Rows without an action must still be reachable. In a 38x10 terminal only
 // a few rows fit, so arrow and page keys scroll once there is no selectable
 // row to move to.
+mod history;
 mod local;
 mod scrolling;
 

@@ -30,7 +30,7 @@ fn nov(day: u32) -> u32 {
 }
 
 fn load() -> Data {
-    read(&roots(), now(), None, &mut Vec::new())
+    read(&roots(), now(), Span::Week(None), &mut Vec::new())
 }
 
 fn found(agent: &str) -> Found {
@@ -283,7 +283,7 @@ fn local_dollars_are_api_equivalent() {
 #[test]
 fn codex_windows_group_by_time_with_a_running_maximum() {
     let mut notes = Vec::new();
-    let data = read(&roots(), now(), None, &mut notes);
+    let data = read(&roots(), now(), Span::Week(None), &mut notes);
     let window = |name: &str| {
         data.windows
             .iter()
@@ -359,7 +359,7 @@ fn missing_directory_is_a_note_not_an_error() {
         relay: None,
     };
     let mut notes = Vec::new();
-    let data = read(&roots, now(), None, &mut notes);
+    let data = read(&roots, now(), Span::Week(None), &mut notes);
     assert!(
         notes
             .iter()
@@ -377,7 +377,7 @@ fn no_sessions_still_answers() {
         codex: None,
         relay: None,
     };
-    let data = read(&empty, now(), None, &mut Vec::new());
+    let data = read(&empty, now(), Span::Week(None), &mut Vec::new());
     let (answer, _, _) = content(
         &Page::new(View::Home),
         &data,
@@ -398,7 +398,7 @@ fn period_across_a_month_end_sorts_by_date() {
             relay: None,
         },
         dec2,
-        None,
+        Span::Week(None),
         &mut Vec::new(),
     );
     let labels: Vec<String> = data
@@ -440,12 +440,40 @@ fn files_older_than_28_days_are_not_opened() {
     };
     let cutoff = run_at - day * 28;
     let since = parse_ts("2026-10-28T12:00:00Z").unwrap();
-    let data = read(&roots, now(), Some(cutoff), &mut Vec::new());
+    let data = read(&roots, now(), Span::Week(Some(cutoff)), &mut Vec::new());
     std::fs::remove_dir_all(&tmp).unwrap();
     assert!(since < parse_ts("2026-10-30T10:00:00Z").unwrap());
     assert_eq!(data.limit_hits_by_agent.as_ref().unwrap()[0], ("Claude", 1));
     assert!(data.is_empty());
 }
+
+/// Every identifier the hand-written logs hold. None may reach an export.
+const SECRETS: &[&str] = &[
+    "s-aaa",
+    "s-bbb",
+    "rq-1",
+    "msg-rq",
+    "tu-1",
+    "th-root",
+    "th-sub",
+    "resp-1",
+    "c-1",
+    "t-9",
+    "tester",
+    "secret-project",
+    "example.invalid",
+    "SECRET-PROMPT-TEXT",
+    "Renamed session title",
+    "Release title",
+    "sample-skill",
+    "sample-server",
+    ".agents/skills/sample",
+    "s-old",
+    "s-span",
+    "rq-span",
+    "rq-old",
+    "old-work",
+];
 
 // The export may be shared. It holds aggregates only: none of the test
 // logs' IDs, paths, folder names, titles, skill or server names or text.
@@ -454,27 +482,7 @@ fn local_export_holds_no_identifiers() {
     let data = load();
     let json = export(&data);
     let text = json.to_string();
-    for secret in [
-        "s-aaa",
-        "s-bbb",
-        "rq-1",
-        "msg-rq",
-        "tu-1",
-        "th-root",
-        "th-sub",
-        "resp-1",
-        "c-1",
-        "t-9",
-        "tester",
-        "secret-project",
-        "example.invalid",
-        "SECRET-PROMPT-TEXT",
-        "Renamed session title",
-        "Release title",
-        "sample-skill",
-        "sample-server",
-        ".agents/skills/sample",
-    ] {
+    for secret in SECRETS {
         assert!(!text.contains(secret), "{secret} leaked into the export");
     }
     assert_eq!(json["source"], "local");
@@ -675,7 +683,7 @@ fn with_relay(file: &Path) -> Data {
         relay: Some(file.to_path_buf()),
         ..roots()
     };
-    read(&roots, now(), None, &mut Vec::new())
+    read(&roots, now(), Span::Week(None), &mut Vec::new())
 }
 
 #[test]
@@ -845,7 +853,7 @@ fn copied_request_belongs_to_the_earlier_created_file() {
         codex: None,
         relay: None,
     };
-    let data = read(&roots, now(), None, &mut Vec::new());
+    let data = read(&roots, now(), Span::Week(None), &mut Vec::new());
     std::fs::remove_dir_all(&tmp).unwrap();
     assert_eq!(data.len(), 1, "the copied request counts once");
     // Where the platform records no creation time, file names decide.
@@ -970,7 +978,7 @@ fn null_usage_is_missing_and_its_session_still_shows() {
         codex: Some(tmp.join("codex")),
         relay: None,
     };
-    let data = read(&roots, now(), None, &mut Vec::new());
+    let data = read(&roots, now(), Span::Week(None), &mut Vec::new());
     std::fs::remove_dir_all(&tmp).unwrap();
     assert_eq!(data.len(), 2, "both sessions show");
     assert!(data.iter().all(|s| s.incomplete && s.requests.is_empty()));
@@ -1132,4 +1140,117 @@ fn reset_codex_window_row_opens_nothing() {
         .find(|r| r.text.starts_with("Codex · 5-hour"))
         .unwrap();
     assert!(five.open.is_none(), "{}", five.text);
+}
+
+/// The hand-written logs only History tests read: an old session and one
+/// that spans the period's start. `test_data` never reads them.
+fn history_roots() -> Roots {
+    Roots {
+        claude: Some(data_dir().join("history").join("claude")),
+        codex: None,
+        relay: None,
+    }
+}
+
+// The dashboard never opens a file untouched for 28 days, so startup stays
+// fast; History exists to show exactly those sessions. If the two spans
+// read the same files, either startup slows or History misses old work.
+#[test]
+fn old_file_is_read_for_history_and_not_for_the_dashboard() {
+    let tmp = std::env::temp_dir().join(format!("lens-history-{}", std::process::id()));
+    let project = tmp.join("projects").join("p");
+    std::fs::create_dir_all(&project).unwrap();
+    let path = project.join("s-old.jsonl");
+    std::fs::copy(
+        data_dir().join("history/claude/projects/C--Users-tester-old-work/s-old.jsonl"),
+        &path,
+    )
+    .unwrap();
+    let day = Duration::from_secs(DAY as u64);
+    let run_at = UNIX_EPOCH + Duration::from_secs(now() as u64);
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(run_at - day * 90).unwrap();
+    drop(file);
+    let roots = Roots {
+        claude: Some(tmp.clone()),
+        codex: None,
+        relay: None,
+    };
+    let week = read(
+        &roots,
+        now(),
+        Span::Week(Some(run_at - day * 28)),
+        &mut Vec::new(),
+    );
+    let all = read(&roots, now(), Span::All, &mut Vec::new());
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert!(week.is_empty());
+    assert_eq!(week.limit_hits, 0);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].requests.len(), 1);
+    assert_eq!(crate::data::day_label(all[0].day), "Aug 27");
+}
+
+// A session that began the day before the period shows only its in-period
+// requests on the dashboard, which counts the week. History answers "what
+// did that session cost", so it must count every request, or a session
+// opened from History would understate itself.
+#[test]
+fn session_spanning_the_period_start_counts_all_requests_in_history() {
+    let span = |data: &Data| -> Vec<(u32, usize)> {
+        data.iter()
+            .filter(|s| s.workspace == "web")
+            .map(|s| (s.day, s.requests.len()))
+            .collect()
+    };
+    let week = read(&history_roots(), now(), Span::Week(None), &mut Vec::new());
+    let all = read(&history_roots(), now(), Span::All, &mut Vec::new());
+    assert_eq!(span(&week), [(nov(19), 2)]);
+    assert_eq!(span(&all), [(nov(18), 6)], "one row, on the day it started");
+}
+
+// History lists newest first, so the latest work is at the top.
+#[test]
+fn history_lists_sessions_newest_first() {
+    let all = read(&history_roots(), now(), Span::All, &mut Vec::new());
+    let days: Vec<u32> = all.iter().map(|s| s.day).collect();
+    assert_eq!(
+        days,
+        [nov(18), crate::data::days_from_civil(2026, 8, 27) as u32]
+    );
+}
+
+// `--json --history` may be shared like plain `--json`, so History's
+// entries follow the same rules: aggregates only, no identifiers, and
+// each entry has exactly the fields a `sessions` entry has.
+#[test]
+fn history_export_holds_no_identifiers_and_matches_sessions_fields() {
+    let mut json = export(&load());
+    let mut history = read(&roots(), now(), Span::All, &mut Vec::new());
+    history.sessions.extend(test_history().sessions);
+    json.as_object_mut()
+        .unwrap()
+        .insert("history".into(), history_export(&history));
+    let text = json.to_string();
+    for secret in SECRETS {
+        assert!(!text.contains(secret), "{secret} leaked into history");
+    }
+    let keys = |v: &Value| -> Vec<String> { v.as_object().unwrap().keys().cloned().collect() };
+    let entries = json["history"].as_array().unwrap();
+    assert_eq!(entries.len(), history.len());
+    for entry in entries {
+        assert_eq!(keys(entry), keys(&json["sessions"][0]));
+    }
+}
+
+// Plain `--json` is what other tools already parse: loading History must
+// not add a key or move a byte.
+#[test]
+fn dashboard_export_is_unchanged_by_reading_history() {
+    let data = load();
+    let before = export(&data).to_string();
+    let history = read(&roots(), now(), Span::All, &mut Vec::new());
+    assert!(!history.is_empty());
+    assert_eq!(export(&data).to_string(), before);
+    assert!(export(&data).get("history").is_none());
 }

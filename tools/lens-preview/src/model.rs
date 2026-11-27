@@ -1,6 +1,6 @@
 //! Scope, views, pages and the row helpers every view builds from.
 
-use crate::data::{day_label, period_label};
+use crate::data::{day_label, period_label, Data};
 use crate::fixture::Session;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -66,6 +66,12 @@ pub(crate) enum View {
     Day(u32),
     Session(usize),
     Tokens(usize),
+    /// Every session found, newest first, apart from the period.
+    History,
+    /// A History session and its token detail: the index is into
+    /// History's own sessions, not the period's.
+    HistorySession(usize),
+    HistoryTokens(usize),
     Help,
     Inventory,
     Component(usize, Scope),
@@ -81,7 +87,13 @@ impl View {
     pub(crate) fn measured(self) -> bool {
         matches!(
             self,
-            View::Home | View::Week | View::Day(_) | View::Session(_) | View::Tokens(_)
+            View::Home
+                | View::Week
+                | View::Day(_)
+                | View::Session(_)
+                | View::Tokens(_)
+                | View::HistorySession(_)
+                | View::HistoryTokens(_)
         )
     }
 
@@ -140,6 +152,40 @@ impl Page {
 pub(crate) struct Runtime {
     pub(crate) disabled: BTreeSet<usize>,
     pub(crate) notice: Option<(usize, String)>,
+    /// History's sessions, kept apart from the dashboard's `Data`.
+    pub(crate) history: Past,
+}
+
+impl Runtime {
+    pub(crate) fn past(&self) -> Option<&Data> {
+        match &self.history {
+            Past::Ready(data) => Some(data),
+            Past::Reading(..) => None,
+        }
+    }
+
+    /// The session a session or token view shows, from the set its view
+    /// names.
+    pub(crate) fn session<'a>(&'a self, view: View, all: &'a Data) -> Option<&'a Session> {
+        match view {
+            View::Session(id) | View::Tokens(id) => all.get(id),
+            View::HistorySession(id) | View::HistoryTokens(id) => self.past()?.get(id),
+            _ => None,
+        }
+    }
+}
+
+/// History's state, and what its background read sends.
+pub(crate) enum Past {
+    /// Still reading: log files read, log files found so far.
+    Reading(usize, usize),
+    Ready(Data),
+}
+
+impl Default for Past {
+    fn default() -> Self {
+        Past::Reading(0, 0)
+    }
 }
 
 pub(crate) struct Row {

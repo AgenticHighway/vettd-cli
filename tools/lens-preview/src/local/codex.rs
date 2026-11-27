@@ -69,7 +69,9 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
     let mut hit_turns: HashSet<String> = HashSet::new();
     let mut missing: Vec<(String, i64)> = Vec::new();
 
+    found.opening(files.len());
     for path in &files {
+        found.opened();
         let (lines, broken) = read_lines(path);
         let Some(meta) = lines
             .iter()
