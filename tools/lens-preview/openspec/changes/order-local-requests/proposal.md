@@ -16,9 +16,10 @@ subagent rollouts came after its root's, not in time order.
 
 ## What Changes
 
-- Inside a session, requests are listed in time order (the time of the
-  request's first line). Ties go by request id for Claude and by file and
-  line order for Codex.
+- Inside a session, requests are listed in time order, by the same time
+  that places each request on a day (for Claude, its earliest line with
+  usage). Ties go by request id for Claude and by file and line order for
+  Codex.
 - This holds for both agents, so a Codex subagent request sits between the
   root requests made before and after it.
 

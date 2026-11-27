@@ -286,7 +286,8 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
         }
     }
 
-    // By first-line time, ties by request id: `best`'s own order changes
+    // By the request's time (its earliest line with usage, as on `Req`),
+    // ties by request id: `best`'s own order changes
     // from run to run.
     let mut order: Vec<(&String, &Best)> = best.iter().collect();
     order.sort_by(|a, b| (a.1.first.0, a.0).cmp(&(b.1.first.0, b.0)));
