@@ -286,7 +286,12 @@ pub(super) fn read(root: &Path, history: History, found: &mut Found) {
         }
     }
 
-    for (key, b) in &best {
+    // By the request's time (its earliest line with usage, as on `Req`),
+    // ties by request id: `best`'s own order changes
+    // from run to run.
+    let mut order: Vec<(&String, &Best)> = best.iter().collect();
+    order.sort_by(|a, b| (a.1.first.0, a.0).cmp(&(b.1.first.0, b.0)));
+    for (key, b) in order {
         let u = &b.usage;
         let write = u64_at(u, "cache_creation_input_tokens");
         let split_5m = u.pointer("/cache_creation/ephemeral_5m_input_tokens");
