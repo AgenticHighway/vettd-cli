@@ -46,3 +46,53 @@ stress`, merged with Slice 1) by eye: it "feels better". They gave no
 detail on finding a day or session, key presses, or scanning, so this
 does not show which change helped. It is a lead for screen-test questions
 1 and 4, not a result.
+
+## Owner real-data check of the navigation build (expert review)
+
+On 2026-11-26 the project owner ran the navigation build on their own
+logs (`--source local`, period Nov 21–27 UTC). The screen test is still
+waived, so this is labelled expert review: one person who knows the tool,
+not test evidence.
+
+- Week keys 1–7: "all correct". Each opened the expected UTC day.
+- 80 columns: "all readable".
+- Claude sessions do load (18 Claude and 6 Codex sessions in the export).
+  What the owner saw as "Claude not showing" is Plan headroom: both Claude
+  windows had no reading. No relay file existed, and the `statusLine` in
+  `~/.claude/settings.json` didn't call `--relay`. The installed binary
+  records correctly when given a sample reading, so this is setup, not a
+  defect.
+- Codex weekly showed `~272%` at reset, which the owner read as wrong. It
+  is the pace projection, not the used share: 95% used about 2.4 days into
+  the week, carried on a straight line to the reset. The arithmetic is as
+  designed (projections over 100% are allowed). Whether the column reads
+  clearly enough is an open question for the screen test, not a fix here.
+
+On 2026-11-27 the owner set the `statusLine` to `--relay` alone and sent a
+message from Claude Code in a terminal. The owner asked Claude to judge
+the rest, so the points below are Claude's checks, not the owner's
+verdicts.
+
+- Relay: it works. The relay file has one reading per Claude window, 49%
+  (5-hour) and 39% (weekly), and Plan headroom shows the same with source
+  `relay` and `—` at reset (one reading). Only terminal sessions add
+  readings: the desktop app's Code tab doesn't run `statusLine`, so four
+  checks after desktop messages found no file.
+- Answer line next to the projection: Plan headroom says "No window is on
+  pace to fill before it resets." while the Codex weekly row shows
+  `~272%`. This is by design: the straight line crossed 100% after the
+  last reading, and no later reading confirmed it, so it doesn't count
+  (`soonest` in `plan.rs`). It reads as a contradiction, so it joins the
+  `~272%` wording question for the screen test.
+- Day totals: correct. Each Week row equals its Day view total and a
+  recount from the sessions. The six days with input add up to the
+  header's $167.08.
+- `≥ partial` chip: never shown on this data, because no session is
+  incomplete. Week marks Nov 22–25 `partial` for a different reason:
+  some requests are unpriced, so the dollars are a floor. Opening those
+  days shows no `≥` and no chip, only "No comparable previous day", so
+  the Week `partial` goes unexplained. This is a wording finding for the
+  next slice, not a fix here.
+- 80 columns: on days whose scope line carries a total over $10 and "No
+  comparable previous day", "All workspaces" is shortened to
+  "All w…paces". It is still legible.
