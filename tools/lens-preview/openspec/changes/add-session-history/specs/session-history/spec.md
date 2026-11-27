@@ -41,13 +41,18 @@ the date, request count and dollars are never cut.
 - **THEN** its History row reads "unpriced" for dollars
 
 ### Requirement: Reaching and leaving History
-On Home and Week, `h` SHALL open History. Esc SHALL return to the screen it
-was opened from, with that screen's selection unchanged. The footer and `?`
-help SHALL name `h` on Home and Week.
+On Home, Week, Day and Session, `h` SHALL open History. Esc SHALL return to
+the screen it was opened from, with that screen's selection unchanged. The
+footer and `?` help SHALL name `h` on those four screens, and each footer
+SHALL fit in 80 columns.
 
 #### Scenario: Open from Home and return
 - **WHEN** the second finding is selected on Home, the person presses `h` and then Esc
 - **THEN** Home is shown with the second finding still selected
+
+#### Scenario: Open from a Day and return
+- **WHEN** a Day is shown with its third session selected, the person presses `h` and then Esc
+- **THEN** that Day is shown with its third session still selected
 
 #### Scenario: Letters are typed in Find
 - **WHEN** the person is in Find and presses `h`
@@ -96,12 +101,14 @@ SHALL NOT stop the read.
 
 #### Scenario: Export unaffected
 - **WHEN** `--source local --json` runs
-- **THEN** the export is printed without waiting for History, and holds no History field
+- **THEN** the export is printed without waiting for History, and holds no `history` field
 
 ### Requirement: History stays private
 History SHALL show session names only in the TUI, as the rest of the
-preview does. Nothing from History SHALL be written to stdout, a file or the
-network, and the JSON export SHALL NOT change because of it.
+preview does. The one exception is `--json --history`, which SHALL write
+History to stdout under the same identifier rules as `sessions[]`. Nothing
+from History SHALL be written to a file or the network, and plain `--json`
+SHALL NOT change because of it.
 
 #### Scenario: Export unchanged
 - **WHEN** `--json` runs on the default corpus

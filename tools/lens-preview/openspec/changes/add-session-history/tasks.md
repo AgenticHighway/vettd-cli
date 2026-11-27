@@ -15,17 +15,18 @@
 
 - [ ] 3.1 Add the History view: rows of date, agent, name, requests and dollars, newest first, using `screen-emphasis` spans. Local dollars are API-equivalent, "unpriced" when no request has a rate, and incomplete sessions carry the partial flag. Verify: render tests at 80×24 and 60×24 on both corpora show long names cut with "…" and date, requests and dollars in full. Check the widths against the 48-cell list pane before settling the layout.
 - [ ] 3.2 Show the reading state: "reading" with files read out of files found, and no rows. Verify: render test on a History that hasn't finished.
-- [ ] 3.3 `h` opens History from Home and Week, and Esc returns with the previous selection. `h` is typed in Find. Verify: journey tests for Home → `h` → Esc with the second finding kept, and for typing `h` in Find.
+- [ ] 3.3 `h` opens History from Home, Week, Day and Session, and Esc returns with the previous selection. `h` is typed in Find. Verify: journey tests for Home → `h` → Esc with the second finding kept, Day → `h` → Esc with the third session kept, and typing `h` in Find.
 - [ ] 3.4 Filter by typing, using Find's matcher over name, workspace, agent and date label. Backspace removes a character, the title shows the filter and the match count, and an empty result says no session matches. Verify: tests for filtering by month and for no match.
 - [ ] 3.5 Enter opens the session view over all of the session's requests. Esc returns to the same filter and row. Verify: journey test filter → third row → Enter → Esc, and a test that a session spanning the period's start shows all its requests.
-- [ ] 3.6 Footer and `?` help name `h` on Home and Week. Update the tests that assert footer or help text. Verify: `cargo test --locked`.
+- [ ] 3.6 Footer and `?` help name `h` on Home, Week, Day and Session. Update the tests that assert footer or help text. Verify: `cargo test --locked`, and a render test shows each of the four footers within 80 columns.
+- [ ] 3.7 Add `--history` (with `--json` only) and the `history[]` array: same fields and identifier rules as `sessions[]`, newest first; on local, a synchronous full read before printing. `--history` without `--json` prints `vettd-lens-preview: --history needs --json` to stderr and exits 2. Verify: stress `history[]` has 1991 entries; a local `--json --history` export passes the no-identifier test; the bare-flag error test; and the release, stress and golden hashes are byte-identical without the flag.
 
 ## 4. Docs and checks
 
-- [ ] 4.1 Update `README.md`: History in the walkthrough, and in the `--source local` section that History reads every log file after the first screen, while the export doesn't. Verify: by reading. Every key named exists in help.
+- [ ] 4.1 Update `README.md`: History in the walkthrough, and in the `--source local` section that History reads every log file after the first screen, while plain `--json` doesn't. Document `--json --history`. Verify: by reading. Every key named exists in help.
 - [ ] 4.2 Add History journeys to `tui-tests/` (open, filter, open a session, back) on the stress corpus. Verify: the README's `node:22.17.0-bookworm` journey command passes all journeys.
 - [ ] 4.3 Run the full checks in Docker: `cargo fmt --check`, `cargo clippy --locked --all-targets --quiet -- -D warnings`, `cargo test --locked`, the journeys, `openspec validate --strict --all`, the three export hashes, and 10 runs of `--corpus stress --json` timed against the last 24–47 ms. Verify: all pass and the hashes are byte-identical. Report any skipped check.
-- [ ] 4.4 Ask the owner to run History on their own logs and report, without paths or names, how long until the list appears and whether it looks right. Record it in `docs/screen-test-results.md` as an owner by-eye check (expert review, not test evidence), with read time and peak memory. Verify: the entry exists, and the owner has seen it.
+- [ ] 4.4 Ask the owner to run History on their own logs and report, without paths or names, how long until the list appears and whether it looks right, and how long `--source local --json --history` takes. Record it in `docs/screen-test-results.md` as an owner by-eye check (expert review, not test evidence), with read time and peak memory. Verify: the entry exists, and the owner has seen it.
 
 ## Workflow follow-up
 

@@ -23,7 +23,8 @@ last 28 days before it draws the first screen or prints the export, and SHALL
 print "Reading local logs…" on stderr before it starts reading. No startup
 time limit is set: about 270 files (1.4 GB) took 7–14 s warm. Files older
 than 28 days SHALL be read only for History, after the first screen is
-drawn, and never with `--json`.
+drawn, never with plain `--json`, and before printing with
+`--json --history`.
 
 Covered by: `local_export_says_it_is_reading_on_stderr` (tests/startup.rs);
 timing is not tested.
@@ -35,3 +36,7 @@ timing is not tested.
 #### Scenario: Old files don't slow the export
 - **WHEN** `--source local --json` runs where most log files are older than 28 days
 - **THEN** no file older than 28 days is opened
+
+#### Scenario: History export reads every file
+- **WHEN** `--source local --json --history` runs where a session's only file is 90 days old
+- **THEN** that session is in `history[]`, and the other export fields are the same as plain `--json`

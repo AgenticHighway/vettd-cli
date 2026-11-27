@@ -25,7 +25,7 @@ See proposal.md, "Why". Current state that shapes the approach:
 
 **Non-Goals:**
 - Caching History between runs, or reading it incrementally as files change.
-- Any change to the JSON export or the golden file.
+- Any change to plain `--json` output or the golden file.
 
 ## Decisions
 
@@ -73,13 +73,27 @@ without logs, and the stress corpus gives the long-list and scrolling cases.
 date (6, "Oct 03"), agent (6), requests (right-aligned, 5), dollars
 (right-aligned, 8), gaps (4), leaving 19 cells for the name, cut with "…".
 The date and figures use the existing bold and muted spans from
-`screen-emphasis`. This has to be checked by render test at 80×24 and
-60×24 before it's settled.
+`screen-emphasis`. The owner accepted the 19-cell name on 2026-11-27.
+Render tests at 80×24 and 60×24 still confirm it.
+
+**8. History is exported only with `--history`.** `--json --history` adds a
+`history[]` array. Each entry has the same fields and identifier rules as
+`sessions[]`, so a local export still holds no identifiers. On
+`--source local` it does the full read synchronously before printing, so it
+is slow by design; plain `--json` never starts that read. `--history`
+without `--json` is an error (exit 2), as the `--corpus` errors are.
+*Alternative:* always export History. Rejected: it would change all three
+export hashes and the golden file, and slow every local export.
+
+**9. `h` works on Home, Week, Day and Session.** The owner chose this on
+2026-11-27. Adding "h History" (12 cells) keeps every footer within 80
+columns: Home 68, Week 66, Day and Session 56.
 
 ## Risks / Trade-offs
 
 - [Reading all logs uses a lot of memory: today's reader keeps every parsed
-  request in memory until sessions are built.] → Measure peak memory and
+  request in memory until sessions are built. This applies to
+  `--json --history` too.] → Measure peak memory and
   read time on the owner's history and record both in
   `docs/screen-test-results.md`. If either is a problem, stop and ask before
   changing the readers.
@@ -102,6 +116,4 @@ reverts it.
 
 ## Open Questions
 
-- Whether History should also be reachable from Day and Session screens.
-  This slice offers it on Home and Week only, and adding it elsewhere later
-  doesn't change these requirements.
+None. Where `h` works was settled as decision 9.
