@@ -70,6 +70,19 @@ fn local_inventory_is_labelled_synthetic() {
     u.press(Esc).press(KeyCode::Char('/')).sees("synthetic");
 }
 
+// 1–7 open the period's days by position. Local days are not Nov 12–18,
+// so a key mapped to fixed dates would open an empty day here.
+#[test]
+fn local_number_keys_open_the_periods_own_days() {
+    let mut u = User::local((80, 24));
+    u.press(KeyCode::Char('1')).sees("Nov 19 sessions");
+    assert_eq!(u.crumb(), "Home › Nov 19");
+    u.press(Esc)
+        .press(KeyCode::Char('7'))
+        .sees("Nov 25 sessions");
+    assert_eq!(u.crumb(), "Home › Nov 25");
+}
+
 // The unit toggle works on real data too: requests instead of dollars.
 #[test]
 fn local_unit_toggle_switches_to_requests() {

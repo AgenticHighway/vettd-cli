@@ -167,25 +167,42 @@ fn draw_chart(f: &mut Frame, chart: Rect, wide: bool, cx: &Ctx) {
             // The day of the month: the chart's seven bars are consecutive.
             let label_day = day_label(d.day);
             let dom = label_day.rsplit(' ').next().unwrap_or_default();
+            // The chosen bar is marked by a character, so it shows without
+            // colour too. "▸" takes the place of the space after the day.
+            let chosen = cx.bar == Some(d.day);
+            let mark = if chosen { "▸" } else { " " };
+            let day_only = || {
+                let text = format!("{}{dom}{floor}", if chosen { "▸" } else { "" });
+                if fits(&text) || !chosen {
+                    text
+                } else {
+                    format!("▸{dom}")
+                }
+            };
             let caption = match d.value {
-                None => format!("{dom} ·"),
+                None => format!("{dom}{mark}·"),
                 Some(v) if wide => {
-                    let full = format!("{dom} {floor}{}", label(v));
-                    let whole = format!("{dom} {floor}${}", v / 100);
+                    let full = format!("{dom}{mark}{floor}{}", label(v));
+                    let whole = format!("{dom}{mark}{floor}${}", v / 100);
                     if fits(&full) {
                         full
                     } else if !cx.count && fits(&whole) {
                         whole
                     } else {
-                        format!("{dom}{floor}")
+                        day_only()
                     }
                 }
-                Some(_) => format!("{dom}{floor}"),
+                Some(_) => day_only(),
+            };
+            let caption = if chosen {
+                Line::styled(caption, cx.theme.selected())
+            } else {
+                Line::from(caption)
             };
             Bar::default()
                 .value(u64::from(d.value.map_or(0, |v| v.saturating_sub(base))))
                 .text_value(String::new())
-                .label(Line::from(caption))
+                .label(caption)
                 .style(cx.theme.fg(if outlier { AMBER } else { CYAN }))
         })
         .collect();
@@ -339,7 +356,8 @@ fn draw_findings(f: &mut Frame, findings: Rect, cx: &Ctx) {
         .skip(top)
         .take(room)
         .map(|(i, row)| {
-            let selected = cx.active.is_some_and(|(selection, _)| i == selection);
+            let selected =
+                cx.bar.is_none() && cx.active.is_some_and(|(selection, _)| i == selection);
             Line::styled(
                 format!(
                     "{}{:<width$}",

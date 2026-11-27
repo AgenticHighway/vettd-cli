@@ -97,21 +97,62 @@ fn lines(page: &Page, items: Rect, cx: &Ctx) -> Vec<Line<'static>> {
         .map(|(i, row)| {
             let selected = cx.active.is_some_and(|(selection, _)| i == selection);
             let marker = if selected { " ▸ " } else { "   " };
+            let flagged = row_style(&row.text, cx.theme) != cx.theme.fg(INK);
             let style = if selected {
                 cx.theme.selected()
             } else {
                 row_style(&row.text, cx.theme)
             };
-            Line::styled(
-                format!(
-                    "{marker}{:<width$}",
-                    row.text,
-                    width = usize::from(items.width)
-                ),
+            let text = format!("{:<width$}", row.text, width = usize::from(items.width));
+            let mut spans = vec![Span::styled(marker, style)];
+            spans.extend(emphasised(
+                &text,
+                &row.spans,
                 style,
-            )
+                selected || flagged,
+                cx.theme,
+            ));
+            Line::from(spans)
         })
         .collect()
+}
+
+/// Splits a row's text into runs by emphasis. Figures add bold to the
+/// row's style. Secondary cells are muted, or dim without colour, except
+/// on the selected row and on flagged rows, which keep their style.
+fn emphasised(
+    text: &str,
+    marks: &[(std::ops::Range<usize>, Emphasis)],
+    base: Style,
+    keep: bool,
+    theme: Theme,
+) -> Vec<Span<'static>> {
+    let style_at = |i: usize| match marks.iter().find(|(at, _)| at.contains(&i)) {
+        Some((_, Emphasis::Figure)) => base.add_modifier(Modifier::BOLD),
+        Some((_, Emphasis::Secondary)) if !keep => {
+            if theme.mono {
+                base.add_modifier(Modifier::DIM)
+            } else {
+                base.fg(MUTED)
+            }
+        }
+        _ => base,
+    };
+    let mut runs: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut current = None;
+    for (i, ch) in text.chars().enumerate() {
+        let style = style_at(i);
+        if current.is_some_and(|c| c != style) {
+            runs.push(Span::styled(std::mem::take(&mut run), current.unwrap()));
+        }
+        current = Some(style);
+        run.push(ch);
+    }
+    if let Some(style) = current {
+        runs.push(Span::styled(run, style));
+    }
+    runs
 }
 
 fn draw_pane(f: &mut Frame, side: Rect, next: View, cx: &Ctx) {

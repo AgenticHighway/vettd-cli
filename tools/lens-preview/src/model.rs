@@ -3,6 +3,7 @@
 use crate::data::{day_label, period_label};
 use crate::fixture::Session;
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 /// The question a result answers: which workspace, agent and period.
 /// It travels with the view so Back restores the earlier scope exactly.
@@ -115,6 +116,9 @@ pub(crate) struct Page {
     /// or last selectable row, or on a view with none, turns it off so rows
     /// without actions stay reachable.
     pub(crate) follow: bool,
+    /// Home only: the daily bar chosen with ←/→. While set, Enter opens that
+    /// day instead of the selected finding.
+    pub(crate) day: Option<u32>,
 }
 
 impl Page {
@@ -126,6 +130,7 @@ impl Page {
             filter: String::new(),
             filters: [0; 4],
             follow: true,
+            day: None,
         }
     }
 }
@@ -140,12 +145,23 @@ pub(crate) struct Runtime {
 pub(crate) struct Row {
     pub(crate) text: String,
     pub(crate) open: Option<(View, &'static str)>,
+    /// Char ranges of `text` drawn with extra weight or less. Empty for
+    /// most rows, which draw in one style.
+    pub(crate) spans: Vec<(Range<usize>, Emphasis)>,
+}
+
+/// How a span of a row is drawn: figures bold, secondary columns muted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Emphasis {
+    Figure,
+    Secondary,
 }
 
 pub(crate) fn line(text: impl Into<String>) -> Row {
     Row {
         text: text.into(),
         open: None,
+        spans: Vec::new(),
     }
 }
 
@@ -153,6 +169,44 @@ pub(crate) fn link(text: impl Into<String>, view: View, action: &'static str) ->
     Row {
         text: text.into(),
         open: Some((view, action)),
+        spans: Vec::new(),
+    }
+}
+
+/// Builds a row's text from its cells, recording which cells are figures
+/// or secondary. The builders that know the columns mark them, so nothing
+/// has to guess which digits are amounts.
+#[derive(Default)]
+pub(crate) struct Cells {
+    text: String,
+    spans: Vec<(Range<usize>, Emphasis)>,
+}
+
+impl Cells {
+    pub(crate) fn add(mut self, cell: impl AsRef<str>, emphasis: Option<Emphasis>) -> Self {
+        let cell = cell.as_ref();
+        let start = self.text.chars().count();
+        self.text.push_str(cell);
+        if let Some(emphasis) = emphasis {
+            self.spans
+                .push((start..start + cell.chars().count(), emphasis));
+        }
+        self
+    }
+
+    pub(crate) fn line(self) -> Row {
+        Row {
+            text: self.text,
+            open: None,
+            spans: self.spans,
+        }
+    }
+
+    pub(crate) fn link(self, view: View, action: &'static str) -> Row {
+        Row {
+            open: Some((view, action)),
+            ..self.line()
+        }
     }
 }
 
@@ -295,16 +349,18 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row
     } else {
         usd(s.cents())
     };
-    link(
-        format!(
-            "{} {} {:<7} {:>8}{}",
-            pad(&clip(s.name, 16), 16),
+    // "unpriced" is a flag, not an amount, so it isn't bold.
+    let figure = (measure != "unpriced").then_some(Emphasis::Figure);
+    Cells::default()
+        .add(format!("{} ", pad(&clip(s.name, 16), 16)), None)
+        .add(
             pad(&shorten(s.workspace, ws), ws),
-            s.agent,
-            measure,
-            if s.incomplete { " ≥" } else { "" }
-        ),
-        View::Session(id),
-        "Open session cost and components",
-    )
+            Some(Emphasis::Secondary),
+        )
+        .add(" ", None)
+        .add(format!("{:<7}", s.agent), Some(Emphasis::Secondary))
+        .add(" ", None)
+        .add(format!("{measure:>8}"), figure)
+        .add(if s.incomplete { " ≥" } else { "" }, None)
+        .link(View::Session(id), "Open session cost and components")
 }

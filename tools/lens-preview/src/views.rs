@@ -30,7 +30,7 @@ pub(crate) fn content(page: &Page, all: &Data, count: bool, width: u16, rt: &Run
         View::Headroom => headroom(all),
         View::Help => help(),
         View::Week => week(all, count, bar_width),
-        View::Find => synthetic(find(&page.filter), all),
+        View::Find => synthetic(find(&page.filter, all, count, width), all),
         View::Day(day) => day_sessions(day, all, count, width),
         View::Session(id) => session(id, &all[id], bar_width, width, all.local()),
         View::Tokens(id) => tokens(&all[id], width, all.local()),
@@ -54,6 +54,9 @@ fn help() -> Content {
         [
             "↑ / ↓   Move selection; preview updates",
             "PgUp/Dn Scroll by a screen",
+            "Home/End First or last row (g / G too)",
+            "← / →   Home: choose a day's bar",
+            "1–7     Home, Week: open that day",
             "Enter   Inspect the selected object",
             "Esc     Back to previous scope",
             "p       Widen a one-day scope to the week",
@@ -61,7 +64,7 @@ fn help() -> Content {
             "Tab     Inventory: cycle type",
             "w a e   Inventory: workspace, agent, evidence",
             "x       Inventory: clear filters",
-            "/       Find a component",
+            "/       Find a day, session or component",
             "c       Toggle priced USD and requests",
             "q       Quit (Ctrl+C also works in search)",
         ]
@@ -115,16 +118,18 @@ fn week(all: &Data, count: bool, bar_width: usize) -> Content {
             } else {
                 usd(value)
             };
-            link(
-                format!(
-                    "{:<6}  {label:>8}  {}{}",
-                    day_label(day),
-                    bar(value, peak, bar_width),
-                    if partial { "  partial" } else { "" }
-                ),
-                View::Day(day),
-                "See contributing sessions",
-            )
+            Cells::default()
+                .add(format!("{:<6}  ", day_label(day)), None)
+                .add(format!("{label:>8}"), (n > 0).then_some(Emphasis::Figure))
+                .add(
+                    format!(
+                        "  {}{}",
+                        bar(value, peak, bar_width),
+                        if partial { "  partial" } else { "" }
+                    ),
+                    None,
+                )
+                .link(View::Day(day), "See contributing sessions")
         })
         .collect();
     (
@@ -138,15 +143,17 @@ fn week(all: &Data, count: bool, bar_width: usize) -> Content {
     )
 }
 
-fn find(filter: &str) -> Content {
-    let rows = COMPONENTS
+/// Find: with a search, matching days, then sessions, then components,
+/// each group under a divider with its count. With no search, components
+/// only, as before sessions and days could be found.
+fn find(filter: &str, all: &Data, count: bool, width: u16) -> Content {
+    let needle = filter.to_ascii_lowercase();
+    let matches = |text: &str| text.to_ascii_lowercase().contains(&needle);
+    let components: Vec<Row> = COMPONENTS
         .iter()
         .enumerate()
         .map(|(i, c)| (i, format!("{} {}", c.kind, c.name)))
-        .filter(|(_, name)| {
-            name.to_ascii_lowercase()
-                .contains(&filter.to_ascii_lowercase())
-        })
+        .filter(|(_, name)| matches(name))
         .map(|(i, name)| {
             link(
                 name,
@@ -155,11 +162,78 @@ fn find(filter: &str) -> Content {
             )
         })
         .collect();
-    (
-        "Find a component".into(),
-        format!("{} | Search: {filter}_", Scope::WEEK.period()),
-        rows,
-    )
+    let title = "Find a day, session or component".to_string();
+    let scope = format!("{} | Search: {filter}_", Scope::WEEK.period());
+    if filter.is_empty() {
+        return (title, scope, components);
+    }
+    let days: Vec<Row> = all
+        .days
+        .iter()
+        .copied()
+        .filter(|&day| matches(&day_label(day)))
+        .map(|day| {
+            let sessions: Vec<_> = all.iter().filter(|s| s.day == day).collect();
+            let label = if sessions.is_empty() {
+                "No input".into()
+            } else {
+                units(total(sessions.iter().copied(), count), count)
+            };
+            link(
+                format!(
+                    "{:<6}  {label:>8}  {} sessions",
+                    day_label(day),
+                    sessions.len()
+                ),
+                View::Day(day),
+                "See contributing sessions",
+            )
+        })
+        .collect();
+    let mut found: Vec<_> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| matches(s.name) || matches(s.workspace))
+        .collect();
+    found.sort_by_key(|(_, s)| (s.day, std::cmp::Reverse(measure(s, count))));
+    // The Day row layout, " ≥" included, after a 7-cell day column, sized
+    // to what matched.
+    let room = usize::from(width).saturating_sub(3 + 34 + 2 + 7);
+    let ws = found
+        .iter()
+        .map(|(_, s)| cells(s.workspace))
+        .max()
+        .unwrap_or(0)
+        .clamp(4, room.max(4));
+    let sessions: Vec<Row> = found
+        .into_iter()
+        .map(|(id, s)| {
+            let row = session_row(id, s, count, ws);
+            let prefix = format!("{} ", pad(&day_label(s.day), 6));
+            let shift = prefix.chars().count();
+            Row {
+                text: format!("{prefix}{}", row.text),
+                spans: row
+                    .spans
+                    .into_iter()
+                    .map(|(at, e)| (at.start + shift..at.end + shift, e))
+                    .collect(),
+                ..row
+            }
+        })
+        .collect();
+    let mut rows = Vec::new();
+    for (name, group) in [
+        ("Days", days),
+        ("Sessions", sessions),
+        ("Components", components),
+    ] {
+        if !group.is_empty() {
+            rows.push(line(format!("── {name} ({})", group.len())));
+            rows.extend(group);
+        }
+    }
+    (title, scope, rows)
 }
 
 /// The workspace column for one day: its longest name, clamped so the
@@ -299,7 +373,11 @@ fn tokens(s: &Session, width: u16, local: bool) -> Content {
         )));
         rows.extend(PARTS.iter().enumerate().map(|(i, part)| {
             let tokens: u64 = requests.iter().map(|r| u64::from(r.tokens[i])).sum();
-            line(format!("{part:<14} {tokens:>8} tokens"))
+            Cells::default()
+                .add(format!("{part:<14} "), None)
+                .add(format!("{tokens:>8}"), Some(Emphasis::Figure))
+                .add(" tokens", None)
+                .line()
         }));
         if local {
             rows.push(line(match crate::pricing::lookup(model) {
@@ -357,25 +435,31 @@ fn cost_rows(s: &Session, bar_width: usize, width: u16) -> Vec<Row> {
     });
     if priced(s) > 0 {
         rows.extend(PARTS.iter().zip(parts).map(|(part, cost)| {
-            line(format!(
-                "{part:<13} {:>7}  {}",
-                usd(cost),
-                bar(cost, s.cents(), bar_width)
-            ))
+            Cells::default()
+                .add(format!("{part:<13} "), None)
+                .add(format!("{:>7}", usd(cost)), Some(Emphasis::Figure))
+                .add(format!("  {}", bar(cost, s.cents(), bar_width)), None)
+                .line()
         }));
     }
     rows.extend(groups(s).into_iter().map(|(worker, model, requests)| {
         let unpriced = requests.iter().filter(|r| !r.priced()).count();
         let cents: f64 = requests.iter().flat_map(|r| r.cents_exact()).sum();
-        let cost = match unpriced {
-            0 => usd(cents.round() as u32),
-            n if n == requests.len() => "unpriced".into(),
-            n => format!("{} + {n} unpriced", usd(cents.round() as u32)),
+        // The amount is a figure; "unpriced" is a flag, so it isn't bold.
+        let (amount, note) = match unpriced {
+            0 => (usd(cents.round() as u32), String::new()),
+            n if n == requests.len() => (String::new(), "unpriced".to_string()),
+            n => (usd(cents.round() as u32), format!(" + {n} unpriced")),
         };
-        line(format!(
-            "{}   {cost}",
-            worker_model(worker, model, 3 + cells(&cost), room)
-        ))
+        let cost = format!("{amount}{note}");
+        Cells::default()
+            .add(
+                format!("{}   ", worker_model(worker, model, 3 + cells(&cost), room)),
+                None,
+            )
+            .add(&amount, (!amount.is_empty()).then_some(Emphasis::Figure))
+            .add(&note, None)
+            .line()
     }));
     rows
 }

@@ -439,3 +439,8 @@ fn daily_view_answers_instead_of_labelling() {
 // row to move to.
 mod local;
 mod scrolling;
+
+// Home, End, number keys and Home bar selection: reaching a place in few
+// presses.
+mod emphasis;
+mod navigation;
