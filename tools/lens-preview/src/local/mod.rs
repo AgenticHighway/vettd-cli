@@ -534,12 +534,15 @@ fn assemble(
     let first = today - 6;
     let midnight = today * DAY;
     let Found {
-        requests,
+        mut requests,
         sessions: metas,
         uses,
         readings,
         ..
     } = found;
+    // A session's requests in time order. The sort is stable, so ties keep
+    // the readers' order: Claude by request id, Codex by file and line.
+    requests.sort_by_key(|r| r.ts);
     // Each session's start time, over all its requests in the period.
     let mut start: HashMap<(&str, &str), i64> = HashMap::new();
     let in_period = |ts: i64| all || (first..=today).contains(&ts.div_euclid(DAY));

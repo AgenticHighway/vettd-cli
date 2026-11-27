@@ -236,6 +236,106 @@ fn codex_threads_join_their_root_and_archived_copies_count_once() {
     assert_eq!(data.limit_hits_by_agent.as_ref().unwrap()[1], ("Codex", 1));
 }
 
+// An export compared run to run, or against an older build, must only
+// differ where the logs do. Requests used to follow a HashMap's order,
+// which changes every run. Now they follow time, ties by request id.
+#[test]
+fn claude_requests_are_in_time_order_ties_by_request_id() {
+    let tmp = std::env::temp_dir().join(format!("lens-order-{}", std::process::id()));
+    let project = tmp.join("projects").join("p");
+    std::fs::create_dir_all(&project).unwrap();
+    // (request id, minute), written out of order, with ties on a minute.
+    let written = [
+        ("rq-k", 7),
+        ("rq-c", 1),
+        ("rq-p", 3),
+        ("rq-a", 7),
+        ("rq-m", 0),
+        ("rq-f", 3),
+        ("rq-z", 5),
+        ("rq-b", 1),
+        ("rq-q", 9),
+        ("rq-d", 5),
+        ("rq-n", 2),
+        ("rq-e", 8),
+        ("rq-y", 3),
+        ("rq-g", 6),
+        ("rq-h", 4),
+        ("rq-j", 0),
+    ];
+    // Each request's fresh input names it: its place in `written`, plus 1.
+    let lines: String = written
+        .iter()
+        .enumerate()
+        .map(|(i, (id, minute))| {
+            format!(
+                r#"{{"type":"assistant","sessionId":"s-order","timestamp":"2026-11-25T10:{minute:02}:00Z","requestId":"{id}","message":{{"id":"m-{id}","model":"claude-opus-5-5","usage":{{"input_tokens":{},"output_tokens":1}},"content":[]}}}}"#,
+                i + 1
+            ) + "\n"
+        })
+        .collect();
+    std::fs::write(project.join("s-order.jsonl"), lines).unwrap();
+    let roots = Roots {
+        claude: Some(tmp.clone()),
+        codex: None,
+        relay: None,
+    };
+    let order = || -> Vec<u32> {
+        read(&roots, now(), Span::Week(None), &mut Vec::new())
+            .iter()
+            .flat_map(|s| &s.requests)
+            .map(|r| r.tokens[0])
+            .collect()
+    };
+    let (first, second) = (order(), order());
+    std::fs::remove_dir_all(&tmp).unwrap();
+    let mut expected: Vec<(u32, &str, u32)> = written
+        .iter()
+        .enumerate()
+        .map(|(i, &(id, minute))| (minute, id, i as u32 + 1))
+        .collect();
+    expected.sort();
+    let expected: Vec<u32> = expected.into_iter().map(|e| e.2).collect();
+    assert_eq!(first, expected);
+    assert_eq!(second, expected);
+}
+
+// Codex hands over a session's root rollout before its subagent's. A
+// subagent request made between two of the root's sits between them, and
+// two at the same second keep the order they were read in.
+#[test]
+fn codex_subagent_requests_interleave_by_time() {
+    let req = |worker: &'static str, at: &str, fresh: u32| Req {
+        agent: "Codex",
+        session: "th-root".into(),
+        ts: parse_ts(at).unwrap(),
+        worker,
+        model: "gpt-5.5",
+        tokens: [fresh, 0, 0, 0],
+        cost: None,
+        sources: [0; BUCKETS.len()],
+    };
+    let found = Found {
+        requests: vec![
+            req("Main", "2026-11-25T09:30:00Z", 1),
+            req("Main", "2026-11-25T10:30:00Z", 2),
+            req("Subagent", "2026-11-25T10:00:00Z", 3),
+            req("Subagent", "2026-11-25T10:30:00Z", 4),
+        ],
+        ..Found::default()
+    };
+    let data = assemble(found, Vec::new(), None, now(), false, &mut Vec::new());
+    let order: Vec<(&str, u32)> = data
+        .iter()
+        .flat_map(|s| &s.requests)
+        .map(|r| (r.worker, r.tokens[0]))
+        .collect();
+    assert_eq!(
+        order,
+        [("Main", 1), ("Subagent", 3), ("Main", 2), ("Subagent", 4)]
+    );
+}
+
 #[test]
 fn unpriced_models_show_unpriced_never_zero() {
     let data = load();
