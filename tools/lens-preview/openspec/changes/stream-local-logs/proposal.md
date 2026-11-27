@@ -35,7 +35,8 @@ almost all of the peak:
 Output doesn't change. The one difference is a file that fails partway
 through being read (an I/O error after it opened). Before, it gave no lines
 at all. Now it keeps the lines read before the error. Either way the
-session is marked partial.
+session is marked partial. The owner approved this difference on
+2026-11-27.
 
 ## Capabilities
 
