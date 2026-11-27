@@ -657,6 +657,24 @@ fn shorten_counts_wide_characters_as_two_cells() {
     assert_eq!(clip("日本語", 5), "日本");
 }
 
+// The owner found a bare "≥ partial" hard to decode, so a partial day's
+// scope chips spell it out. That only helps if the chip shows whole at 80
+// columns, in colour and no-colour, instead of shortening to "…".
+#[test]
+fn partial_flag_meaning_shows_whole_on_every_stress_day_at_80_columns() {
+    let all = Data::stress();
+    for day in 12..=18 {
+        for mono in [false, true] {
+            let stack = [Page::new(View::Home), Page::new(View::Day(day))];
+            let chips = line(&grid(&stack_over(&all, &stack, (80, 24), mono))[3]);
+            assert!(
+                chips.contains("≥ partial: total is at least this"),
+                "{chips:?}"
+            );
+        }
+    }
+}
+
 // A partial session's total is a floor. If its "≥" is cut off at the list
 // edge, the row reads as an exact total, so the flag must fit on every day.
 #[test]

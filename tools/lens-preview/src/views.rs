@@ -197,7 +197,12 @@ fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
     sessions.sort_by_key(|(_, s)| std::cmp::Reverse(measure(s, count)));
     let total: u32 = total(sessions.iter().map(|(_, s)| *s), count);
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
-    let comparison = if sessions.is_empty()
+    let partial = sessions.iter().any(|(_, s)| s.incomplete);
+    // A partial day is never compared, so its comparison chip explains the
+    // "≥" its rows end in instead. The title has no room for that at 80 columns.
+    let comparison = if partial {
+        "≥ partial: total is at least this".into()
+    } else if sessions.is_empty()
         || prior.is_empty()
         || prior.iter().any(|s| !comparable(s, count))
         || sessions.iter().any(|(_, s)| !comparable(s, count))
@@ -214,8 +219,8 @@ fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
     };
     let label = day_label(day);
     (
-        // Partial rows end in "≥" (at least); the title says what it means.
-        if sessions.iter().any(|(_, s)| s.incomplete) {
+        // Partial rows end in "≥" (at least); the scope chip says what it means.
+        if partial {
             format!("{label} sessions  ·  ≥ partial")
         } else {
             format!("{label} sessions")

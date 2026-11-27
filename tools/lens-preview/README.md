@@ -86,8 +86,10 @@ a raised baseline so the differences between days show. Its title then names
 the axis start, for example `from $1474`. Long workspaces and model IDs are
 shortened in the middle (`platf…tress`) so totals and costs stay whole and
 aligned. In a day's session list, a partial session's total ends with `≥`
-(at least), and the day's title says `≥ partial`. Upstream count breakdowns
-by trigger, tool, class and MCP remain Phase 1 parity work.
+(at least), the day's title says `≥ partial`, and its last scope chip says
+`≥ partial: total is at least this` in place of the previous-day comparison.
+Upstream count breakdowns by trigger, tool, class and MCP remain Phase 1
+parity work.
 
 ## Your own logs: `--source local`
 
