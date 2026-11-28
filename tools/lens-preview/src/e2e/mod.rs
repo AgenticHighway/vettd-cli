@@ -157,7 +157,9 @@ fn spend_journey_reaches_the_run_and_restores_selection() {
     let mut u = User::at((80, 24));
     u.press(Down);
     assert!(u.selected().starts_with("▸ Nov 16: 10× a normal day"));
-    u.press(Enter).sees("Nov 16 sessions").sees("+$7.69 change");
+    u.press(Enter)
+        .sees("Nov 16 sessions")
+        .sees("+$7.69 vs prior day");
     assert!(u.selected().starts_with("▸ Index rebuild"));
     u.press(Enter);
     assert_eq!(u.crumb(), "Home › Nov 16 › Index rebuild");

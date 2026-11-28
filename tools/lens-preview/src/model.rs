@@ -407,6 +407,15 @@ pub(crate) fn session_row(id: usize, s: &Session, count: bool, ws: usize) -> Row
         .add(format!("{:<7}", s.agent), Some(Emphasis::Secondary))
         .add(" ", None)
         .add(format!("{measure:>8}"), figure)
-        .add(if s.incomplete { " ≥" } else { "" }, None)
+        // A floor: partial input, or some requests with no rate. A session
+        // with no rate at all already reads "unpriced".
+        .add(
+            if s.incomplete || (!comparable(s, count) && figure.is_some()) {
+                " ≥"
+            } else {
+                ""
+            },
+            None,
+        )
         .link(View::Session(id), "Open session cost and components")
 }

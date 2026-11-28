@@ -667,12 +667,33 @@ fn partial_flag_meaning_shows_whole_on_every_stress_day_at_80_columns() {
         for mono in [false, true] {
             let stack = [Page::new(View::Home), Page::new(View::Day(day))];
             let chips = line(&grid(&stack_over(&all, &stack, (80, 24), mono))[3]);
-            assert!(
-                chips.contains("≥ partial: total is at least this"),
-                "{chips:?}"
-            );
+            assert!(chips.contains("≥ means at least"), "{chips:?}");
         }
     }
+}
+
+// On real logs every comparable day lost its change to "…" at 80 columns,
+// and non-comparable days shortened "All workspaces". The Day scope must
+// show every chip whole, with a three-figure total, in colour and not.
+#[test]
+fn day_scope_chips_show_whole_at_80_columns() {
+    let mut compared = 0;
+    for all in [Data::fixture(), crate::local::test_data()] {
+        for &day in &all.days {
+            for mono in [false, true] {
+                let stack = [Page::new(View::Home), Page::new(View::Day(day))];
+                let chips = line(&grid(&stack_over(&all, &stack, (80, 24), mono))[3]);
+                assert!(!chips.contains('…'), "{chips:?}");
+                assert!(chips.contains("All workspaces"), "{chips:?}");
+                compared += usize::from(chips.contains("vs prior day"));
+            }
+        }
+    }
+    assert!(compared > 0, "no day was compared");
+    // The longest comparison a three-figure day can show still fits.
+    let widest = "Nov 25 UTC | All workspaces | $999.99 API-equivalent | +$999.99 vs prior day";
+    let chips: usize = widest.split(" | ").map(|c| cells(c) + 3).sum::<usize>() + 1;
+    assert!(chips <= 80, "{chips}");
 }
 
 // A partial session's total is a floor. If its "≥" is cut off at the list

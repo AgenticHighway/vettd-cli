@@ -112,6 +112,22 @@ pub(crate) fn filling(data: &Data) -> Option<(&Window, u32)> {
     soonest(&data.windows, data.now)
 }
 
+/// A window whose pace said it would fill before now, with no newer
+/// reading to confirm it. It isn't known to be full, but it may be, and
+/// that is what its "~272%" means. Returns the share, the time of the last
+/// reading and the time the pace filled it.
+pub(crate) fn maybe_full(data: &Data) -> Option<(&Window, u32, i32, i32)> {
+    data.windows
+        .iter()
+        .filter_map(|w| {
+            let share = used(w, data.now).filter(|&u| u < 100)?;
+            let at = full_at(w).filter(|&at| at <= data.now)?;
+            let last = w.start? + w.readings.last()?.0 as i32;
+            Some((w, share, last, at))
+        })
+        .min_by_key(|&(_, _, _, at)| at)
+}
+
 /// One window: its used share, pace at reset, reset time and source.
 /// A window with no reading opens nothing. A window that has reset says
 /// so on a second row.
@@ -231,7 +247,18 @@ pub(crate) fn headroom(data: &Data) -> Content {
                 full_by(w, data.today).unwrap()
             ),
         },
-        None => "No window is on pace to fill before it resets.".into(),
+        None => match maybe_full(data) {
+            // Saying nothing fills beside a "~272%" reads as a bug. The
+            // pace did fill it; only no reading has confirmed that.
+            Some((w, share, last, at)) => format!(
+                "{} {} may be full: {share}% at {}, on pace to fill by {}.",
+                w.agent,
+                w.name,
+                clock(data.today, last),
+                clock(data.today, at)
+            ),
+            None => "No window is on pace to fill before it resets.".into(),
+        },
     };
     let mut rows: Vec<Row> = data
         .windows
@@ -266,6 +293,12 @@ fn findings(all: &Data, count: bool) -> Vec<Row> {
                     full_by(w, all.today).unwrap()
                 ),
             },
+            View::Headroom,
+            "See every plan window and its pace",
+        ));
+    } else if let Some((w, share, _, _)) = maybe_full(all) {
+        rows.push(link(
+            format!("{} {}: {share}%, may be full", w.agent, w.name),
             View::Headroom,
             "See every plan window and its pace",
         ));

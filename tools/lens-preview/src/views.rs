@@ -388,22 +388,29 @@ fn day_sessions(day: u32, all: &Data, count: bool, width: u16) -> Content {
     sessions.sort_by_key(|(_, s)| std::cmp::Reverse(measure(s, count)));
     let total: u32 = total(sessions.iter().map(|(_, s)| *s), count);
     let prior: Vec<_> = all.iter().filter(|s| s.day + 1 == day).collect();
-    let partial = sessions.iter().any(|(_, s)| s.incomplete);
+    // Partial as Week means it: incomplete input or, in USD, a request
+    // with no rate. Either way the day's total is a floor.
+    let partial = sessions.iter().any(|(_, s)| !comparable(s, count));
     // A partial day is never compared, so its comparison chip explains the
     // "≥" its rows end in instead. The title has no room for that at 80 columns.
     let comparison = if partial {
-        "≥ partial: total is at least this".into()
+        // The title says "≥ partial"; this says what "≥" means, short enough
+        // to show whole beside an API-equivalent total at 80 columns.
+        "≥ means at least".into()
     } else if sessions.is_empty()
         || prior.is_empty()
         || prior.iter().any(|s| !comparable(s, count))
         || sessions.iter().any(|(_, s)| !comparable(s, count))
     {
-        "No comparable previous day".into()
+        // Short, so "All workspaces" and a four-figure total still fit
+        // at 80 columns.
+        "No comparison".into()
     } else {
+        // One chip, short enough to fit whole beside "All workspaces" and a
+        // three-figure total at 80 columns. Week shows the prior day's total.
         let previous = crate::total(prior.iter().copied(), count);
         format!(
-            "Prior day {} | {}{} change",
-            units(previous, count),
+            "{}{} vs prior day",
             if total >= previous { "+" } else { "-" },
             units(total.abs_diff(previous), count)
         )

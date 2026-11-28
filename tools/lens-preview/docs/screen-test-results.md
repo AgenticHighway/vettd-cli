@@ -148,3 +148,34 @@ times can be compared with each other but not with the 6.9 s run above.
   out in a different order from run to run. The old binary does this too,
   so it existed before this change and is not fixed here.
 
+
+## Real-data gaps fixed (`fix-real-data-gaps`)
+
+Checked on 2026-11-27 on the owner's logs (`--source local`, period
+Nov 22–28 UTC) by a temporary test that printed only counts and screens
+with no session or workspace names. This is Claude's check, not the
+owner's, and not test evidence.
+
+- Unpriced: 599 requests before, all Codex prompts over 272K input tokens.
+  With OpenAI's long-context rates, 0. No day is partial any more.
+- Plan headroom: the answer now reads "Codex weekly may be full: 95% at
+  Nov 26 07:22, on pace to fill by Nov 26 10:28." beside the `~272%` row,
+  and Home's first finding reads "Codex weekly: 95%, may be full".
+- Day scope chips at 80 columns: all seven days show every chip whole,
+  for example "$109.23 API-equivalent" and "+$81.21 vs prior day".
+- History: 183 sessions. Typing filtered it ("codex" 4, "claude" 180,
+  "oct" 28, a nonsense string 0). Enter on the third filtered row opened
+  it over all its requests; Esc came back to the same row with the filter
+  kept, and a second Esc reached Home. This covers what the owner's check
+  left out.
+- Memory and time, release builds alternated three times in one session
+  (the machine was busier than in the runs above):
+
+| Build                         | `--json`        | `--json --history` | Peak memory |
+|-------------------------------|-----------------|--------------------|-------------|
+| `add-session-history` head    | 9.3, 11.1, 11.1 s | 19.2, 21.2, 21.2 s | not measured |
+| this change (on `stream-local-logs`) | 9.1, 9.1, 9.1 s | 23.2, 18.2, 15.2 s | 128 MB / 173 MB |
+
+- Not fixable in Lens: the desktop app's Code tab doesn't run
+  `statusLine`, so its Claude sessions add no relay readings. The README
+  says so.
