@@ -99,7 +99,10 @@ the axis start, for example `from $1474`. Long workspaces and model IDs are
 shortened in the middle (`platf…tress`) so totals and costs stay whole and
 aligned. In a day's session list, a partial session's total ends with `≥`
 (at least), the day's title says `≥ partial`, and its last scope chip says
-`≥ partial: total is at least this` in place of the previous-day comparison.
+`≥ means at least` in place of the previous-day comparison. A day or session
+is partial when some input is incomplete or, in USD, some request has no
+rate; Week and Day agree on which days those are. A day that can be compared
+says how it changed, for example `+$7.69 vs prior day`.
 Upstream count breakdowns by trigger, tool, class and MCP remain Phase 1
 parity work.
 
@@ -137,8 +140,9 @@ What you see, and how sure it is:
   session.
 - Dollars are **API-equivalent**: published API rates from
   `src/pricing.rs` (dated, with their source page), so what the usage
-  would cost on the API, not what a plan charges. A model with no rate is
-  "unpriced", never $0.
+  would cost on the API, not what a plan charges. A Codex prompt over
+  272K input tokens pays OpenAI's published long-context rate. A model
+  with no rate is "unpriced", never $0.
 - Codex 5-hour and weekly windows come from Codex's own `rate_limits`.
   Claude windows come from the opt-in statusline relay (below), since
   Claude writes them only to the statusline.
@@ -188,10 +192,21 @@ only, so it can't break your status line. `--relay-file <path>` moves the
 file, for both the relay and `--source local`. Remove the `statusLine`
 entry and the file to stop.
 
+Only Claude Code in a terminal runs `statusLine`. The Claude desktop app's
+Code tab doesn't, so its sessions add no readings: if you work mostly
+there, the Claude rows show the last terminal reading, or "reset; no relay
+reading since" once that window has reset. Lens has no other source for
+these numbers and doesn't guess them.
+
 Without a relay file, the Claude rows on Plan headroom say "relay not set
 up". With one, they follow the same rules as Codex windows, and "Claude
 weekly ended at" lists how the last weekly windows ended, saying how many
 weeks the relay has seen when that is fewer than 4.
+
+When a window's pace filled it before now but no newer reading confirms
+it, Plan headroom says it "may be full", with its last share and when the
+pace filled it, rather than "No window is on pace to fill". Home's first
+finding says the same.
 
 ## Five phases
 

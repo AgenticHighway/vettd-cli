@@ -1,13 +1,16 @@
 //! Published API rates for the models local logs name. A model matches
 //! its longest prefix; anything else stays unpriced, never $0.
 //!
-//! Rates are USD per million tokens. Checked 2026-11-25 against:
+//! Rates are USD per million tokens. Checked 2026-11-25 (OpenAI
+//! 2026-11-27) against:
 //! - Claude: https://platform.claude.com/docs/en/about-claude/pricing
 //! - OpenAI: https://developers.openai.com/api/docs/pricing (Standard tier)
 
 pub(crate) const CLAUDE_SOURCE: &str = "https://platform.claude.com/docs/en/about-claude/pricing";
 pub(crate) const OPENAI_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
 pub(crate) const CHECKED: &str = "2026-11-25";
+/// OpenAI's long-context rates were checked later than the rest.
+pub(crate) const CHECKED_OPENAI: &str = "2026-11-27";
 
 /// Fresh input, cache read, 5-minute cache write, 1-hour cache write and
 /// output, per million tokens. Cache-write rates are None where the
@@ -47,21 +50,31 @@ const fn claude(prefix: &'static str, input: f64, read: f64, output: f64) -> Ent
     }
 }
 
-/// OpenAI's Standard rates cover prompts up to 272K tokens; longer
-/// prompts are priced differently, so they stay unpriced here.
+/// OpenAI's Standard short-context rates cover prompts up to 272K input
+/// tokens. Longer prompts pay the long-context rates OpenAI publishes per
+/// model: for every model named here, 2x input and cache read, 1.5x output.
+/// OpenAI's cache-write windows (30 minutes, 12 hours) don't match the
+/// 5-minute / 1-hour split, so a Codex cache write stays unpriced.
 const fn openai(prefix: &'static str, input: f64, read: f64, output: f64) -> Entry {
     Entry {
         prefix,
-        rates: Rates {
-            input,
-            cache_read: read,
-            write_5m: None,
-            write_1h: None,
-            output,
-        },
-        prompt_limit: Some((272_000, None)),
-        checked: CHECKED,
+        rates: openai_rates(input, read, output),
+        prompt_limit: Some((
+            272_000,
+            Some(openai_rates(input * 2.0, read * 2.0, output * 1.5)),
+        )),
+        checked: CHECKED_OPENAI,
         source: OPENAI_SOURCE,
+    }
+}
+
+const fn openai_rates(input: f64, cache_read: f64, output: f64) -> Rates {
+    Rates {
+        input,
+        cache_read,
+        write_5m: None,
+        write_1h: None,
+        output,
     }
 }
 
@@ -178,10 +191,10 @@ mod tests {
         assert!((cents[2] - 1.125).abs() < 1e-9, "{cents:?}");
     }
 
-    // A long Haiku 5.5 prompt pays the higher tier; a long OpenAI prompt
-    // is outside the published Standard rates and stays unpriced.
+    // Long prompts pay their own published tier. Without it, 599 Codex
+    // requests in a real week were unpriced and four days read as partial.
     #[test]
-    fn prompt_limits_change_or_drop_the_rate() {
+    fn prompt_limits_change_the_rate() {
         let long = Usage {
             fresh: 150_000,
             output: 10,
@@ -194,7 +207,16 @@ mod tests {
             fresh: 300_000,
             ..Usage::default()
         };
-        assert!(price("gpt-6.1-sol", &longer).is_none());
+        // 300K at $4/M (2x $2) = $1.20 = 120 cents.
+        let sol = price("gpt-6.1-sol", &longer).unwrap();
+        assert!((sol[0] - 120.0).abs() < 1e-9, "{sol:?}");
+        let at_limit = Usage {
+            fresh: 272_000,
+            ..Usage::default()
+        };
+        // Exactly 272K is still short context: $2/M.
+        let short = price("gpt-6.1-sol", &at_limit).unwrap();
+        assert!((short[0] - 54.4).abs() < 1e-9, "{short:?}");
     }
 
     // OpenAI publishes no cache-write rate, so a Codex cache write can't

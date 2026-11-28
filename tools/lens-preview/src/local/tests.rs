@@ -983,6 +983,30 @@ fn elapsed_forecast_is_not_full_and_a_full_reading_is() {
     assert!(answer.contains("full until"), "{answer}");
 }
 
+// On real logs Plan headroom said "No window is on pace to fill" beside a
+// Codex row at "~272%", which read as a bug. A pace that filled the window
+// before now, unconfirmed, must be named as "may be full", on Home too.
+#[test]
+fn elapsed_forecast_says_may_be_full() {
+    let mut data = load();
+    let mut w = window_of(&data, "Codex", "5-hour");
+    w.precise.clear();
+    w.readings = Cow::Owned(vec![(10, 20), (30, 60)]);
+    let start = w.start.unwrap();
+    data.windows = vec![w];
+    let (answer, _, rows) = crate::headroom(&data);
+    let last = crate::plan::clock(data.today, start + 30);
+    let at = crate::plan::clock(data.today, start + 50);
+    assert_eq!(
+        answer,
+        format!("Codex 5-hour may be full: 60% at {last}, on pace to fill by {at}.")
+    );
+    assert!(rows[0].text.contains("~"), "{}", rows[0].text);
+    let (_, _, home) = crate::home(&data, false);
+    assert!(home[0].text.starts_with("Codex 5-hour: 60%, may be full"));
+    assert!(matches!(home[0].open, Some((View::Headroom, _))));
+}
+
 #[test]
 fn no_rate_at_all_reads_unpriced_never_zero() {
     let mut data = load();
@@ -1009,6 +1033,48 @@ fn no_rate_at_all_reads_unpriced_never_zero() {
         "{}",
         nov25.text
     );
+}
+
+// On real logs Week marked four days "partial" for unpriced requests, but
+// their Day views said nothing, so the floor went unexplained. Day must
+// call the same day partial, for the same reason, and say what "≥" means.
+#[test]
+fn unpriced_day_is_partial_on_day_as_on_week() {
+    let mut data = load();
+    // Complete input, no rate: unpriced is the only reason to be partial.
+    data.sessions.retain(|s| s.name == "09:12");
+    assert!(!data.sessions[0].incomplete);
+    let (title, scope, _) = content(
+        &Page::new(View::Day(nov(25))),
+        &data,
+        false,
+        80,
+        &Runtime::default(),
+    );
+    assert!(title.ends_with("≥ partial"), "{title}");
+    assert!(scope.ends_with("≥ means at least"), "{scope}");
+    // Counting requests needs no rate, so the same day is not partial.
+    let (title, _, _) = content(
+        &Page::new(View::Day(nov(25))),
+        &data,
+        true,
+        80,
+        &Runtime::default(),
+    );
+    assert!(!title.contains("partial"), "{title}");
+}
+
+// Some requests priced and some not: the row's dollars are a floor and
+// must say so, or they read as exact.
+#[test]
+fn partly_priced_session_row_ends_in_floor_mark() {
+    let mut s = tiny_session(0);
+    let mut unpriced = s.requests[0].clone();
+    unpriced.exact = None;
+    s.requests.push(unpriced);
+    let row = crate::session_row(0, &s, false, 8);
+    assert!(row.text.ends_with(" ≥"), "{}", row.text);
+    assert!(!crate::session_row(0, &s, true, 8).text.ends_with(" ≥"));
 }
 
 fn tiny_session(group: usize) -> Session {
